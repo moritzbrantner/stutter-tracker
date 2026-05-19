@@ -7,6 +7,9 @@
     "dev": "tauri dev",
     "build": "tauri build",
     "tauri": "tauri",
+    "artifacts:status": "cargo run --manifest-path src-tauri/Cargo.toml --bin ensure-artifacts -- --list",
+    "artifacts:download": "cargo run --manifest-path src-tauri/Cargo.toml --bin ensure-artifacts --",
+    "artifacts:download:all": "cargo run --manifest-path src-tauri/Cargo.toml --bin ensure-artifacts -- --all",
     "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
     "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"
   },

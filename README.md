@@ -18,6 +18,8 @@ Cross-platform speech fluency tracker organized as a Bun monorepo.
 - Compute server only: `bun run server`
 - Desktop: `bun run desktop`
 - Mobile: `bun run mobile`
+- Artifact status: `bun run artifacts:status`
+- Download default local transcription artifact: `bun run artifacts:download`
 - Build web/shared packages: `bun run build`
 - Unit tests: `bun run test:unit`
 - Integration tests: `bun run test:integration`
@@ -53,6 +55,19 @@ VITE_STUTTER_SERVER_URL=http://host:8787 bun run web
 For the mobile app, edit the server URL in the app UI. Android emulators usually need the host loopback alias instead of `127.0.0.1`.
 
 The current TypeScript server provides the HTTP contract and shared fallback analysis. Production transcription and other heavyweight processing should be wired into `apps/server/src/index.ts` with a native worker or Rust service using the same request and response shapes.
+
+## Artifacts
+
+Generated build output, benchmark media, model caches, recordings, exports, and partial downloads are ignored by Git. Keep source code, configuration, lockfiles, and small app assets in the repository; put heavyweight runtime artifacts under ignored artifact/cache directories.
+
+The desktop app downloads missing whisper.cpp models on demand before transcription and reuses cached models afterward. To prepare local artifacts explicitly, run:
+
+```sh
+bun run artifacts:status
+bun run artifacts:download -- small.en
+```
+
+`bun run artifacts:download` is idempotent and defaults to `base.en`. Use `bun run artifacts:download:all` only when you intentionally want every supported whisper.cpp model cached locally.
 
 ## Notes
 

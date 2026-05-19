@@ -1,10 +1,31 @@
+# Dependencies
 node_modules/
+
+# Build and test output
 dist/
+build/
+coverage/
 playwright-report/
 test-results/
+target/
 src-tauri/target/
 apps/desktop/src-tauri/target/
+.expo/
+.vite/
+
+# Runtime/downloaded artifacts
+.artifacts/
+artifacts/
 .benchmarks/
+.cache/
+.huggingface/
+.models/
+models/
+downloads/
+recordings/
+exports/
+*.part
+*.tmp
 
 .env
 .env.*

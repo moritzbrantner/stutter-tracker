@@ -1,6 +1,6 @@
 mod corpus;
 mod speech_analysis;
-mod transcription;
+pub mod transcription;
 
 use std::fs;
 use std::path::PathBuf;
