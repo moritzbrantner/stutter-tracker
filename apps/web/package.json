@@ -6,9 +6,11 @@
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
+    "start": "vite preview --host 127.0.0.1",
     "preview": "vite preview --host 127.0.0.1",
     "format": "oxfmt --write \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" vite.config.ts playwright.config.ts",
     "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" vite.config.ts playwright.config.ts",
+    "test": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "test:unit": "vitest run src/App.unit.test.ts src/audio/*.test.ts src/recording/*.test.ts src/storage/*.test.ts",
     "test:integration": "vitest run src/App.integration.test.tsx",
     "test:e2e": "playwright test"

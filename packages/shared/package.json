@@ -13,6 +13,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json --noEmit",
     "format": "oxfmt --write \"src/**/*.{ts,tsx}\"",
     "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\""
   },

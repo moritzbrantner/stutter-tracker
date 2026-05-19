@@ -6,6 +6,8 @@
   "scripts": {
     "dev": "tauri dev",
     "build": "tauri build",
+    "start": "tauri dev",
+    "test": "cargo test --manifest-path src-tauri/Cargo.toml",
     "tauri": "tauri",
     "artifacts:status": "cargo run --manifest-path src-tauri/Cargo.toml --bin ensure-artifacts -- --list",
     "artifacts:download": "cargo run --manifest-path src-tauri/Cargo.toml --bin ensure-artifacts --",

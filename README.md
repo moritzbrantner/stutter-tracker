@@ -14,13 +14,17 @@ Cross-platform speech fluency tracker organized as a Bun monorepo.
 ## Commands
 
 - Local web + compute server: `bun run dev`
-- Web only: `bun run web`
-- Compute server only: `bun run server`
-- Desktop: `bun run desktop`
-- Mobile: `bun run mobile`
+- Build every workspace with Turborepo: `bun run build`
+- Test every testable workspace with Turborepo: `bun run test`
+- Format every formattable workspace: `bun run format`
+- Check formatting, builds, and tests: `bun run check`
+- Web dev/start/build/test: `bun run web`, `bun run start:web`, `bun run build:web`, `bun run test:web`
+- Compute server dev/start/build/test: `bun run server`, `bun run start:server`, `bun run build:server`, `bun run test:server`
+- Desktop dev/start/build/test: `bun run desktop`, `bun run start:desktop`, `bun run build:desktop`, `bun run test:desktop`
+- Mobile start/build/test: `bun run mobile`, `bun run build:mobile`, `bun run test:mobile`
 - Artifact status: `bun run artifacts:status`
 - Download default local transcription artifact: `bun run artifacts:download`
-- Build web/shared packages: `bun run build`
+- Build shared packages: `bun run build:shared`
 - Unit tests: `bun run test:unit`
 - Integration tests: `bun run test:integration`
 - E2E tests: `bun run test:e2e`

@@ -4,6 +4,7 @@ version = "0.1.0"
 description = "Speech fluency tracker for recording, voice matching, transcription, and stutter analysis."
 authors = ["Moritz Brantner"]
 edition = "2021"
+default-run = "stutter-tracker"
 
 [lib]
 name = "stutter_tracker_lib"
