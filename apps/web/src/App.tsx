@@ -39,7 +39,6 @@ const SPEAKERS_KEY = "stutter-tracker:speakers";
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const LANGUAGES = ["en-US", "de-DE", "en-GB"];
 const COMPUTE_SERVER_URL = import.meta.env.VITE_STUTTER_SERVER_URL ?? "http://127.0.0.1:8787";
-const computeClient = createComputeClient({ serverUrl: COMPUTE_SERVER_URL });
 const TRANSCRIPTION_CHUNK_SECONDS = 8;
 const TRANSCRIPTION_TARGET_SAMPLE_RATE = 16_000;
 const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
@@ -83,6 +82,11 @@ const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
     models: ["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"],
   },
 ];
+const COMPUTE_API_TOKEN = import.meta.env.VITE_STUTTER_API_TOKEN ?? "";
+const computeClient = createComputeClient({
+  serverUrl: COMPUTE_SERVER_URL,
+  apiToken: COMPUTE_API_TOKEN,
+});
 
 export function App() {
   const queryClient = useQueryClient();
@@ -1990,7 +1994,14 @@ function startedAtRefGlobal() {
 }
 
 function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
+  const message = error instanceof Error ? error.message : String(error);
+  if (message.includes("native_worker_unavailable")) {
+    return "Compute server has no native transcription worker configured.";
+  }
+  if (message.includes("unauthorized")) {
+    return "Compute server rejected the API token.";
+  }
+  return message;
 }
 
 declare global {

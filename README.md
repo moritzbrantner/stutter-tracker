@@ -7,7 +7,7 @@ Cross-platform speech fluency tracker organized as a Bun monorepo.
 - `apps/web`: Vite React web app. It calls the external compute server first and falls back to browser-local analysis with WebGPU probing when the server is unavailable.
 - `apps/desktop`: Tauri 2 desktop app. It keeps the Rust-backed local hardware path for analysis, speaker matching, transcription, and model downloads.
 - `apps/mobile`: React Native app built with Expo. It talks to the external compute server through the shared client.
-- `apps/server`: Bun HTTP compute server scaffold exposing the shared analysis, speaker, and transcription API shape.
+- `apps/server`: Bun HTTP compute server with shared analysis, speaker persistence, secured CORS/auth, and native transcription worker delegation.
 - `packages/shared`: Shared domain types, model catalogs, fallback analysis, audio resampling, and speaker helpers.
 - `packages/compute-client`: Shared HTTP compute client used by web and mobile.
 
@@ -30,7 +30,7 @@ Cross-platform speech fluency tracker organized as a Bun monorepo.
 
 The default external compute URL is `http://127.0.0.1:8787`.
 
-Known speaker profiles are persisted by the server when `DATABASE_URL` or `POSTGRES_URL` points at a Postgres database. The server creates the `known_speakers` table on first use. Without a database URL, the web app falls back to browser-local speaker storage.
+Known speaker profiles are persisted by the server when `DATABASE_URL` or `POSTGRES_URL` points at a Postgres database. The server creates the `known_speakers` table on first use. Without a database URL, the server writes a local JSON speaker store at `.stutter-tracker/server-speakers.json` by default. Override that path with `STUTTER_SPEAKER_STORE_PATH`.
 
 For local development, run:
 
@@ -54,7 +54,41 @@ VITE_STUTTER_SERVER_URL=http://host:8787 bun run web
 
 For the mobile app, edit the server URL in the app UI. Android emulators usually need the host loopback alias instead of `127.0.0.1`.
 
-The current TypeScript server provides the HTTP contract and shared fallback analysis. Production transcription and other heavyweight processing should be wired into `apps/server/src/index.ts` with a native worker or Rust service using the same request and response shapes.
+The compute server delegates native transcription to the Rust worker used by the desktop app. In local development it falls back to running:
+
+```sh
+cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --bin compute-worker
+```
+
+For production, build the worker and point the server at it:
+
+```sh
+cargo build --release --manifest-path apps/desktop/src-tauri/Cargo.toml --bin compute-worker
+STUTTER_NATIVE_WORKER=/absolute/path/to/compute-worker bun run server
+```
+
+### Public Compute Deployment
+
+The server is permissive only for loopback local development. When `HOST` is not loopback, `NODE_ENV=production`, or `STUTTER_PUBLIC_READY=1`, the server requires explicit security configuration:
+
+```sh
+HOST=0.0.0.0 \
+STUTTER_PUBLIC_READY=1 \
+STUTTER_API_TOKEN=replace-with-a-long-random-token \
+STUTTER_ALLOWED_ORIGINS=https://app.example.com \
+STUTTER_NATIVE_WORKER=/absolute/path/to/compute-worker \
+bun run server
+```
+
+Clients send the token as `Authorization: Bearer <token>`. The web app reads `VITE_STUTTER_API_TOKEN`; the mobile app has an API token field in the UI. Public-ready CORS uses the configured origin allowlist and never emits wildcard origins.
+
+Optional server settings:
+
+```sh
+STUTTER_MAX_BODY_BYTES=25mb
+STUTTER_SPEAKER_STORE_PATH=/var/lib/stutter-tracker/speakers.json
+DATABASE_URL=postgres://user:pass@host:5432/db
+```
 
 ## Artifacts
 

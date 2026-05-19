@@ -26,10 +26,11 @@ const sampleRequest: AnalyzeSpeechRequest = {
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState("http://127.0.0.1:8787");
+  const [apiToken, setApiToken] = useState("");
   const [status, setStatus] = useState("Idle");
   const [report, setReport] = useState<AnalysisReport | null>(null);
   const [busy, setBusy] = useState(false);
-  const client = useMemo(() => createComputeClient({ serverUrl }), [serverUrl]);
+  const client = useMemo(() => createComputeClient({ serverUrl, apiToken }), [apiToken, serverUrl]);
 
   async function analyzeSample() {
     setBusy(true);
@@ -74,6 +75,15 @@ export default function App() {
             autoCapitalize="none"
             autoCorrect={false}
             inputMode="url"
+            style={styles.input}
+          />
+          <Text style={styles.label}>API token</Text>
+          <TextInput
+            value={apiToken}
+            onChangeText={setApiToken}
+            autoCapitalize="none"
+            autoCorrect={false}
+            secureTextEntry
             style={styles.input}
           />
           <View style={styles.actions}>

@@ -25,6 +25,7 @@ type NavigatorWithGpu = Navigator & {
 
 export type ComputeClientOptions = {
   serverUrl?: string;
+  apiToken?: string;
   fetchImpl?: typeof fetch;
 };
 
@@ -56,12 +57,13 @@ export type ComputeClient = {
 export function createComputeClient(options: ComputeClientOptions = {}): ComputeClient {
   const fetcher = options.fetchImpl ?? fetch;
   const baseUrl = normalizeBaseUrl(options.serverUrl);
+  const headers = requestHeaders(options.apiToken);
 
   return {
     async analyzeSpeechSession(request) {
       if (baseUrl) {
         try {
-          return await post<AnalysisReport>(fetcher, baseUrl, "/analysis", request);
+          return await post<AnalysisReport>(fetcher, baseUrl, "/analysis", request, headers);
         } catch {
           return analyzeWithLocalGpuFallback(request);
         }
@@ -72,22 +74,39 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
       if (!baseUrl) {
         return [];
       }
-      const result = await get<{ speakers: SpeakerProfile[] }>(fetcher, baseUrl, "/speakers");
+      const result = await get<{ speakers: SpeakerProfile[] }>(
+        fetcher,
+        baseUrl,
+        "/speakers",
+        headers,
+      );
       return result.speakers;
     },
     async saveSpeakerProfiles(speakers) {
       if (!baseUrl) {
         return speakers;
       }
-      const result = await put<{ speakers: SpeakerProfile[] }>(fetcher, baseUrl, "/speakers", {
-        speakers,
-      });
+      const result = await put<{ speakers: SpeakerProfile[] }>(
+        fetcher,
+        baseUrl,
+        "/speakers",
+        {
+          speakers,
+        },
+        headers,
+      );
       return result.speakers;
     },
     async createSpeakerProfile(request) {
       if (baseUrl) {
         try {
-          return await post<SpeakerProfile>(fetcher, baseUrl, "/speakers/profile", request);
+          return await post<SpeakerProfile>(
+            fetcher,
+            baseUrl,
+            "/speakers/profile",
+            request,
+            headers,
+          );
         } catch {
           return localSpeakerProfile(request);
         }
@@ -100,7 +119,13 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
       }
       if (baseUrl) {
         try {
-          return await post<SpeakerIdentification>(fetcher, baseUrl, "/speakers/identify", request);
+          return await post<SpeakerIdentification>(
+            fetcher,
+            baseUrl,
+            "/speakers/identify",
+            request,
+            headers,
+          );
         } catch {
           return localSpeakerIdentification(request);
         }
@@ -115,6 +140,7 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
             baseUrl,
             "/transcriptions/models",
             { provider },
+            headers,
           );
           return result.models;
         } catch {
@@ -127,25 +153,34 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
       if (!baseUrl) {
         throw new Error("external compute server is required for web and mobile transcription");
       }
-      return post<TranscribeAudioResult>(fetcher, baseUrl, "/transcriptions", request);
+      return post<TranscribeAudioResult>(fetcher, baseUrl, "/transcriptions", request, headers);
     },
     async downloadTranscriptionModel(provider, model) {
       if (!baseUrl) {
         throw new Error("external compute server is required for model downloads");
       }
-      return post<TranscriptionModelStatus>(fetcher, baseUrl, "/transcriptions/models/download", {
-        provider,
-        model,
-      });
+      return post<TranscriptionModelStatus>(
+        fetcher,
+        baseUrl,
+        "/transcriptions/models/download",
+        {
+          provider,
+          model,
+        },
+        headers,
+      );
     },
   };
 }
 
-async function get<T>(fetcher: typeof fetch, baseUrl: string, path: string): Promise<T> {
-  const response = await fetcher(`${baseUrl}${path}`);
-  if (!response.ok) {
-    throw new Error(`${path} failed with ${response.status}`);
-  }
+async function get<T>(
+  fetcher: typeof fetch,
+  baseUrl: string,
+  path: string,
+  headers: HeadersInit,
+): Promise<T> {
+  const response = await fetcher(`${baseUrl}${path}`, { headers });
+  await assertOk(response, path);
   return (await response.json()) as T;
 }
 
@@ -154,17 +189,17 @@ async function post<T>(
   baseUrl: string,
   path: string,
   body: unknown,
+  extraHeaders: HeadersInit,
 ): Promise<T> {
   const response = await fetcher(`${baseUrl}${path}`, {
     method: "POST",
     headers: {
+      ...extraHeaders,
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    throw new Error(`${path} failed with ${response.status}`);
-  }
+  await assertOk(response, path);
   return (await response.json()) as T;
 }
 
@@ -173,18 +208,38 @@ async function put<T>(
   baseUrl: string,
   path: string,
   body: unknown,
+  extraHeaders: HeadersInit,
 ): Promise<T> {
   const response = await fetcher(`${baseUrl}${path}`, {
     method: "PUT",
     headers: {
+      ...extraHeaders,
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
   });
-  if (!response.ok) {
-    throw new Error(`${path} failed with ${response.status}`);
-  }
+  await assertOk(response, path);
   return (await response.json()) as T;
+}
+
+async function assertOk(response: Response, path: string) {
+  if (response.ok) {
+    return;
+  }
+  const fallback = `${path} failed with ${response.status}`;
+  try {
+    const payload = (await response.json()) as {
+      error?: { code?: string; message?: string };
+    };
+    const code = payload.error?.code;
+    const message = payload.error?.message;
+    throw new Error(code && message ? `${code}: ${message}` : message || fallback);
+  } catch (error) {
+    if (error instanceof Error && error.message !== "Unexpected end of JSON input") {
+      throw error;
+    }
+    throw new Error(fallback);
+  }
 }
 
 async function analyzeWithLocalGpuFallback(request: AnalyzeSpeechRequest) {
@@ -243,4 +298,9 @@ function normalizeBaseUrl(value?: string) {
     return "";
   }
   return trimmed.replace(/\/+$/, "");
+}
+
+function requestHeaders(apiToken?: string): HeadersInit {
+  const token = apiToken?.trim();
+  return token ? { authorization: `Bearer ${token}` } : {};
 }
