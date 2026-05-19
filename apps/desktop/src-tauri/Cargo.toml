@@ -35,5 +35,8 @@ thiserror = "2"
 ureq = "2"
 video-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "video-analysis-core" }
 
+[target.'cfg(target_os = "linux")'.dependencies]
+webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }
+
 [dev-dependencies]
 approx = "0.5"

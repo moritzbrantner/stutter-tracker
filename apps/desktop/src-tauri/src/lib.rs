@@ -128,6 +128,10 @@ fn download_transcription_model(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .setup(|app| {
+            configure_media_permissions(app);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             analyze_speech_session,
             create_voiceprint,
@@ -147,6 +151,41 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("error while running Stutter Tracker");
 }
+
+#[cfg(target_os = "linux")]
+fn configure_media_permissions(app: &tauri::App) {
+    if let Some(webview) = app.get_webview_window("main") {
+        let _ = webview.with_webview(|webview| {
+            use webkit2gtk::{
+                glib::object::Cast, PermissionRequestExt, SettingsExt, UserMediaPermissionRequest,
+                UserMediaPermissionRequestExt, WebViewExt,
+            };
+
+            let webview = webview.inner();
+            if let Some(settings) = webview.settings() {
+                settings.set_enable_media_stream(true);
+                settings.set_enable_media(true);
+            }
+
+            webview.connect_permission_request(|_, request| {
+                let Some(user_media_request) = request.downcast_ref::<UserMediaPermissionRequest>()
+                else {
+                    return false;
+                };
+
+                if user_media_request.is_for_audio_device() {
+                    request.allow();
+                    return true;
+                }
+
+                false
+            });
+        });
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn configure_media_permissions(_app: &tauri::App) {}
 
 fn speaker_profiles_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
