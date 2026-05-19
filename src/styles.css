@@ -23,6 +23,7 @@ body {
 }
 
 button,
+input,
 select {
   font: inherit;
 }
@@ -64,6 +65,16 @@ select {
   min-height: 2.55rem;
   padding: 0 0.75rem;
   background: #ffffff;
+}
+
+input {
+  background: #ffffff;
+  border: 1px solid #cbd6cf;
+  border-radius: 8px;
+  color: #17201b;
+  min-height: 2.55rem;
+  min-width: 0;
+  padding: 0 0.75rem;
 }
 
 .app-shell {
@@ -357,6 +368,41 @@ select {
   margin-top: 0.65rem;
 }
 
+.speaker-profile-form {
+  display: grid;
+  gap: 0.5rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  margin-top: 0.65rem;
+}
+
+.speaker-list {
+  display: grid;
+  gap: 0.45rem;
+  margin-top: 0.65rem;
+}
+
+.speaker-row {
+  align-items: center;
+  border: 1px solid #dae2dd;
+  border-radius: 8px;
+  display: flex;
+  gap: 0.6rem;
+  justify-content: space-between;
+  min-height: 2.65rem;
+  padding: 0.5rem 0.65rem;
+}
+
+.speaker-row strong,
+.speaker-row span {
+  overflow-wrap: anywhere;
+}
+
+.speaker-row span {
+  color: #647169;
+  flex: 0 0 auto;
+  font-size: 0.9rem;
+}
+
 .model-row {
   align-items: center;
   border: 1px solid #dae2dd;
@@ -484,13 +530,14 @@ select {
   border-bottom: 1px solid #edf1ee;
   display: grid;
   gap: 0.75rem;
-  grid-template-columns: 3.2rem minmax(0, 1fr) 3rem;
+  grid-template-columns: 3.2rem minmax(0, 1fr) minmax(4.2rem, auto);
   padding: 0.8rem 1rem;
 }
 
 .speech-log-row time,
 .speech-log-row span {
   color: #647169;
+  overflow-wrap: anywhere;
 }
 
 .speech-log-row p {
@@ -562,5 +609,9 @@ select {
   .panel-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .speaker-profile-form {
+    grid-template-columns: 1fr;
   }
 }

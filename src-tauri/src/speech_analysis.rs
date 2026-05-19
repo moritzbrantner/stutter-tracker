@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use audio_analysis_recognition::{
-    AudioEmbedding, AudioEmbeddingExtractor, SpectralAudioEmbedder, SpectralEmbeddingConfig,
+    AudioEmbedding, AudioEmbeddingExtractor, AudioMatchOptions, AudioReference,
+    AudioReferenceLibrary, SpectralAudioEmbedder, SpectralEmbeddingConfig,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -117,6 +118,51 @@ pub struct VoiceMatchResult {
     pub is_match: bool,
 }
 
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerProfileRequest {
+    pub id: Option<String>,
+    pub label: String,
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerProfileResult {
+    pub id: String,
+    pub label: String,
+    pub embeddings: Vec<Vec<f32>>,
+    pub sample_rate: u32,
+    pub sample_count: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerIdentificationRequest {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+    pub speakers: Vec<SpeakerProfileResult>,
+    pub threshold: Option<f32>,
+    pub max_results: Option<usize>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerMatchResult {
+    pub speaker_id: String,
+    pub label: String,
+    pub score: f32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SpeakerIdentificationResult {
+    pub best_match: Option<SpeakerMatchResult>,
+    pub matches: Vec<SpeakerMatchResult>,
+    pub is_match: bool,
+}
+
 #[derive(Debug, Clone)]
 struct TimedToken {
     raw: String,
@@ -208,6 +254,66 @@ pub fn compare_voiceprint_impl(request: VoiceMatchRequest) -> Result<VoiceMatchR
     Ok(VoiceMatchResult {
         score,
         is_match: score >= threshold,
+    })
+}
+
+pub fn create_speaker_profile_impl(request: SpeakerProfileRequest) -> Result<SpeakerProfileResult> {
+    validate_samples(&request.samples, request.sample_rate)?;
+    let label = request.label.trim();
+    if label.is_empty() {
+        return Err(SpeechAnalysisError::Invalid(
+            "speaker label must not be empty".to_string(),
+        ));
+    }
+    let id = request
+        .id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| speaker_id_from_label(label));
+    let embedder = SpectralAudioEmbedder::new(SpectralEmbeddingConfig::default())?;
+    let embedding = embedder.embed_samples(&request.samples, request.sample_rate)?;
+    Ok(SpeakerProfileResult {
+        id,
+        label: label.to_string(),
+        embeddings: vec![embedding.values().to_vec()],
+        sample_rate: request.sample_rate,
+        sample_count: request.samples.len(),
+    })
+}
+
+pub fn identify_speaker_impl(
+    request: SpeakerIdentificationRequest,
+) -> Result<SpeakerIdentificationResult> {
+    validate_samples(&request.samples, request.sample_rate)?;
+    let threshold = request.threshold.unwrap_or(0.85).clamp(-1.0, 1.0);
+    let max_results = request.max_results.unwrap_or(3).max(1);
+    let embedder = SpectralAudioEmbedder::new(SpectralEmbeddingConfig::default())?;
+    let current = embedder.embed_samples(&request.samples, request.sample_rate)?;
+    let library = speaker_library(request.speakers)?;
+    if library.is_empty() {
+        return Ok(SpeakerIdentificationResult {
+            best_match: None,
+            matches: Vec::new(),
+            is_match: false,
+        });
+    }
+    let options = AudioMatchOptions::new(threshold)?.max_results(max_results);
+    let matches = library
+        .search(&current, &options)?
+        .into_iter()
+        .map(|item| SpeakerMatchResult {
+            speaker_id: item.reference_id,
+            label: item.label,
+            score: item.score,
+        })
+        .collect::<Vec<_>>();
+    let best_match = matches.first().cloned();
+    Ok(SpeakerIdentificationResult {
+        is_match: best_match.is_some(),
+        best_match,
+        matches,
     })
 }
 
@@ -408,6 +514,42 @@ fn validate_samples(samples: &[f32], sample_rate: u32) -> Result<()> {
     Ok(())
 }
 
+fn speaker_library(speakers: Vec<SpeakerProfileResult>) -> Result<AudioReferenceLibrary> {
+    let mut library = AudioReferenceLibrary::new();
+    for speaker in speakers {
+        let mut reference = AudioReference::new(speaker.id, speaker.label);
+        for values in speaker.embeddings {
+            reference.add_embedding(AudioEmbedding::new(values)?)?;
+        }
+        library.add_reference(reference)?;
+    }
+    Ok(library)
+}
+
+fn speaker_id_from_label(label: &str) -> String {
+    let mut id = label
+        .chars()
+        .filter_map(|character| {
+            if character.is_ascii_alphanumeric() {
+                Some(character.to_ascii_lowercase())
+            } else if character.is_whitespace() || character == '-' || character == '_' {
+                Some('-')
+            } else {
+                None
+            }
+        })
+        .collect::<String>();
+    while id.contains("--") {
+        id = id.replace("--", "-");
+    }
+    let id = id.trim_matches('-');
+    if id.is_empty() {
+        "speaker".to_string()
+    } else {
+        id.to_string()
+    }
+}
+
 fn classify_severity(rate: f64, word_count: usize, stutter_count: usize) -> Severity {
     if stutter_count == 0 {
         return Severity::None;
@@ -472,5 +614,46 @@ mod tests {
 
         assert_eq!(report.stutter_count, 1);
         assert_eq!(report.events[0].kind, StutterKind::Block);
+    }
+
+    #[test]
+    fn identifies_enrolled_speaker_profile() {
+        let sample_rate = 8_000;
+        let samples = sine_wave(440.0, sample_rate, 0.6);
+        let profile = create_speaker_profile_impl(SpeakerProfileRequest {
+            id: Some("speaker-a".to_string()),
+            label: "Speaker A".to_string(),
+            samples: samples.clone(),
+            sample_rate,
+        })
+        .unwrap();
+
+        let result = identify_speaker_impl(SpeakerIdentificationRequest {
+            samples,
+            sample_rate,
+            speakers: vec![profile],
+            threshold: Some(0.8),
+            max_results: Some(1),
+        })
+        .unwrap();
+
+        assert_eq!(
+            result
+                .best_match
+                .as_ref()
+                .map(|item| item.speaker_id.as_str()),
+            Some("speaker-a")
+        );
+        assert!(result.is_match);
+    }
+
+    fn sine_wave(frequency: f32, sample_rate: u32, seconds: f32) -> Vec<f32> {
+        let count = (sample_rate as f32 * seconds) as usize;
+        (0..count)
+            .map(|index| {
+                let phase = index as f32 * frequency * std::f32::consts::TAU / sample_rate as f32;
+                phase.sin() * 0.4
+            })
+            .collect()
     }
 }

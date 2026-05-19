@@ -3,7 +3,9 @@ mod transcription;
 
 use speech_analysis::{
     analyze_speech_session_impl, compare_voiceprint_impl, create_voiceprint_impl, AnalysisReport,
-    AnalyzeSpeechRequest, VoiceMatchRequest, VoiceMatchResult, VoiceprintRequest, VoiceprintResult,
+    AnalyzeSpeechRequest, SpeakerIdentificationRequest, SpeakerIdentificationResult,
+    SpeakerProfileRequest, SpeakerProfileResult, VoiceMatchRequest, VoiceMatchResult,
+    VoiceprintRequest, VoiceprintResult,
 };
 use tauri::Emitter;
 use transcription::{
@@ -26,6 +28,18 @@ fn create_voiceprint(request: VoiceprintRequest) -> Result<VoiceprintResult, Str
 #[tauri::command]
 fn compare_voiceprint(request: VoiceMatchRequest) -> Result<VoiceMatchResult, String> {
     compare_voiceprint_impl(request).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn create_speaker_profile(request: SpeakerProfileRequest) -> Result<SpeakerProfileResult, String> {
+    speech_analysis::create_speaker_profile_impl(request).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn identify_speaker(
+    request: SpeakerIdentificationRequest,
+) -> Result<SpeakerIdentificationResult, String> {
+    speech_analysis::identify_speaker_impl(request).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -58,6 +72,8 @@ pub fn run() {
             analyze_speech_session,
             create_voiceprint,
             compare_voiceprint,
+            create_speaker_profile,
+            identify_speaker,
             transcribe_audio,
             transcription_models,
             download_transcription_model

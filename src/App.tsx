@@ -26,6 +26,8 @@ type TranscriptSegment = {
   startSeconds: number;
   endSeconds: number;
   confidence?: number;
+  speakerId?: string;
+  speakerLabel?: string;
   speakerScore?: number;
   isFinal: boolean;
 };
@@ -62,6 +64,26 @@ type Voiceprint = {
   embedding: number[];
   sampleRate: number;
   sampleCount: number;
+};
+
+type SpeakerProfile = {
+  id: string;
+  label: string;
+  embeddings: number[][];
+  sampleRate: number;
+  sampleCount: number;
+};
+
+type SpeakerMatch = {
+  speakerId: string;
+  label: string;
+  score: number;
+};
+
+type SpeakerIdentification = {
+  bestMatch?: SpeakerMatch | null;
+  matches: SpeakerMatch[];
+  isMatch: boolean;
 };
 
 type TranscriptionEngineId = "browser" | "whisperCpp" | "whisperCli" | "fasterWhisper";
@@ -103,6 +125,7 @@ type SavedSession = {
 
 const STORE_KEY = "stutter-tracker:sessions";
 const VOICE_KEY = "stutter-tracker:voiceprint";
+const SPEAKERS_KEY = "stutter-tracker:speakers";
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const LANGUAGES = ["en-US", "de-DE", "en-GB"];
 const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
@@ -153,7 +176,7 @@ export function App() {
   const [pauses, setPauses] = useState<PauseSpan[]>([]);
   const [report, setReport] = useState<AnalysisReport>(() => emptyReport());
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
-  const [voiceprint, setVoiceprint] = useState<Voiceprint | null>(() => loadVoiceprint());
+  const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
   const [transcription, setTranscription] = useState<TranscriptionSettings>(() =>
     loadTranscriptionSettings(),
   );
@@ -165,9 +188,10 @@ export function App() {
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [isMatchingVoice, setIsMatchingVoice] = useState(false);
   const [language, setLanguage] = useState(LANGUAGES[0]);
+  const [speakerLabel, setSpeakerLabel] = useState("");
   const [interimText, setInterimText] = useState("");
   const [level, setLevel] = useState(0);
-  const [speakerScore, setSpeakerScore] = useState<number | null>(null);
+  const [speakerMatch, setSpeakerMatch] = useState<SpeakerMatch | null>(null);
   const [message, setMessage] = useState("Idle");
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
@@ -180,10 +204,14 @@ export function App() {
   const startedAtRef = useRef<Date | null>(null);
   const lastFinalEndRef = useRef(0);
   const lastVoiceAtRef = useRef(0);
+  const lastSpeakerMatchAtRef = useRef(0);
   const sampleRateRef = useRef(48_000);
   const samplesRef = useRef<number[]>([]);
   const segmentsRef = useRef<TranscriptSegment[]>([]);
   const pausesRef = useRef<PauseSpan[]>([]);
+  const speakersRef = useRef<SpeakerProfile[]>(speakers);
+  const speakerMatchRef = useRef<SpeakerMatch | null>(speakerMatch);
+  const speakerMatchInFlightRef = useRef(false);
 
   const analysisRequest = useMemo(
     () => ({
@@ -253,6 +281,14 @@ export function App() {
     segmentsRef.current = segments;
     pausesRef.current = pauses;
   }, [segments, pauses]);
+
+  useEffect(() => {
+    speakersRef.current = speakers;
+  }, [speakers]);
+
+  useEffect(() => {
+    speakerMatchRef.current = speakerMatch;
+  }, [speakerMatch]);
 
   useEffect(() => {
     if (analysisQuery.data) {
@@ -379,10 +415,11 @@ export function App() {
     startedAtRef.current = new Date();
     lastFinalEndRef.current = 0;
     lastVoiceAtRef.current = 0;
+    lastSpeakerMatchAtRef.current = 0;
     setSegments([]);
     setPauses([]);
     setInterimText("");
-    setSpeakerScore(null);
+    setSpeakerMatch(null);
     setIsRecording(true);
     setMessage(
       selectedEngine.id === "browser" ? "Recording" : `Recording for ${selectedEngine.label}`,
@@ -415,12 +452,15 @@ export function App() {
           const estimatedDuration = Math.max(0.7, text.split(/\s+/).length * 0.34);
           const startSeconds = Math.max(lastFinalEndRef.current, endSeconds - estimatedDuration);
           lastFinalEndRef.current = endSeconds;
+          const match = speakerMatchRef.current;
           const segment: TranscriptSegment = {
             text,
             startSeconds,
             endSeconds,
             confidence: result[0]?.confidence,
-            speakerScore: speakerScore ?? undefined,
+            speakerId: match?.speakerId,
+            speakerLabel: match?.label,
+            speakerScore: match?.score,
             isFinal: true,
           };
           setSegments((current) => [...current, segment]);
@@ -489,13 +529,24 @@ export function App() {
         lastVoiceAtRef.current = now;
       }
 
-      if (voiceprint && samplesRef.current.length > sampleRateRef.current * 1.5) {
+      const speakerProfiles = speakersRef.current;
+      if (
+        speakerProfiles.length &&
+        !speakerMatchInFlightRef.current &&
+        samplesRef.current.length > sampleRateRef.current * 1.5 &&
+        now - lastSpeakerMatchAtRef.current > 0.8
+      ) {
         const recent = samplesRef.current.slice(-Math.floor(sampleRateRef.current * 2));
+        lastSpeakerMatchAtRef.current = now;
+        speakerMatchInFlightRef.current = true;
         setIsMatchingVoice(true);
-        compareVoice(recent, sampleRateRef.current, voiceprint.embedding)
-          .then((result) => setSpeakerScore(result.score))
+        identifySpeaker(recent, sampleRateRef.current, speakerProfiles)
+          .then((result) => setSpeakerMatch(result.bestMatch ?? null))
           .catch(() => undefined)
-          .finally(() => setIsMatchingVoice(false));
+          .finally(() => {
+            speakerMatchInFlightRef.current = false;
+            setIsMatchingVoice(false);
+          });
       }
     };
     timerRef.current = window.setInterval(loop, 160);
@@ -539,13 +590,15 @@ export function App() {
     setIsTranscribing(true);
     setMessage(`Transcribing with ${selectedEngine.label}`);
     try {
-      const result = await transcribeAudio(
-        resampleSamples(capturedSamples, capturedSampleRate, 16_000),
+      const transcriptionSamples = resampleSamples(capturedSamples, capturedSampleRate, 16_000);
+      const result = await transcribeAudio(transcriptionSamples, 16_000, transcription, language);
+      const transcribedSegments = await identifyTranscriptSpeakers(
+        result.segments,
+        transcriptionSamples,
         16_000,
-        transcription,
-        language,
+        speakersRef.current,
       );
-      setSegments(result.segments);
+      setSegments(transcribedSegments);
       setInterimText("");
       setMessage(`Transcribed with ${selectedEngine.label}`);
     } catch (error) {
@@ -556,21 +609,41 @@ export function App() {
     }
   }
 
-  async function saveVoiceprint() {
+  async function saveSpeakerProfile() {
     if (samplesRef.current.length < sampleRateRef.current) {
       setMessage("Record a short sample first");
       return;
     }
+    const label = speakerLabel.trim() || `Speaker ${speakersRef.current.length + 1}`;
+    const existing = speakersRef.current.find(
+      (speaker) => speaker.label.toLowerCase() === label.toLowerCase(),
+    );
     setIsEnrolling(true);
-    setMessage("Calculating voiceprint");
+    setMessage("Enrolling speaker");
     try {
-      const result = await createVoice(
+      const result = await createSpeakerProfile(
+        existing?.id,
+        label,
         samplesRef.current.slice(-sampleRateRef.current * 12),
         sampleRateRef.current,
       );
-      setVoiceprint(result);
-      localStorage.setItem(VOICE_KEY, JSON.stringify(result));
-      setMessage("Voiceprint saved");
+      const next = existing
+        ? speakersRef.current.map((speaker) =>
+            speaker.id === existing.id
+              ? {
+                  ...speaker,
+                  label: result.label,
+                  embeddings: [...speaker.embeddings, ...result.embeddings],
+                  sampleCount: speaker.sampleCount + result.sampleCount,
+                  sampleRate: result.sampleRate,
+                }
+              : speaker,
+          )
+        : [...speakersRef.current, result];
+      setSpeakers(next);
+      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(next));
+      setSpeakerLabel("");
+      setMessage(`${result.label} enrolled`);
     } finally {
       setIsEnrolling(false);
     }
@@ -595,7 +668,7 @@ export function App() {
   }
 
   function exportJson() {
-    const payload = JSON.stringify({ sessions, voiceprint }, null, 2);
+    const payload = JSON.stringify({ sessions, speakers }, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
@@ -718,7 +791,11 @@ export function App() {
             </div>
             <div className="voice-state">
               <UserCheck size={18} />
-              {voiceprint ? `${formatPercent(speakerScore)} match` : "No voiceprint"}
+              {speakers.length
+                ? speakerMatch
+                  ? `${speakerMatch.label} ${formatPercent(speakerMatch.score)}`
+                  : `${speakers.length} speaker${speakers.length === 1 ? "" : "s"}`
+                : "No speakers"}
             </div>
           </div>
 
@@ -736,11 +813,11 @@ export function App() {
               progress={downloadProgress?.progress}
             />
             <StatusPill active={isAnalyzing} icon={<LoaderCircle size={15} />} label="Analyzing" />
-            <StatusPill active={isEnrolling} icon={<LoaderCircle size={15} />} label="Voiceprint" />
+            <StatusPill active={isEnrolling} icon={<LoaderCircle size={15} />} label="Enrolling" />
             <StatusPill
               active={isMatchingVoice}
               icon={<LoaderCircle size={15} />}
-              label="Matching voice"
+              label="Identifying speaker"
             />
           </div>
 
@@ -764,7 +841,7 @@ export function App() {
           </div>
 
           <div className="controls-row">
-            <button onClick={saveVoiceprint} disabled={!samplesRef.current.length}>
+            <button onClick={saveSpeakerProfile} disabled={!samplesRef.current.length}>
               <ShieldCheck size={17} />
               Enroll
             </button>
@@ -854,9 +931,33 @@ export function App() {
           </div>
           <div className="panel-block">
             <h3>Profile</h3>
-            <p className="muted">
-              Voice matching uses a local spectral embedding from your Rust audio package.
-            </p>
+            <div className="speaker-profile-form">
+              <input
+                value={speakerLabel}
+                onChange={(event) => setSpeakerLabel(event.target.value)}
+                placeholder={`Speaker ${speakers.length + 1}`}
+                aria-label="Speaker label"
+              />
+              <button onClick={saveSpeakerProfile} disabled={!samplesRef.current.length}>
+                <ShieldCheck size={16} />
+                Enroll
+              </button>
+            </div>
+            <div className="speaker-list">
+              {speakers.length === 0 ? (
+                <span className="muted">No enrolled speakers.</span>
+              ) : (
+                speakers.map((speaker) => (
+                  <div className="speaker-row" key={speaker.id}>
+                    <strong>{speaker.label}</strong>
+                    <span>
+                      {speaker.embeddings.length} sample
+                      {speaker.embeddings.length === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                ))
+              )}
+            </div>
           </div>
           <div className="panel-block">
             <h3>Scope</h3>
@@ -910,7 +1011,11 @@ export function App() {
                 <div className="speech-log-row" key={`${segment.startSeconds}-${index}`}>
                   <time>{formatTime(segment.startSeconds)}</time>
                   <p>{segment.text}</p>
-                  <span>{formatPercent(segment.confidence ?? null)}</span>
+                  <span>
+                    {segment.speakerLabel
+                      ? `${segment.speakerLabel} ${formatPercent(segment.speakerScore ?? null)}`
+                      : formatPercent(segment.confidence ?? null)}
+                  </span>
                 </div>
               ))
             )}
@@ -1001,35 +1106,91 @@ async function analyzeWithFallback(request: {
   }
 }
 
-async function createVoice(samples: number[], sampleRate: number): Promise<Voiceprint> {
+async function createSpeakerProfile(
+  id: string | undefined,
+  label: string,
+  samples: number[],
+  sampleRate: number,
+): Promise<SpeakerProfile> {
   if (!isDesktopApp()) {
     return {
-      embedding: fallbackEmbedding(samples),
+      id: id ?? crypto.randomUUID(),
+      label,
+      embeddings: [fallbackEmbedding(samples)],
       sampleRate,
       sampleCount: samples.length,
     };
   }
-  return invoke<Voiceprint>("create_voiceprint", {
-    request: { samples: decimate(samples), sampleRate },
+  return invoke<SpeakerProfile>("create_speaker_profile", {
+    request: { id, label, samples: decimate(samples), sampleRate },
   });
 }
 
-async function compareVoice(samples: number[], sampleRate: number, referenceEmbedding: number[]) {
+async function identifySpeaker(
+  samples: number[],
+  sampleRate: number,
+  speakers: SpeakerProfile[],
+): Promise<SpeakerIdentification> {
+  if (!speakers.length) {
+    return { matches: [], isMatch: false };
+  }
   if (!isDesktopApp()) {
     const current = fallbackEmbedding(samples);
-    return {
-      score: cosine(current, referenceEmbedding),
-      isMatch: false,
-    };
+    const matches = speakers
+      .map((speaker) => ({
+        speakerId: speaker.id,
+        label: speaker.label,
+        score: Math.max(...speaker.embeddings.map((embedding) => cosine(current, embedding))),
+      }))
+      .filter((match) => match.score >= 0.82)
+      .sort((left, right) => right.score - left.score)
+      .slice(0, 3);
+    return { bestMatch: matches[0], matches, isMatch: Boolean(matches[0]) };
   }
-  return invoke<{ score: number; isMatch: boolean }>("compare_voiceprint", {
+  return invoke<SpeakerIdentification>("identify_speaker", {
     request: {
       samples: decimate(samples),
       sampleRate,
-      referenceEmbedding,
+      speakers,
       threshold: 0.82,
+      maxResults: 3,
     },
   });
+}
+
+async function identifyTranscriptSpeakers(
+  segments: TranscriptSegment[],
+  samples: number[],
+  sampleRate: number,
+  speakers: SpeakerProfile[],
+) {
+  if (!speakers.length) {
+    return segments;
+  }
+  return Promise.all(
+    segments.map(async (segment) => {
+      const start = Math.max(0, Math.floor(segment.startSeconds * sampleRate));
+      const end = Math.min(samples.length, Math.ceil(segment.endSeconds * sampleRate));
+      if (end - start < sampleRate / 4) {
+        return segment;
+      }
+      try {
+        const result = await identifySpeaker(samples.slice(start, end), sampleRate, speakers);
+        const match = result.bestMatch;
+        if (!match) {
+          return segment;
+        }
+        return {
+          ...segment,
+          speakerId: match.speakerId,
+          speakerLabel: match.label,
+          speakerScore: match.score,
+        };
+      } catch {
+        return segment;
+      }
+    }),
+  );
 }
 
 async function loadTranscriptionModels(
@@ -1076,7 +1237,7 @@ async function downloadTranscriptionModel(engine: TranscriptionEngineId, model: 
   });
 }
 
-function fallbackAnalyze(request: {
+export function fallbackAnalyze(request: {
   segments: TranscriptSegment[];
   pauses: PauseSpan[];
   sessionStartedAt?: string;
@@ -1199,7 +1360,7 @@ function decimate(samples: number[]) {
   return result;
 }
 
-function resampleSamples(samples: number[], sampleRate: number, targetSampleRate: number) {
+export function resampleSamples(samples: number[], sampleRate: number, targetSampleRate: number) {
   if (sampleRate === targetSampleRate) {
     return samples;
   }
@@ -1245,11 +1406,32 @@ function loadSessions(): SavedSession[] {
   }
 }
 
-function loadVoiceprint(): Voiceprint | null {
+function loadSpeakerProfiles(): SpeakerProfile[] {
   try {
-    return JSON.parse(localStorage.getItem(VOICE_KEY) ?? "null");
+    const speakers = JSON.parse(localStorage.getItem(SPEAKERS_KEY) ?? "[]") as SpeakerProfile[];
+    if (Array.isArray(speakers) && speakers.length > 0) {
+      return speakers.filter(
+        (speaker) =>
+          typeof speaker.id === "string" &&
+          typeof speaker.label === "string" &&
+          Array.isArray(speaker.embeddings),
+      );
+    }
+    const legacy = JSON.parse(localStorage.getItem(VOICE_KEY) ?? "null") as Voiceprint | null;
+    if (legacy?.embedding?.length) {
+      return [
+        {
+          id: "legacy-speaker",
+          label: "Enrolled speaker",
+          embeddings: [legacy.embedding],
+          sampleRate: legacy.sampleRate,
+          sampleCount: legacy.sampleCount,
+        },
+      ];
+    }
+    return [];
   } catch {
-    return null;
+    return [];
   }
 }
 
@@ -1269,7 +1451,7 @@ function loadTranscriptionSettings(): TranscriptionSettings {
   }
 }
 
-function staticModelStatuses(engine: TranscriptionEngineId): TranscriptionModelStatus[] {
+export function staticModelStatuses(engine: TranscriptionEngineId): TranscriptionModelStatus[] {
   return getTranscriptionEngine(engine).models.map((model) => ({
     id: model,
     label: model,
@@ -1326,7 +1508,7 @@ function kindLabel(kind: StutterKind) {
   }[kind];
 }
 
-function formatTime(seconds: number) {
+export function formatTime(seconds: number) {
   const mins = Math.floor(seconds / 60);
   const secs = Math.floor(seconds % 60)
     .toString()

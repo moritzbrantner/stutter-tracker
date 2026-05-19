@@ -16,7 +16,7 @@ Cross-platform speech fluency tracker built with React and Tauri 2.
 - Live transcription through the browser speech recognition API where available.
 - Desktop transcription model selection for browser speech, whisper.cpp, Whisper CLI, and Faster-Whisper.
 - whisper.cpp model catalog, local cache detection, and in-app model downloads.
-- Voice enrollment and voice matching through the local Rust `audio-analysis-recognition` crate.
+- Multi-speaker enrollment and labeled speaker identification through the local Rust `audio-analysis-recognition` crate.
 - Rust-side stutter event detection for repeated words, repeated sounds, prolongations, silent blocks, and fillers.
 - Local session storage and JSON export.
 

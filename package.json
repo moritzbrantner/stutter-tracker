@@ -8,9 +8,13 @@
     "dev": "vite --host 127.0.0.1",
     "build": "tsc && vite build",
     "preview": "vite preview --host 127.0.0.1",
-    "format": "oxfmt --write \"src/**/*.{ts,tsx}\" vite.config.ts",
-    "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\" vite.config.ts",
-    "check": "bun run format:check && bun run build",
+    "format": "oxfmt --write \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" vite.config.ts playwright.config.ts",
+    "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\" \"tests/**/*.{ts,tsx}\" vite.config.ts playwright.config.ts",
+    "check": "bun run format:check && bun run build && bun run test:unit && bun run test:integration",
+    "test": "bun run test:unit && bun run test:integration && bun run test:e2e && bun run test:rust",
+    "test:unit": "vitest run src/App.unit.test.ts",
+    "test:integration": "vitest run src/App.integration.test.tsx",
+    "test:e2e": "playwright test",
     "tauri": "tauri",
     "desktop": "tauri dev",
     "mobile:init": "tauri android init && tauri ios init",
@@ -28,12 +32,19 @@
     "tailwindcss": "^4.3.0"
   },
   "devDependencies": {
+    "@playwright/test": "^1.60.0",
     "@tauri-apps/cli": "^2.10.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^25.9.0",
     "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.7.0",
+    "jsdom": "^29.1.1",
     "oxfmt": "^0.51.0",
     "typescript": "~5.8.3",
-    "vite": "^7.3.2"
+    "vite": "^7.3.2",
+    "vitest": "^4.1.6"
   }
 }
