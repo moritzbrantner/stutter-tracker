@@ -1,4 +1,5 @@
 mod corpus;
+mod prediction;
 mod speech_analysis;
 pub mod transcription;
 
@@ -9,6 +10,7 @@ use corpus::{
     export_speech_corpus_impl, load_speech_corpus_impl, save_speech_corpus_session_impl,
     CorpusSessionInput, SpeechCorpusAnalysis,
 };
+use prediction::{predict_speaker_intent_impl, SpeakerIntentPrediction, SpeakerIntentRequest};
 use speech_analysis::{
     analyze_speech_session_impl, compare_voiceprint_impl, create_voiceprint_impl, AnalysisReport,
     AnalyzeSpeechRequest, SpeakerIdentificationRequest, SpeakerIdentificationResult,
@@ -94,6 +96,13 @@ fn save_speech_corpus_session(
 }
 
 #[tauri::command]
+fn predict_speaker_intent(
+    request: SpeakerIntentRequest,
+) -> Result<Vec<SpeakerIntentPrediction>, String> {
+    predict_speaker_intent_impl(request).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn transcribe_audio(request: TranscribeAudioRequest) -> Result<TranscribeAudioResult, String> {
     transcribe_audio_impl(request).map_err(|err| err.to_string())
 }
@@ -130,6 +139,7 @@ pub fn run() {
             load_speech_corpus,
             export_speech_corpus,
             save_speech_corpus_session,
+            predict_speaker_intent,
             transcribe_audio,
             transcription_models,
             download_transcription_model

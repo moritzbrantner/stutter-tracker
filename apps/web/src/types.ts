@@ -193,6 +193,33 @@ export type SavedSession = {
   report: AnalysisReport;
 };
 
+export type IntentPredictionReason =
+  | "currentContext"
+  | "block"
+  | "filler"
+  | "repetition"
+  | "prolongation";
+
+export type IntentWordPrediction = {
+  token: string;
+  count: number;
+  probability: number;
+  phrase: string;
+};
+
+export type SpeakerIntentPrediction = {
+  id: string;
+  reason: IntentPredictionReason;
+  contextText: string;
+  triggerText?: string | null;
+  startSeconds?: number | null;
+  endSeconds?: number | null;
+  speakerId?: string | null;
+  speakerLabel?: string | null;
+  confidence: number;
+  suggestions: IntentWordPrediction[];
+};
+
 export type SpeechCorpusAnalysis = {
   stats: SpeechCorpusStats;
   text: CorpusTextStats;

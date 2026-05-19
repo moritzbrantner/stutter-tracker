@@ -3541,9 +3541,11 @@ dependencies = [
  "sha2",
  "tauri",
  "tauri-build",
+ "text-analysis-core",
  "text-analysis-corpus",
  "text-analysis-features",
  "text-analysis-linguistics",
+ "text-analysis-prediction",
  "text-analysis-transcription",
  "thiserror 2.0.18",
  "ureq 2.12.1",
@@ -3960,6 +3962,15 @@ dependencies = [
  "vector-analysis-core",
  "video-analysis-core",
  "video-analysis-models",
+]
+
+[[package]]
+name = "text-analysis-prediction"
+version = "0.1.0"
+dependencies = [
+ "text-analysis-core",
+ "text-analysis-linguistics",
+ "video-analysis-core",
 ]
 
 [[package]]

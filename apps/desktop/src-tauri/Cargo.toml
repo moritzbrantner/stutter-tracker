@@ -25,8 +25,10 @@ serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
 text-analysis-corpus = { path = "../../../../rust-packages/crates/text/text-analysis-corpus" }
+text-analysis-core = { path = "../../../../rust-packages/crates/text/text-analysis-core" }
 text-analysis-features = { path = "../../../../rust-packages/crates/text/text-analysis-features" }
 text-analysis-linguistics = { path = "../../../../rust-packages/crates/text/text-analysis-linguistics" }
+text-analysis-prediction = { path = "../../../../rust-packages/crates/text/text-analysis-prediction" }
 text-analysis-transcription = { path = "../../../../rust-packages/crates/text/text-analysis-transcription" }
 thiserror = "2"
 ureq = "2"

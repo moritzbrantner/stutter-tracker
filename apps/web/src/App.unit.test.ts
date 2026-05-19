@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   fallbackAnalyze,
+  fallbackPredictSpeakerIntent,
   formatTime,
   offsetTranscriptSegments,
   resampleSamples,
@@ -150,6 +151,55 @@ describe("fallbackAnalyze", () => {
 });
 
 describe("frontend helpers", () => {
+  it("predicts possible speaker intent from repeated-word context", () => {
+    const predictions = fallbackPredictSpeakerIntent({
+      segments: [
+        {
+          text: "I I want coffee",
+          startSeconds: 0,
+          endSeconds: 2,
+          isFinal: true,
+        },
+      ],
+      sessions: [
+        {
+          id: "session-1",
+          startedAt: "2026-05-19T10:00:00.000Z",
+          segments: [
+            {
+              text: "I want coffee now",
+              startSeconds: 0,
+              endSeconds: 2,
+              isFinal: true,
+            },
+          ],
+          pauses: [],
+          report: fallbackAnalyze({ segments: [], pauses: [] }),
+        },
+      ],
+      events: [
+        {
+          kind: "wordRepetition",
+          startSeconds: 0,
+          endSeconds: 0.4,
+          text: "I I",
+          detail: "Repeated word sequence",
+          confidence: 0.78,
+        },
+      ],
+      partialText: "I",
+      maxContexts: 3,
+      maxPredictions: 3,
+      phraseTokens: 3,
+    });
+
+    expect(
+      predictions
+        .flatMap((prediction) => prediction.suggestions)
+        .some((suggestion) => suggestion.token === "want"),
+    ).toBe(true);
+  });
+
   it("resamples audio with linear interpolation", () => {
     expect(resampleSamples([0, 10, 20, 30], 4, 2)).toEqual([0, 20]);
     expect(resampleSamples([1, 2, 3], 8_000, 8_000)).toEqual([1, 2, 3]);
