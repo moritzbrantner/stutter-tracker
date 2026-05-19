@@ -1,3 +1,4 @@
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   Activity,
   BarChart3,
@@ -15,7 +16,7 @@ import {
   ShieldCheck,
   Sparkles,
   UserCheck,
-  Waves
+  Waves,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
@@ -34,12 +35,7 @@ type PauseSpan = {
   afterText?: string;
 };
 
-type StutterKind =
-  | "wordRepetition"
-  | "soundRepetition"
-  | "prolongation"
-  | "block"
-  | "filler";
+type StutterKind = "wordRepetition" | "soundRepetition" | "prolongation" | "block" | "filler";
 
 type StutterEvent = {
   kind: StutterKind;
@@ -114,7 +110,7 @@ const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
     label: "Browser Speech",
     mode: "Live",
     nativeOnly: false,
-    models: ["default"]
+    models: ["default"],
   },
   {
     id: "whisperCpp",
@@ -131,40 +127,39 @@ const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
       "medium.en",
       "medium",
       "large-v3",
-      "large-v3-turbo"
-    ]
+      "large-v3-turbo",
+    ],
   },
   {
     id: "whisperCli",
     label: "Whisper CLI",
     mode: "On stop",
     nativeOnly: true,
-    models: ["tiny", "base", "small", "medium", "large", "turbo"]
+    models: ["tiny", "base", "small", "medium", "large", "turbo"],
   },
   {
     id: "fasterWhisper",
     label: "Faster-Whisper",
     mode: "On stop",
     nativeOnly: true,
-    models: ["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"]
-  }
+    models: ["tiny", "base", "small", "medium", "large-v3", "distil-large-v3"],
+  },
 ];
 
 export function App() {
+  const queryClient = useQueryClient();
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [pauses, setPauses] = useState<PauseSpan[]>([]);
   const [report, setReport] = useState<AnalysisReport>(() => emptyReport());
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [voiceprint, setVoiceprint] = useState<Voiceprint | null>(() => loadVoiceprint());
-  const [transcription, setTranscription] = useState<TranscriptionSettings>(() => loadTranscriptionSettings());
-  const [modelStatuses, setModelStatuses] = useState<TranscriptionModelStatus[]>(() =>
-    staticModelStatuses(loadTranscriptionSettings().engine)
+  const [transcription, setTranscription] = useState<TranscriptionSettings>(() =>
+    loadTranscriptionSettings(),
   );
   const [downloadProgress, setDownloadProgress] = useState<TranscriptionProgressEvent | null>(null);
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isNative, setIsNative] = useState(() => "__TAURI_INTERNALS__" in window);
-  const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [isMatchingVoice, setIsMatchingVoice] = useState(false);
@@ -189,6 +184,51 @@ export function App() {
   const segmentsRef = useRef<TranscriptSegment[]>([]);
   const pausesRef = useRef<PauseSpan[]>([]);
 
+  const analysisRequest = useMemo(
+    () => ({
+      segments,
+      pauses,
+      sessionStartedAt: startedAtRef.current?.toISOString(),
+    }),
+    [segments, pauses],
+  );
+
+  const analysisQuery = useQuery({
+    queryKey: ["analysis", analysisRequest],
+    queryFn: () => analyzeWithFallback(analysisRequest),
+  });
+
+  const modelStatusesQuery = useQuery({
+    queryKey: ["transcription-models", transcription.engine, isNative],
+    queryFn: async () => {
+      try {
+        return await loadTranscriptionModels(transcription.engine);
+      } catch {
+        return staticModelStatuses(transcription.engine);
+      }
+    },
+    staleTime: 10_000,
+  });
+
+  const modelStatuses = modelStatusesQuery.data ?? staticModelStatuses(transcription.engine);
+  const isAnalyzing = analysisQuery.isFetching;
+
+  const downloadModelMutation = useMutation({
+    mutationFn: ({ engine, model }: { engine: TranscriptionEngineId; model: string }) =>
+      downloadTranscriptionModel(engine, model),
+    onSuccess: async (_result, { engine, model }) => {
+      await queryClient.invalidateQueries({ queryKey: ["transcription-models", engine] });
+      updateTranscriptionModel(model);
+      setMessage(`${model} ready`);
+    },
+    onError: (error) => {
+      setMessage(`Download failed: ${errorMessage(error)}`);
+    },
+    onSettled: () => {
+      setDownloadingModel(null);
+    },
+  });
+
   useEffect(() => {
     startedAtAccessor = () => startedAtRef.current;
     return () => {
@@ -209,56 +249,24 @@ export function App() {
   }, [isNative, transcription.engine]);
 
   useEffect(() => {
-    let cancelled = false;
-    setIsAnalyzing(true);
     segmentsRef.current = segments;
     pausesRef.current = pauses;
-    const request = {
-      segments,
-      pauses,
-      sessionStartedAt: startedAtRef.current?.toISOString()
-    };
-    analyze(request)
-      .then((nextReport) => {
-        if (!cancelled) {
-          setReport(nextReport);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setReport(fallbackAnalyze(request));
-        }
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setIsAnalyzing(false);
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
   }, [segments, pauses]);
 
   useEffect(() => {
-    let cancelled = false;
-    loadTranscriptionModels(transcription.engine)
-      .then((models) => {
-        if (!cancelled) {
-          setModelStatuses(models);
-          if (!models.some((model) => model.id === transcription.model)) {
-            updateTranscriptionModel(models[0]?.id ?? "default");
-          }
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setModelStatuses(staticModelStatuses(transcription.engine));
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [transcription.engine, isNative]);
+    if (analysisQuery.data) {
+      setReport(analysisQuery.data);
+    }
+  }, [analysisQuery.data]);
+
+  useEffect(() => {
+    if (
+      modelStatusesQuery.data?.length &&
+      !modelStatusesQuery.data.some((model) => model.id === transcription.model)
+    ) {
+      updateTranscriptionModel(modelStatusesQuery.data[0]?.id ?? "default");
+    }
+  }, [modelStatusesQuery.data, transcription.model]);
 
   useEffect(() => {
     if (!isNative) {
@@ -278,7 +286,7 @@ export function App() {
           } else {
             setDownloadingModel(null);
           }
-        })
+        }),
       )
       .then((cleanup) => {
         if (cancelled) {
@@ -294,26 +302,20 @@ export function App() {
     };
   }, [isNative]);
 
-  const transcript = useMemo(
-    () => segments.map((segment) => segment.text).join(" "),
-    [segments]
-  );
+  const transcript = useMemo(() => segments.map((segment) => segment.text).join(" "), [segments]);
   const selectedEngine = getTranscriptionEngine(transcription.engine);
-  const selectedModels = modelStatuses.length ? modelStatuses.map((model) => model.id) : selectedEngine.models;
+  const selectedModels = modelStatuses.length
+    ? modelStatuses.map((model) => model.id)
+    : selectedEngine.models;
   const selectedModelStatus = modelStatuses.find((model) => model.id === transcription.model);
 
   const todayStats = useMemo(() => {
     const now = new Date().toDateString();
-    const todays = sessions.filter(
-      (session) => new Date(session.startedAt).toDateString() === now
-    );
-    const totalEvents = todays.reduce(
-      (sum, session) => sum + session.report.stutterCount,
-      0
-    );
+    const todays = sessions.filter((session) => new Date(session.startedAt).toDateString() === now);
+    const totalEvents = todays.reduce((sum, session) => sum + session.report.stutterCount, 0);
     const totalMinutes = todays.reduce(
       (sum, session) => sum + session.report.totalDurationSeconds / 60,
-      0
+      0,
     );
     return { count: todays.length, totalEvents, totalMinutes };
   }, [sessions]);
@@ -327,8 +329,8 @@ export function App() {
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
-        autoGainControl: false
-      }
+        autoGainControl: false,
+      },
     });
     const AudioContextConstructor = window.AudioContext || window.webkitAudioContext;
     if (!AudioContextConstructor) {
@@ -348,7 +350,7 @@ export function App() {
         output.getChannelData(channel).fill(0);
       }
       const channelData = Array.from({ length: input.numberOfChannels }, (_, channel) =>
-        input.getChannelData(channel)
+        input.getChannelData(channel),
       );
       const samples = samplesRef.current;
       for (let index = 0; index < input.length; index += 1) {
@@ -381,7 +383,9 @@ export function App() {
     setInterimText("");
     setSpeakerScore(null);
     setIsRecording(true);
-    setMessage(selectedEngine.id === "browser" ? "Recording" : `Recording for ${selectedEngine.label}`);
+    setMessage(
+      selectedEngine.id === "browser" ? "Recording" : `Recording for ${selectedEngine.label}`,
+    );
     if (selectedEngine.id === "browser") {
       startSpeechRecognition();
     }
@@ -389,8 +393,7 @@ export function App() {
   }
 
   function startSpeechRecognition() {
-    const Recognition =
-      window.SpeechRecognition || window.webkitSpeechRecognition || null;
+    const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition || null;
     if (!Recognition) {
       setMessage("Recording without browser transcription");
       return;
@@ -417,7 +420,7 @@ export function App() {
             endSeconds,
             confidence: result[0]?.confidence,
             speakerScore: speakerScore ?? undefined,
-            isFinal: true
+            isFinal: true,
           };
           setSegments((current) => [...current, segment]);
           setInterimText("");
@@ -478,8 +481,8 @@ export function App() {
             {
               startSeconds: lastVoiceAtRef.current,
               endSeconds: now,
-              afterText: interimText || segmentsRef.current.at(-1)?.text
-            }
+              afterText: interimText || segmentsRef.current.at(-1)?.text,
+            },
           ]);
         }
         lastVoiceAtRef.current = now;
@@ -539,7 +542,7 @@ export function App() {
         resampleSamples(capturedSamples, capturedSampleRate, 16_000),
         16_000,
         transcription,
-        language
+        language,
       );
       setSegments(result.segments);
       setInterimText("");
@@ -560,7 +563,10 @@ export function App() {
     setIsEnrolling(true);
     setMessage("Calculating voiceprint");
     try {
-      const result = await createVoice(samplesRef.current.slice(-sampleRateRef.current * 12), sampleRateRef.current);
+      const result = await createVoice(
+        samplesRef.current.slice(-sampleRateRef.current * 12),
+        sampleRateRef.current,
+      );
       setVoiceprint(result);
       localStorage.setItem(VOICE_KEY, JSON.stringify(result));
       setMessage("Voiceprint saved");
@@ -579,7 +585,7 @@ export function App() {
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
       segments,
       pauses,
-      report
+      report,
     };
     const next = [session, ...sessions].slice(0, 50);
     setSessions(next);
@@ -601,7 +607,7 @@ export function App() {
     const nextEngine = getTranscriptionEngine(engine);
     const next = {
       engine,
-      model: nextEngine.models[0]
+      model: nextEngine.models[0],
     };
     setTranscription(next);
     localStorage.setItem(TRANSCRIPTION_KEY, JSON.stringify(next));
@@ -614,8 +620,9 @@ export function App() {
   }
 
   async function fetchModelStatuses() {
-    const models = await loadTranscriptionModels(transcription.engine);
-    setModelStatuses(models);
+    await queryClient.invalidateQueries({
+      queryKey: ["transcription-models", transcription.engine],
+    });
   }
 
   async function downloadModel(model: string) {
@@ -624,18 +631,13 @@ export function App() {
       phase: "downloading",
       message: `Downloading \`${model}\``,
       model,
-      progress: 0
+      progress: 0,
     });
     setMessage(`Downloading ${model}`);
     try {
-      await downloadTranscriptionModel(transcription.engine, model);
-      await fetchModelStatuses();
-      updateTranscriptionModel(model);
-      setMessage(`${model} ready`);
-    } catch (error) {
-      setMessage(`Download failed: ${errorMessage(error)}`);
-    } finally {
-      setDownloadingModel(null);
+      await downloadModelMutation.mutateAsync({ engine: transcription.engine, model });
+    } catch {
+      // Error state is reported by the mutation handler.
     }
   }
 
@@ -649,7 +651,9 @@ export function App() {
         <div className="topbar-actions">
           <select
             value={transcription.engine}
-            onChange={(event) => updateTranscriptionEngine(event.target.value as TranscriptionEngineId)}
+            onChange={(event) =>
+              updateTranscriptionEngine(event.target.value as TranscriptionEngineId)
+            }
             disabled={isRecording}
             aria-label="Transcription engine"
           >
@@ -719,7 +723,11 @@ export function App() {
 
           <div className="activity-strip" aria-label="Processing status">
             <StatusPill active={isRecording} icon={<Mic size={15} />} label="Recording" />
-            <StatusPill active={isTranscribing} icon={<LoaderCircle size={15} />} label="Transcribing" />
+            <StatusPill
+              active={isTranscribing}
+              icon={<LoaderCircle size={15} />}
+              label="Transcribing"
+            />
             <StatusPill
               active={Boolean(downloadingModel)}
               icon={<HardDriveDownload size={15} />}
@@ -728,7 +736,11 @@ export function App() {
             />
             <StatusPill active={isAnalyzing} icon={<LoaderCircle size={15} />} label="Analyzing" />
             <StatusPill active={isEnrolling} icon={<LoaderCircle size={15} />} label="Voiceprint" />
-            <StatusPill active={isMatchingVoice} icon={<LoaderCircle size={15} />} label="Matching voice" />
+            <StatusPill
+              active={isMatchingVoice}
+              icon={<LoaderCircle size={15} />}
+              label="Matching voice"
+            />
           </div>
 
           <div className="meter" aria-label="Audio level">
@@ -737,7 +749,7 @@ export function App() {
                 key={index}
                 style={{
                   transform: `scaleY(${0.18 + Math.min(1, level * (1 + (index % 5) * 0.11))})`,
-                  opacity: index / 42 < level ? 1 : 0.35
+                  opacity: index / 42 < level ? 1 : 0.35,
                 }}
               />
             ))}
@@ -782,7 +794,8 @@ export function App() {
               <div>
                 <strong>{selectedEngine.label}</strong>
                 <span>
-                  {selectedEngine.mode} · {transcription.model} · {modelStatusLabel(selectedModelStatus)}
+                  {selectedEngine.mode} · {transcription.model} ·{" "}
+                  {modelStatusLabel(selectedModelStatus)}
                 </span>
               </div>
             </div>
@@ -800,7 +813,11 @@ export function App() {
                     }
                   }}
                   onKeyDown={(event) => {
-                    if ((event.key === "Enter" || event.key === " ") && !isRecording && !isTranscribing) {
+                    if (
+                      (event.key === "Enter" || event.key === " ") &&
+                      !isRecording &&
+                      !isTranscribing
+                    ) {
                       updateTranscriptionModel(model.id);
                     }
                   }}
@@ -820,10 +837,14 @@ export function App() {
                         event.stopPropagation();
                         downloadModel(model.id);
                       }}
-                      disabled={Boolean(downloadingModel)}
+                      disabled={Boolean(downloadingModel) || downloadModelMutation.isPending}
                       aria-label={`Download ${model.label}`}
                     >
-                      {downloadingModel === model.id ? <LoaderCircle size={16} /> : <Download size={16} />}
+                      {downloadingModel === model.id ? (
+                        <LoaderCircle size={16} />
+                      ) : (
+                        <Download size={16} />
+                      )}
                     </button>
                   )}
                 </div>
@@ -924,15 +945,7 @@ export function App() {
   );
 }
 
-function Metric({
-  icon,
-  label,
-  value
-}: {
-  icon: React.ReactNode;
-  label: string;
-  value: string;
-}) {
+function Metric({ icon, label, value }: { icon: React.ReactNode; label: string; value: string }) {
   return (
     <div className="metric">
       <div className="metric-icon">{icon}</div>
@@ -948,7 +961,7 @@ function StatusPill({
   active,
   icon,
   label,
-  progress
+  progress,
 }: {
   active: boolean;
   icon: React.ReactNode;
@@ -976,17 +989,29 @@ async function analyze(request: {
   return invoke<AnalysisReport>("analyze_speech_session", { request });
 }
 
+async function analyzeWithFallback(request: {
+  segments: TranscriptSegment[];
+  pauses: PauseSpan[];
+  sessionStartedAt?: string;
+}): Promise<AnalysisReport> {
+  try {
+    return await analyze(request);
+  } catch {
+    return fallbackAnalyze(request);
+  }
+}
+
 async function createVoice(samples: number[], sampleRate: number): Promise<Voiceprint> {
   if (!("__TAURI_INTERNALS__" in window)) {
     return {
       embedding: fallbackEmbedding(samples),
       sampleRate,
-      sampleCount: samples.length
+      sampleCount: samples.length,
     };
   }
   const { invoke } = await import("@tauri-apps/api/core");
   return invoke<Voiceprint>("create_voiceprint", {
-    request: { samples: decimate(samples), sampleRate }
+    request: { samples: decimate(samples), sampleRate },
   });
 }
 
@@ -995,7 +1020,7 @@ async function compareVoice(samples: number[], sampleRate: number, referenceEmbe
     const current = fallbackEmbedding(samples);
     return {
       score: cosine(current, referenceEmbedding),
-      isMatch: false
+      isMatch: false,
     };
   }
   const { invoke } = await import("@tauri-apps/api/core");
@@ -1004,18 +1029,20 @@ async function compareVoice(samples: number[], sampleRate: number, referenceEmbe
       samples: decimate(samples),
       sampleRate,
       referenceEmbedding,
-      threshold: 0.82
-    }
+      threshold: 0.82,
+    },
   });
 }
 
-async function loadTranscriptionModels(engine: TranscriptionEngineId): Promise<TranscriptionModelStatus[]> {
+async function loadTranscriptionModels(
+  engine: TranscriptionEngineId,
+): Promise<TranscriptionModelStatus[]> {
   if (!("__TAURI_INTERNALS__" in window)) {
     return staticModelStatuses(engine);
   }
   const { invoke } = await import("@tauri-apps/api/core");
   const result = await invoke<{ models: TranscriptionModelStatus[] }>("transcription_models", {
-    request: { provider: engine }
+    request: { provider: engine },
   });
   return result.models;
 }
@@ -1024,7 +1051,7 @@ async function transcribeAudio(
   samples: number[],
   sampleRate: number,
   settings: TranscriptionSettings,
-  language: string
+  language: string,
 ): Promise<{ segments: TranscriptSegment[] }> {
   if (!("__TAURI_INTERNALS__" in window)) {
     throw new Error("native transcription requires the desktop app");
@@ -1036,8 +1063,8 @@ async function transcribeAudio(
       sampleRate,
       provider: settings.engine,
       model: settings.model,
-      language
-    }
+      language,
+    },
   });
 }
 
@@ -1049,8 +1076,8 @@ async function downloadTranscriptionModel(engine: TranscriptionEngineId, model: 
   return invoke<TranscriptionModelStatus>("download_transcription_model", {
     request: {
       provider: engine,
-      model
-    }
+      model,
+    },
   });
 }
 
@@ -1066,26 +1093,51 @@ function fallbackAnalyze(request: {
     const words = segment.text.split(/\s+/).filter(Boolean);
     wordCount += words.filter((word) => !isFiller(normalize(word))).length;
     duration = Math.max(duration, segment.endSeconds);
-    const step = Math.max(0.1, (segment.endSeconds - segment.startSeconds) / Math.max(1, words.length));
+    const step = Math.max(
+      0.1,
+      (segment.endSeconds - segment.startSeconds) / Math.max(1, words.length),
+    );
     for (let index = 0; index < words.length; index += 1) {
       const word = normalize(words[index]);
       const next = normalize(words[index + 1] ?? "");
       const start = segment.startSeconds + step * index;
       if (word && word === next && !isFiller(word)) {
-        events.push(event("wordRepetition", start, start + step * 2, `${words[index]} ${words[index + 1]}`, "Repeated word sequence", 0.78));
+        events.push(
+          event(
+            "wordRepetition",
+            start,
+            start + step * 2,
+            `${words[index]} ${words[index + 1]}`,
+            "Repeated word sequence",
+            0.78,
+          ),
+        );
       }
       if (longestRun(word) >= 4) {
-        events.push(event("prolongation", start, start + step, words[index], "Extended sound in word", 0.74));
+        events.push(
+          event("prolongation", start, start + step, words[index], "Extended sound in word", 0.74),
+        );
       }
       if (isFiller(word)) {
-        events.push(event("filler", start, start + step, words[index], "Filler or restart marker", 0.58));
+        events.push(
+          event("filler", start, start + step, words[index], "Filler or restart marker", 0.58),
+        );
       }
     }
   }
   for (const pause of request.pauses) {
     duration = Math.max(duration, pause.endSeconds);
     if (pause.endSeconds - pause.startSeconds >= 0.75) {
-      events.push(event("block", pause.startSeconds, pause.endSeconds, pause.afterText ?? "pause", `${(pause.endSeconds - pause.startSeconds).toFixed(1)}s silent pause before speech`, 0.62));
+      events.push(
+        event(
+          "block",
+          pause.startSeconds,
+          pause.endSeconds,
+          pause.afterText ?? "pause",
+          `${(pause.endSeconds - pause.startSeconds).toFixed(1)}s silent pause before speech`,
+          0.62,
+        ),
+      );
     }
   }
   events.sort((left, right) => left.startSeconds - right.startSeconds);
@@ -1098,12 +1150,19 @@ function fallbackAnalyze(request: {
     wordCount,
     stutterCount: events.length,
     stuttersPerMinute: rate,
-    severity: events.length === 0 ? "none" : rate >= 12 || density >= 0.18 ? "high" : rate >= 6 || density >= 0.1 ? "moderate" : "mild",
+    severity:
+      events.length === 0
+        ? "none"
+        : rate >= 12 || density >= 0.18
+          ? "high"
+          : rate >= 6 || density >= 0.1
+            ? "moderate"
+            : "mild",
     events,
     byKind: events.reduce<Partial<Record<StutterKind, number>>>((acc, item) => {
       acc[item.kind] = (acc[item.kind] ?? 0) + 1;
       return acc;
-    }, {})
+    }, {}),
   };
 }
 
@@ -1113,7 +1172,7 @@ function event(
   endSeconds: number,
   text: string,
   detail: string,
-  confidence: number
+  confidence: number,
 ): StutterEvent {
   return { kind, startSeconds, endSeconds, text, detail, confidence };
 }
@@ -1124,7 +1183,9 @@ function fallbackEmbedding(samples: number[]) {
   const stride = Math.max(1, Math.floor(samples.length / bands));
   for (let index = 0; index < bands; index += 1) {
     const chunk = samples.slice(index * stride, (index + 1) * stride);
-    values[index] = Math.sqrt(chunk.reduce((sum, sample) => sum + sample * sample, 0) / Math.max(1, chunk.length));
+    values[index] = Math.sqrt(
+      chunk.reduce((sum, sample) => sum + sample * sample, 0) / Math.max(1, chunk.length),
+    );
   }
   const norm = Math.hypot(...values) || 1;
   return values.map((value) => value / norm);
@@ -1177,7 +1238,7 @@ function emptyReport(): AnalysisReport {
     stuttersPerMinute: 0,
     severity: "none",
     events: [],
-    byKind: {}
+    byKind: {},
   };
 }
 
@@ -1199,9 +1260,14 @@ function loadVoiceprint(): Voiceprint | null {
 
 function loadTranscriptionSettings(): TranscriptionSettings {
   try {
-    const parsed = JSON.parse(localStorage.getItem(TRANSCRIPTION_KEY) ?? "null") as Partial<TranscriptionSettings> | null;
-    const engine = TRANSCRIPTION_ENGINES.find((item) => item.id === parsed?.engine) ?? TRANSCRIPTION_ENGINES[0];
-    const model = engine.models.includes(parsed?.model ?? "") ? parsed?.model ?? engine.models[0] : engine.models[0];
+    const parsed = JSON.parse(
+      localStorage.getItem(TRANSCRIPTION_KEY) ?? "null",
+    ) as Partial<TranscriptionSettings> | null;
+    const engine =
+      TRANSCRIPTION_ENGINES.find((item) => item.id === parsed?.engine) ?? TRANSCRIPTION_ENGINES[0];
+    const model = engine.models.includes(parsed?.model ?? "")
+      ? (parsed?.model ?? engine.models[0])
+      : engine.models[0];
     return { engine: engine.id, model };
   } catch {
     return { engine: "browser", model: "default" };
@@ -1213,7 +1279,7 @@ function staticModelStatuses(engine: TranscriptionEngineId): TranscriptionModelS
     id: model,
     label: model,
     cached: engine === "browser",
-    downloadable: false
+    downloadable: false,
   }));
 }
 
@@ -1257,13 +1323,15 @@ function kindLabel(kind: StutterKind) {
     soundRepetition: "Sound",
     prolongation: "Long",
     block: "Block",
-    filler: "Filler"
+    filler: "Filler",
   }[kind];
 }
 
 function formatTime(seconds: number) {
   const mins = Math.floor(seconds / 60);
-  const secs = Math.floor(seconds % 60).toString().padStart(2, "0");
+  const secs = Math.floor(seconds % 60)
+    .toString()
+    .padStart(2, "0");
   return `${mins}:${secs}`;
 }
 
