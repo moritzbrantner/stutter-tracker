@@ -1,4 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { invoke, isTauri } from "@tauri-apps/api/core";
 import {
   Activity,
   BarChart3,
@@ -159,7 +160,7 @@ export function App() {
   const [downloadProgress, setDownloadProgress] = useState<TranscriptionProgressEvent | null>(null);
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
-  const [isNative, setIsNative] = useState(() => "__TAURI_INTERNALS__" in window);
+  const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isEnrolling, setIsEnrolling] = useState(false);
   const [isMatchingVoice, setIsMatchingVoice] = useState(false);
@@ -237,7 +238,7 @@ export function App() {
   }, []);
 
   useEffect(() => {
-    setIsNative("__TAURI_INTERNALS__" in window);
+    setIsNative(isDesktopApp());
   }, []);
 
   useEffect(() => {
@@ -982,10 +983,9 @@ async function analyze(request: {
   pauses: PauseSpan[];
   sessionStartedAt?: string;
 }): Promise<AnalysisReport> {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopApp()) {
     return fallbackAnalyze(request);
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<AnalysisReport>("analyze_speech_session", { request });
 }
 
@@ -1002,28 +1002,26 @@ async function analyzeWithFallback(request: {
 }
 
 async function createVoice(samples: number[], sampleRate: number): Promise<Voiceprint> {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopApp()) {
     return {
       embedding: fallbackEmbedding(samples),
       sampleRate,
       sampleCount: samples.length,
     };
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<Voiceprint>("create_voiceprint", {
     request: { samples: decimate(samples), sampleRate },
   });
 }
 
 async function compareVoice(samples: number[], sampleRate: number, referenceEmbedding: number[]) {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopApp()) {
     const current = fallbackEmbedding(samples);
     return {
       score: cosine(current, referenceEmbedding),
       isMatch: false,
     };
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<{ score: number; isMatch: boolean }>("compare_voiceprint", {
     request: {
       samples: decimate(samples),
@@ -1037,10 +1035,9 @@ async function compareVoice(samples: number[], sampleRate: number, referenceEmbe
 async function loadTranscriptionModels(
   engine: TranscriptionEngineId,
 ): Promise<TranscriptionModelStatus[]> {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopApp()) {
     return staticModelStatuses(engine);
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   const result = await invoke<{ models: TranscriptionModelStatus[] }>("transcription_models", {
     request: { provider: engine },
   });
@@ -1053,10 +1050,9 @@ async function transcribeAudio(
   settings: TranscriptionSettings,
   language: string,
 ): Promise<{ segments: TranscriptSegment[] }> {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopApp()) {
     throw new Error("native transcription requires the desktop app");
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<{ segments: TranscriptSegment[] }>("transcribe_audio", {
     request: {
       samples,
@@ -1069,10 +1065,9 @@ async function transcribeAudio(
 }
 
 async function downloadTranscriptionModel(engine: TranscriptionEngineId, model: string) {
-  if (!("__TAURI_INTERNALS__" in window)) {
+  if (!isDesktopApp()) {
     throw new Error("model downloads require the desktop app");
   }
-  const { invoke } = await import("@tauri-apps/api/core");
   return invoke<TranscriptionModelStatus>("download_transcription_model", {
     request: {
       provider: engine,
@@ -1281,6 +1276,10 @@ function staticModelStatuses(engine: TranscriptionEngineId): TranscriptionModelS
     cached: engine === "browser",
     downloadable: false,
   }));
+}
+
+function isDesktopApp() {
+  return isTauri() || "__TAURI_INTERNALS__" in window;
 }
 
 function getTranscriptionEngine(id: TranscriptionEngineId) {
