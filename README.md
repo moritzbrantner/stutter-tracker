@@ -86,9 +86,34 @@ Optional server settings:
 
 ```sh
 STUTTER_MAX_BODY_BYTES=25mb
+STUTTER_MAX_AUDIO_BYTES=50mb
+STUTTER_UPLOAD_TMP_DIR=/tmp
+STUTTER_FFMPEG_BIN=ffmpeg
 STUTTER_SPEAKER_STORE_PATH=/var/lib/stutter-tracker/speakers.json
 DATABASE_URL=postgres://user:pass@host:5432/db
 ```
+
+Mobile and other non-browser clients can upload recorded audio with
+`POST /transcriptions/file`. The server stores uploads in a temporary directory,
+delegates to the native worker, and deletes the temporary file after success or
+failure. Non-WAV uploads for `whisperCpp` are normalized with `ffmpeg`; set
+`STUTTER_FFMPEG_BIN` if the binary is not on `PATH`.
+
+## Desktop Rust Dependencies
+
+The desktop crate fetches the Rust analysis crates from the pinned
+`https://github.com/moritzbrantner/rust-packages.git` revision in
+`apps/desktop/src-tauri/Cargo.toml`. A clean `stutter-tracker` checkout no
+longer needs a sibling `../rust-packages` checkout for normal builds.
+
+For local cross-repo crate development, copy the example patch config:
+
+```sh
+cp apps/desktop/src-tauri/.cargo/config.toml.example apps/desktop/src-tauri/.cargo/config.toml
+```
+
+That local-only config patches the pinned git crates back to
+`../../../../rust-packages/...`.
 
 ## Artifacts
 

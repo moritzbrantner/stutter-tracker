@@ -29,6 +29,17 @@ export type ComputeClientOptions = {
   fetchImpl?: typeof fetch;
 };
 
+export type TranscribeAudioSamplesRequest = TranscribeAudioRequest;
+
+export type TranscribeAudioFileRequest = {
+  file: Blob;
+  filename: string;
+  mimeType: string;
+  provider: Exclude<TranscriptionEngineId, "browser">;
+  model: string;
+  language?: string;
+};
+
 export type ComputeClient = {
   analyzeSpeechSession(request: AnalyzeSpeechRequest): Promise<AnalysisReport>;
   listSpeakerProfiles(): Promise<SpeakerProfile[]>;
@@ -47,7 +58,8 @@ export type ComputeClient = {
     maxResults?: number;
   }): Promise<SpeakerIdentification>;
   transcriptionModels(provider: TranscriptionEngineId): Promise<TranscriptionModelStatus[]>;
-  transcribeAudio(request: TranscribeAudioRequest): Promise<TranscribeAudioResult>;
+  transcribeAudio(request: TranscribeAudioSamplesRequest): Promise<TranscribeAudioResult>;
+  transcribeAudioFile(request: TranscribeAudioFileRequest): Promise<TranscribeAudioResult>;
   downloadTranscriptionModel(
     provider: TranscriptionEngineId,
     model: string,
@@ -155,6 +167,29 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
       }
       return post<TranscribeAudioResult>(fetcher, baseUrl, "/transcriptions", request, headers);
     },
+    async transcribeAudioFile(request) {
+      if (!baseUrl) {
+        throw new Error("external compute server is required for mobile transcription");
+      }
+      const formData = new FormData();
+      const file =
+        request.file.type === request.mimeType
+          ? request.file
+          : request.file.slice(0, request.file.size, request.mimeType);
+      formData.append("audio", file, request.filename);
+      formData.append("provider", request.provider);
+      formData.append("model", request.model);
+      if (request.language) {
+        formData.append("language", request.language);
+      }
+      return postForm<TranscribeAudioResult>(
+        fetcher,
+        baseUrl,
+        "/transcriptions/file",
+        formData,
+        headers,
+      );
+    },
     async downloadTranscriptionModel(provider, model) {
       if (!baseUrl) {
         throw new Error("external compute server is required for model downloads");
@@ -198,6 +233,22 @@ async function post<T>(
       "content-type": "application/json",
     },
     body: JSON.stringify(body),
+  });
+  await assertOk(response, path);
+  return (await response.json()) as T;
+}
+
+async function postForm<T>(
+  fetcher: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: FormData,
+  extraHeaders: HeadersInit,
+): Promise<T> {
+  const response = await fetcher(`${baseUrl}${path}`, {
+    method: "POST",
+    headers: extraHeaders,
+    body,
   });
   await assertOk(response, path);
   return (await response.json()) as T;

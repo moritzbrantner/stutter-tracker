@@ -102,6 +102,7 @@ checksum = "1505bd5d3d116872e7271a6d4e16d81d0c8570876c8de68093a09ac269d8aac0"
 [[package]]
 name = "audio-analysis-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "math-signal-core",
  "tensor-data",
@@ -111,6 +112,7 @@ dependencies = [
 [[package]]
 name = "audio-analysis-fourier"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "rustfft",
@@ -120,6 +122,7 @@ dependencies = [
 [[package]]
 name = "audio-analysis-io"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "hound",
@@ -131,6 +134,7 @@ dependencies = [
 [[package]]
 name = "audio-analysis-pitch"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "video-analysis-core",
@@ -139,6 +143,7 @@ dependencies = [
 [[package]]
 name = "audio-analysis-recognition"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "audio-analysis-fourier",
@@ -150,6 +155,7 @@ dependencies = [
 [[package]]
 name = "audio-analysis-rhythm"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "video-analysis-core",
@@ -158,6 +164,7 @@ dependencies = [
 [[package]]
 name = "audio-analysis-speakers"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "audio-analysis-recognition",
@@ -2066,6 +2073,7 @@ dependencies = [
 [[package]]
 name = "math-geometry-2d"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "serde",
  "video-analysis-core",
@@ -2074,6 +2082,7 @@ dependencies = [
 [[package]]
 name = "math-signal-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "numbers-core",
  "video-analysis-core",
@@ -2082,6 +2091,7 @@ dependencies = [
 [[package]]
 name = "math-sparse-data"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "numbers-core",
  "vector-analysis-core",
@@ -2298,6 +2308,7 @@ dependencies = [
 [[package]]
 name = "numbers-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "video-analysis-core",
 ]
@@ -3906,6 +3917,7 @@ dependencies = [
 [[package]]
 name = "tensor-data"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "serde",
  "serde_json",
@@ -3915,6 +3927,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "serde",
  "unicode-normalization",
@@ -3925,6 +3938,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-corpus"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "math-sparse-data",
  "serde",
@@ -3935,6 +3949,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-features"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "text-analysis-core",
  "video-analysis-core",
@@ -3943,6 +3958,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-linguistics"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "text-analysis-core",
  "text-analysis-models",
@@ -3953,6 +3969,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-models"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "serde",
  "serde_json",
@@ -3967,6 +3984,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-prediction"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "text-analysis-core",
  "text-analysis-linguistics",
@@ -3976,6 +3994,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-semantics"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "math-sparse-data",
  "text-analysis-core",
@@ -3988,6 +4007,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-transcription"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "audio-analysis-core",
  "audio-analysis-io",
@@ -4002,6 +4022,7 @@ dependencies = [
 [[package]]
 name = "text-analysis-whisper-cpp"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "cmake",
  "hound",
@@ -4054,6 +4075,7 @@ dependencies = [
 [[package]]
 name = "three-d-processing-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "serde",
  "video-analysis-core",
@@ -4618,6 +4640,7 @@ dependencies = [
 [[package]]
 name = "vector-analysis-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "video-analysis-core",
 ]
@@ -4625,6 +4648,7 @@ dependencies = [
 [[package]]
 name = "vector-analysis-index"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "serde",
  "vector-analysis-core",
@@ -4646,6 +4670,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 [[package]]
 name = "video-analysis-core"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "num-rational",
  "num-traits",
@@ -4655,6 +4680,7 @@ dependencies = [
 [[package]]
 name = "video-analysis-ffmpeg"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "num-rational",
  "thiserror 2.0.18",
@@ -4665,6 +4691,7 @@ dependencies = [
 [[package]]
 name = "video-analysis-ingest"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "num-rational",
  "video-analysis-core",
@@ -4673,6 +4700,7 @@ dependencies = [
 [[package]]
 name = "video-analysis-models"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "base64 0.22.1",
  "hf-hub",
@@ -4686,6 +4714,7 @@ dependencies = [
 [[package]]
 name = "video-analysis-posture"
 version = "0.1.0"
+source = "git+https://github.com/moritzbrantner/rust-packages.git?rev=78a9c6e9eb33730b60c9584ceffb9dc982f5b9da#78a9c6e9eb33730b60c9584ceffb9dc982f5b9da"
 dependencies = [
  "math-geometry-2d",
  "serde",

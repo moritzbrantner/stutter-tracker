@@ -1,0 +1,14 @@
+[patch."https://github.com/moritzbrantner/rust-packages.git"]
+audio-analysis-core = { path = "../../../../rust-packages/crates/audio/audio-analysis-core" }
+audio-analysis-fourier = { path = "../../../../rust-packages/crates/audio/audio-analysis-fourier" }
+audio-analysis-pitch = { path = "../../../../rust-packages/crates/audio/audio-analysis-pitch" }
+audio-analysis-recognition = { path = "../../../../rust-packages/crates/audio/audio-analysis-recognition" }
+audio-analysis-rhythm = { path = "../../../../rust-packages/crates/audio/audio-analysis-rhythm" }
+audio-analysis-speakers = { path = "../../../../rust-packages/crates/audio/audio-analysis-speakers" }
+text-analysis-corpus = { path = "../../../../rust-packages/crates/text/text-analysis-corpus" }
+text-analysis-core = { path = "../../../../rust-packages/crates/text/text-analysis-core" }
+text-analysis-features = { path = "../../../../rust-packages/crates/text/text-analysis-features" }
+text-analysis-linguistics = { path = "../../../../rust-packages/crates/text/text-analysis-linguistics" }
+text-analysis-prediction = { path = "../../../../rust-packages/crates/text/text-analysis-prediction" }
+text-analysis-transcription = { path = "../../../../rust-packages/crates/text/text-analysis-transcription" }
+video-analysis-core = { path = "../../../../rust-packages/crates/video/video-analysis-core" }

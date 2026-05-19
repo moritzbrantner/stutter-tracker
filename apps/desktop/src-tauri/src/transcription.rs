@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -35,6 +36,16 @@ pub struct TranscribeAudioRequest {
     pub provider: TranscriptionProvider,
     pub model: String,
     pub language: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TranscribeAudioFileRequest {
+    pub path: PathBuf,
+    pub provider: TranscriptionProvider,
+    pub model: String,
+    pub language: Option<String>,
+    pub ffmpeg_bin: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -260,6 +271,23 @@ pub fn transcribe_audio_impl(request: TranscribeAudioRequest) -> Result<Transcri
     transcribed
 }
 
+pub fn transcribe_audio_file_impl(
+    request: TranscribeAudioFileRequest,
+) -> Result<TranscribeAudioResult> {
+    validate_input_file(&request.path)?;
+    let temp_dir = temp_transcription_dir()?;
+    let transcribed = transcribe_with_input_path(
+        request.provider,
+        &request.model,
+        request.language.as_deref(),
+        &request.path,
+        &temp_dir,
+        request.ffmpeg_bin.as_deref(),
+    );
+    let _ = fs::remove_dir_all(&temp_dir);
+    transcribed
+}
+
 fn transcribe_with_temp_dir(
     request: &TranscribeAudioRequest,
     temp_dir: &Path,
@@ -267,15 +295,34 @@ fn transcribe_with_temp_dir(
     let wav_path = temp_dir.join("input.wav");
     write_mono_wav(&wav_path, &request.samples, request.sample_rate)?;
 
-    let language = normalize_language(request.language.as_deref());
-    let model = request.model.trim().to_string();
-    Ok(match request.provider {
+    transcribe_with_input_path(
+        request.provider,
+        &request.model,
+        request.language.as_deref(),
+        &wav_path,
+        temp_dir,
+        None,
+    )
+}
+
+fn transcribe_with_input_path(
+    provider: TranscriptionProvider,
+    model: &str,
+    language: Option<&str>,
+    input_path: &Path,
+    temp_dir: &Path,
+    ffmpeg_bin: Option<&str>,
+) -> Result<TranscribeAudioResult> {
+    let language = normalize_language(language);
+    let model = model.trim().to_string();
+    Ok(match provider {
         TranscriptionProvider::Browser => {
             return Err(TranscriptionCommandError::Invalid(
                 "browser transcription runs in the web view".to_string(),
             ));
         }
         TranscriptionProvider::WhisperCpp => {
+            let wav_path = whisper_cpp_input_path(input_path, temp_dir, ffmpeg_bin)?;
             let parsed_model = parse_whisper_cpp_model(&model)?;
             let store = WhisperCppModelStore::default();
             if !store.model_path(parsed_model).is_file() {
@@ -304,17 +351,72 @@ fn transcribe_with_temp_dir(
             let mut transcriber = WhisperCliTranscriber::new("whisper")
                 .args(cli_args(&model, language.as_deref()))
                 .output_dir(temp_dir.join("whisper-output"));
-            let result = transcriber.transcribe(&wav_path)?;
+            let result = transcriber.transcribe(input_path)?;
             build_result(result, TranscriptionProviderResult::WhisperCli, model)
         }
         TranscriptionProvider::FasterWhisper => {
             let mut transcriber = WhisperCliTranscriber::new("faster-whisper")
                 .args(cli_args(&model, language.as_deref()))
                 .output_dir(temp_dir.join("faster-whisper-output"));
-            let result = transcriber.transcribe(&wav_path)?;
+            let result = transcriber.transcribe(input_path)?;
             build_result(result, TranscriptionProviderResult::FasterWhisper, model)
         }
     })
+}
+
+fn validate_input_file(path: &Path) -> Result<()> {
+    if !path.is_file() {
+        return Err(TranscriptionCommandError::Invalid(format!(
+            "audio file `{}` does not exist",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn whisper_cpp_input_path<'a>(
+    input_path: &'a Path,
+    temp_dir: &'a Path,
+    ffmpeg_bin: Option<&str>,
+) -> Result<PathBuf> {
+    if input_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
+    {
+        return Ok(input_path.to_path_buf());
+    }
+
+    let wav_path = temp_dir.join("input.wav");
+    let binary = ffmpeg_bin
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("STUTTER_FFMPEG_BIN").ok())
+        .unwrap_or_else(|| "ffmpeg".to_string());
+    let output = Command::new(&binary)
+        .arg("-y")
+        .arg("-i")
+        .arg(input_path)
+        .arg("-ac")
+        .arg("1")
+        .arg("-ar")
+        .arg("16000")
+        .arg(&wav_path)
+        .output()
+        .map_err(|error| {
+            TranscriptionCommandError::Invalid(format!(
+                "`{binary}` is required to transcribe non-WAV audio with whisper.cpp: {error}"
+            ))
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TranscriptionCommandError::Invalid(format!(
+            "`{binary}` failed to convert audio to WAV: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(wav_path)
 }
 
 fn validate_samples(samples: &[f32], sample_rate: u32) -> Result<()> {
@@ -449,4 +551,36 @@ fn write_mono_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<()> 
     }
     writer.finalize()?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn file_request_rejects_missing_path() {
+        let error = transcribe_audio_file_impl(TranscribeAudioFileRequest {
+            path: PathBuf::from("/tmp/stutter-tracker-missing-input.wav"),
+            provider: TranscriptionProvider::WhisperCpp,
+            model: "base.en".to_string(),
+            language: None,
+            ffmpeg_bin: None,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("does not exist"));
+    }
+
+    #[test]
+    fn whisper_cpp_uses_wav_path_directly() {
+        let dir = temp_transcription_dir().unwrap();
+        let wav = dir.join("input.wav");
+        fs::write(&wav, b"not a real wav").unwrap();
+
+        let selected =
+            whisper_cpp_input_path(&wav, &dir, Some("/definitely/missing/ffmpeg")).unwrap();
+
+        assert_eq!(selected, wav);
+        let _ = fs::remove_dir_all(dir);
+    }
 }

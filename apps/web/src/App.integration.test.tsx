@@ -1,11 +1,14 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { App } from "./App";
 
 const STORE_KEY = "stutter-tracker:sessions";
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
+const originalMediaDevices = navigator.mediaDevices;
+const originalAudioContext = window.AudioContext;
+const originalWebkitAudioContext = window.webkitAudioContext;
 
 function renderApp() {
   const queryClient = new QueryClient({
@@ -23,6 +26,13 @@ function renderApp() {
 
 afterEach(() => {
   localStorage.clear();
+  vi.restoreAllMocks();
+  Object.defineProperty(navigator, "mediaDevices", {
+    configurable: true,
+    value: originalMediaDevices,
+  });
+  window.AudioContext = originalAudioContext;
+  window.webkitAudioContext = originalWebkitAudioContext;
 });
 
 describe("App integration", () => {
@@ -112,6 +122,42 @@ describe("App integration", () => {
     expect(screen.getByText("Transcript will appear here.")).toBeInTheDocument();
     expect(
       within(screen.getByLabelText("Processing status")).getByText("Recording"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows denied microphone permission and leaves Record enabled", async () => {
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockRejectedValue(new DOMException("denied", "NotAllowedError")),
+      },
+    });
+    renderApp();
+
+    const recordButton = screen.getByRole("button", { name: /record/i });
+    await userEvent.click(recordButton);
+
+    expect(await screen.findByText("Microphone permission was denied")).toBeInTheDocument();
+    expect(recordButton).toBeEnabled();
+  });
+
+  it("shows unavailable recording when AudioContext is missing", async () => {
+    Object.defineProperty(navigator, "mediaDevices", {
+      configurable: true,
+      value: {
+        getUserMedia: vi.fn().mockResolvedValue({
+          getTracks: () => [{ stop: vi.fn() }],
+        }),
+      },
+    });
+    window.AudioContext = undefined as unknown as typeof AudioContext;
+    window.webkitAudioContext = undefined;
+    renderApp();
+
+    await userEvent.click(screen.getByRole("button", { name: /record/i }));
+
+    expect(
+      await screen.findByText("Microphone recording is unavailable in this browser"),
     ).toBeInTheDocument();
   });
 });

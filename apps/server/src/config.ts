@@ -1,3 +1,4 @@
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 
 export type ServerConfig = {
@@ -7,6 +8,9 @@ export type ServerConfig = {
   apiToken: string;
   allowedOrigins: string[];
   maxBodyBytes: number;
+  maxAudioBytes: number;
+  uploadTmpDir: string;
+  ffmpegBin: string;
   nativeWorker?: string;
   databaseUrl?: string;
   speakerStorePath: string;
@@ -24,6 +28,12 @@ export function parseServerConfig(env: EnvLike = Bun.env): ServerConfig {
   const apiToken = env.STUTTER_API_TOKEN?.trim() ?? "";
   const allowedOrigins = parseOrigins(env.STUTTER_ALLOWED_ORIGINS);
   const maxBodyBytes = parseByteSize(env.STUTTER_MAX_BODY_BYTES ?? "25mb");
+  const maxAudioBytes = parseByteSize(
+    env.STUTTER_MAX_AUDIO_BYTES ?? "50mb",
+    "STUTTER_MAX_AUDIO_BYTES",
+  );
+  const uploadTmpDir = env.STUTTER_UPLOAD_TMP_DIR?.trim() || tmpdir();
+  const ffmpegBin = env.STUTTER_FFMPEG_BIN?.trim() || "ffmpeg";
   const nativeWorker = env.STUTTER_NATIVE_WORKER?.trim() || undefined;
   const databaseUrl = env.DATABASE_URL?.trim() || env.POSTGRES_URL?.trim() || undefined;
   const speakerStorePath =
@@ -51,6 +61,9 @@ export function parseServerConfig(env: EnvLike = Bun.env): ServerConfig {
     apiToken,
     allowedOrigins,
     maxBodyBytes,
+    maxAudioBytes,
+    uploadTmpDir,
+    ffmpegBin,
     nativeWorker,
     databaseUrl,
     speakerStorePath,
@@ -76,17 +89,17 @@ function parseOrigins(value?: string) {
     .filter(Boolean);
 }
 
-function parseByteSize(value: string) {
+function parseByteSize(value: string, envName = "STUTTER_MAX_BODY_BYTES") {
   const match = /^(\d+(?:\.\d+)?)(b|kb|mb)?$/i.exec(value.trim());
   if (!match) {
-    throw new Error(`invalid STUTTER_MAX_BODY_BYTES \`${value}\``);
+    throw new Error(`invalid ${envName} \`${value}\``);
   }
   const amount = Number(match[1]);
   const unit = match[2]?.toLowerCase() ?? "b";
   const multiplier = unit === "mb" ? 1024 * 1024 : unit === "kb" ? 1024 : 1;
   const bytes = Math.floor(amount * multiplier);
   if (!Number.isFinite(bytes) || bytes <= 0) {
-    throw new Error("STUTTER_MAX_BODY_BYTES must be greater than zero");
+    throw new Error(`${envName} must be greater than zero`);
   }
   return bytes;
 }

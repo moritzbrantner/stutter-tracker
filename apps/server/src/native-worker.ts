@@ -19,6 +19,15 @@ export type NativeWorker = {
     model: string,
   ): Promise<TranscriptionModelStatus>;
   transcribeAudio(request: TranscribeAudioRequest): Promise<TranscribeAudioResult>;
+  transcribeAudioFile(request: TranscribeAudioFileRequest): Promise<TranscribeAudioResult>;
+};
+
+export type TranscribeAudioFileRequest = {
+  path: string;
+  provider: Exclude<TranscriptionEngineId, "browser">;
+  model: string;
+  language?: string;
+  ffmpegBin?: string;
 };
 
 type WorkerCommand =
@@ -33,6 +42,10 @@ type WorkerCommand =
   | {
       command: "transcribe-audio";
       request: TranscribeAudioRequest;
+    }
+  | {
+      command: "transcribe-audio-file";
+      request: TranscribeAudioFileRequest;
     };
 
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
@@ -57,6 +70,12 @@ export function createNativeWorker(config: ServerConfig): NativeWorker {
         request,
       });
     },
+    transcribeAudioFile(request) {
+      return runWorker(config, {
+        command: "transcribe-audio-file",
+        request,
+      });
+    },
   };
 }
 
@@ -73,7 +92,7 @@ async function runWorker<T>(config: ServerConfig, command: WorkerCommand): Promi
   process.stdin.end();
 
   const timeoutMs =
-    command.command === "transcribe-audio"
+    command.command === "transcribe-audio" || command.command === "transcribe-audio-file"
       ? 10 * 60 * 1000
       : command.command === "download-transcription-model"
         ? 60 * 60 * 1000
@@ -98,10 +117,12 @@ async function runWorker<T>(config: ServerConfig, command: WorkerCommand): Promi
   ]);
   const [stdout, stderr, exitCode] = result;
   if (exitCode !== 0) {
+    const isTranscription =
+      command.command === "transcribe-audio" || command.command === "transcribe-audio-file";
     throw new HttpError(
-      command.command === "transcribe-audio" ? "transcription_failed" : "native_worker_unavailable",
+      isTranscription ? "transcription_failed" : "native_worker_unavailable",
       publicWorkerMessage(stderr),
-      command.command === "transcribe-audio" ? 422 : 503,
+      isTranscription ? 422 : 503,
     );
   }
 

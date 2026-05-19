@@ -56,3 +56,16 @@ test("restores a saved session from local storage", async ({ page }) => {
   await expect(page.getByText("I I want to start").first()).toBeVisible();
   await expect(page.getByText("Repeated word sequence")).toBeVisible();
 });
+
+test("records and stops with fake media devices", async ({ page }, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "chromium-fake-media",
+    "fake media flags are configured for this project",
+  );
+
+  await page.goto("/");
+  await page.getByRole("button", { name: /record/i }).click();
+  await expect(page.getByRole("button", { name: /stop/i })).toBeVisible();
+  await page.getByRole("button", { name: /stop/i }).click();
+  await expect(page.getByRole("button", { name: /record/i })).toBeVisible();
+});

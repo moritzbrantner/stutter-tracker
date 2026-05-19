@@ -20,6 +20,7 @@ export class HttpError extends Error {
 }
 
 export type ResponseHeaders = Record<string, string>;
+export type ServerFormData = Awaited<ReturnType<Request["formData"]>>;
 
 export function jsonResponse(value: unknown, status = 200, headers: ResponseHeaders = {}) {
   return new Response(JSON.stringify(value), {
@@ -61,4 +62,26 @@ export async function readJson(request: Request, maxBodyBytes: number): Promise<
   } catch {
     throw new HttpError("invalid_request", "request body must be valid JSON", 400);
   }
+}
+
+export async function readFormDataWithLimit(
+  request: Request,
+  maxBytes: number,
+): Promise<ServerFormData> {
+  const contentType = request.headers.get("content-type") ?? "";
+  if (!contentType.toLowerCase().includes("multipart/form-data")) {
+    throw new HttpError("invalid_request", "content-type must be multipart/form-data", 400);
+  }
+
+  const contentLength = request.headers.get("content-length");
+  if (contentLength && Number(contentLength) > maxBytes) {
+    throw new HttpError("request_too_large", "audio upload is too large", 413);
+  }
+
+  const formData = await request.formData();
+  const audio = formData.get("audio");
+  if (audio instanceof File && audio.size > maxBytes) {
+    throw new HttpError("request_too_large", "audio upload is too large", 413);
+  }
+  return formData;
 }

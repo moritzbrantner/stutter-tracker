@@ -6,6 +6,15 @@
     "version": "0.1.0",
     "orientation": "portrait",
     "newArchEnabled": true,
+    "plugins": [
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Stutter Tracker to record your speech for transcription.",
+          "recordAudioAndroid": true
+        }
+      ]
+    ],
     "ios": {
       "bundleIdentifier": "com.moenarch.stuttertracker"
     },

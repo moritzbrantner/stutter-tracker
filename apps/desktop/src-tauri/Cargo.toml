@@ -13,26 +13,26 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-audio-analysis-core = { path = "../../../../rust-packages/crates/audio/audio-analysis-core" }
-audio-analysis-fourier = { path = "../../../../rust-packages/crates/audio/audio-analysis-fourier" }
-audio-analysis-pitch = { path = "../../../../rust-packages/crates/audio/audio-analysis-pitch" }
-audio-analysis-recognition = { path = "../../../../rust-packages/crates/audio/audio-analysis-recognition" }
-audio-analysis-rhythm = { path = "../../../../rust-packages/crates/audio/audio-analysis-rhythm" }
-audio-analysis-speakers = { path = "../../../../rust-packages/crates/audio/audio-analysis-speakers" }
+audio-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-core" }
+audio-analysis-fourier = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-fourier" }
+audio-analysis-pitch = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-pitch" }
+audio-analysis-recognition = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-recognition" }
+audio-analysis-rhythm = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-rhythm" }
+audio-analysis-speakers = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-speakers" }
 hound = "3.5"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
-text-analysis-corpus = { path = "../../../../rust-packages/crates/text/text-analysis-corpus" }
-text-analysis-core = { path = "../../../../rust-packages/crates/text/text-analysis-core" }
-text-analysis-features = { path = "../../../../rust-packages/crates/text/text-analysis-features" }
-text-analysis-linguistics = { path = "../../../../rust-packages/crates/text/text-analysis-linguistics" }
-text-analysis-prediction = { path = "../../../../rust-packages/crates/text/text-analysis-prediction" }
-text-analysis-transcription = { path = "../../../../rust-packages/crates/text/text-analysis-transcription" }
+text-analysis-corpus = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-corpus" }
+text-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-core" }
+text-analysis-features = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-features" }
+text-analysis-linguistics = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-linguistics" }
+text-analysis-prediction = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-prediction" }
+text-analysis-transcription = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-transcription" }
 thiserror = "2"
 ureq = "2"
-video-analysis-core = { path = "../../../../rust-packages/crates/video/video-analysis-core" }
+video-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "video-analysis-core" }
 
 [dev-dependencies]
 approx = "0.5"

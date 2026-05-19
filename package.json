@@ -24,7 +24,8 @@
     "build:shared": "bun --filter @stutter-tracker/shared build && bun --filter @stutter-tracker/compute-client build",
     "build:web": "bun --filter @stutter-tracker/web build",
     "build:server": "bun --filter @stutter-tracker/server build",
-    "check": "bun run format:check && bun run build && bun run test:unit && bun run test:integration && bun run test:server && bun run test:compute-client",
+    "build:mobile": "bun --filter @stutter-tracker/mobile build",
+    "check": "bun run format:check && bun run build && bun run build:mobile && bun run test:unit && bun run test:integration && bun run test:server && bun run test:compute-client && bun run test:mobile",
     "format": "bun --filter '*' format",
     "format:check": "bun --filter '*' format:check",
     "test": "bun run test:unit && bun run test:integration && bun run test:server && bun run test:compute-client && bun run test:e2e && bun run test:rust",
@@ -32,6 +33,7 @@
     "test:integration": "bun --filter @stutter-tracker/web test:integration",
     "test:server": "bun --filter @stutter-tracker/server test",
     "test:compute-client": "bun --filter @stutter-tracker/compute-client test",
+    "test:mobile": "bun --filter @stutter-tracker/mobile test",
     "test:e2e": "bun --filter @stutter-tracker/web test:e2e",
     "test:rust": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml"
   },

@@ -78,6 +78,37 @@ describe("createComputeClient", () => {
       "unauthorized: authorization bearer token is invalid",
     );
   });
+
+  it("uploads transcription files as multipart form data", async () => {
+    const requests: Request[] = [];
+    const fetchImpl = (async (input, init) => {
+      requests.push(new Request(input, init));
+      return json({
+        provider: "whisperCpp",
+        model: "base.en",
+        segments: [],
+      });
+    }) as typeof fetch;
+    const client = createComputeClient({
+      serverUrl: "https://compute.example.com",
+      apiToken: "secret",
+      fetchImpl,
+    });
+
+    await client.transcribeAudioFile({
+      file: new Blob(["audio"], { type: "audio/mp4" }),
+      filename: "recording.m4a",
+      mimeType: "audio/mp4",
+      provider: "whisperCpp",
+      model: "base.en",
+      language: "en-US",
+    });
+
+    const request = requests[0];
+    expect(request?.url).toBe("https://compute.example.com/transcriptions/file");
+    expect(request?.headers.get("authorization")).toBe("Bearer secret");
+    expect(request?.headers.get("content-type")).toContain("multipart/form-data");
+  });
 });
 
 function json(value: unknown, status = 200) {

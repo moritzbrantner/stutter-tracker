@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { SpeakerProfile, TranscribeAudioRequest } from "@stutter-tracker/shared";
@@ -38,6 +38,15 @@ describe("config", () => {
         STUTTER_NATIVE_WORKER: "/bin/worker",
       }),
     ).toThrow("STUTTER_ALLOWED_ORIGINS");
+  });
+
+  it("parses STUTTER_MAX_AUDIO_BYTES", () => {
+    expect(
+      parseServerConfig({
+        HOST: "127.0.0.1",
+        STUTTER_MAX_AUDIO_BYTES: "1kb",
+      }).maxAudioBytes,
+    ).toBe(1024);
   });
 });
 
@@ -87,6 +96,22 @@ describe("request gates", () => {
     expect(response.status).toBe(200);
     expect(response.headers.get("access-control-allow-origin")).toBe("https://app.example.com");
     expect(response.headers.get("access-control-allow-origin")).not.toBe("*");
+  });
+
+  it("protects file transcription with public-ready authorization and CORS", async () => {
+    const form = new FormData();
+    form.append("audio", new File(["audio"], "input.wav", { type: "audio/wav" }));
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    const response = await publicHandler()(
+      new Request("http://server/transcriptions/file", {
+        method: "POST",
+        headers: { origin: "https://app.example.com" },
+        body: form,
+      }),
+    );
+
+    expect(response.status).toBe(401);
   });
 
   it("rejects oversized bodies before route handling", async () => {
@@ -189,6 +214,99 @@ describe("transcription worker routes", () => {
     ]);
   });
 
+  it("returns invalid_request when multipart upload has no audio file", async () => {
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: fakeWorker(),
+    });
+    const form = new FormData();
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    const response = await postForm(handler, "/transcriptions/file", form);
+
+    expect(response.status).toBe(400);
+    expect((await responseJson<{ error: { code: string } }>(response)).error.code).toBe(
+      "invalid_request",
+    );
+  });
+
+  it("rejects oversized multipart uploads", async () => {
+    const handler = createComputeRequestHandler({
+      config: localConfig({ maxAudioBytes: 4 }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: fakeWorker(),
+    });
+    const form = new FormData();
+    form.append("audio", new File(["too-large"], "input.wav", { type: "audio/wav" }));
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    const response = await postForm(handler, "/transcriptions/file", form);
+
+    expect(response.status).toBe(413);
+    expect((await responseJson<{ error: { code: string } }>(response)).error.code).toBe(
+      "request_too_large",
+    );
+  });
+
+  it("calls the worker for multipart upload and cleans temp files after success", async () => {
+    const uploadTmpDir = await tempDir();
+    let workerPath = "";
+    const worker: NativeWorker = {
+      ...fakeWorker(),
+      async transcribeAudioFile(request) {
+        workerPath = request.path;
+        return {
+          text: "uploaded",
+          language: request.language,
+          provider: request.provider,
+          model: request.model,
+          segments: [{ text: "uploaded", startSeconds: 0, endSeconds: 0.5, isFinal: true }],
+        };
+      },
+    };
+    const handler = createComputeRequestHandler({
+      config: localConfig({ uploadTmpDir }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: worker,
+    });
+    const form = new FormData();
+    form.append("audio", new File(["audio"], "input.m4a", { type: "audio/mp4" }));
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    form.append("language", "en-US");
+    const response = await postForm(handler, "/transcriptions/file", form);
+
+    expect(response.status).toBe(200);
+    expect(workerPath).toContain(uploadTmpDir);
+    expect((await responseJson<{ segments: unknown[] }>(response)).segments).toEqual([
+      { text: "uploaded", startSeconds: 0, endSeconds: 0.5, isFinal: true },
+    ]);
+    expect(await readdir(uploadTmpDir)).toEqual([]);
+  });
+
+  it("cleans temp files after upload worker failure", async () => {
+    const uploadTmpDir = await tempDir();
+    const handler = createComputeRequestHandler({
+      config: localConfig({ uploadTmpDir }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        async transcribeAudioFile() {
+          throw new HttpError("transcription_failed", "bad audio", 422);
+        },
+      },
+    });
+    const form = new FormData();
+    form.append("audio", new File(["audio"], "input.wav", { type: "audio/wav" }));
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    const response = await postForm(handler, "/transcriptions/file", form);
+
+    expect(response.status).toBe(422);
+    expect(await readdir(uploadTmpDir)).toEqual([]);
+  });
+
   it("maps worker failures to structured errors", async () => {
     const handler = createComputeRequestHandler({
       config: localConfig(),
@@ -232,6 +350,9 @@ function localConfig(patch: Partial<ServerConfig> = {}): ServerConfig {
     apiToken: "",
     allowedOrigins: [],
     maxBodyBytes: 25 * 1024 * 1024,
+    maxAudioBytes: 50 * 1024 * 1024,
+    uploadTmpDir: tmpdir(),
+    ffmpegBin: "ffmpeg",
     speakerStorePath: ".stutter-tracker/server-speakers.json",
     ...patch,
   };
@@ -249,6 +370,15 @@ function fakeWorker(): NativeWorker {
       return { id: model, label: model, cached: true, downloadable: true };
     },
     async transcribeAudio(request) {
+      return {
+        text: "hello",
+        language: request.language,
+        provider: request.provider,
+        model: request.model,
+        segments: [{ text: "hello", startSeconds: 0, endSeconds: 0.5, isFinal: true }],
+      };
+    },
+    async transcribeAudioFile(request) {
       return {
         text: "hello",
         language: request.language,
@@ -307,6 +437,19 @@ function postJson(
       method,
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+    }),
+  );
+}
+
+function postForm(
+  handler: ReturnType<typeof createComputeRequestHandler>,
+  path: string,
+  body: FormData,
+) {
+  return handler(
+    new Request(`http://server${path}`, {
+      method: "POST",
+      body,
     }),
   );
 }

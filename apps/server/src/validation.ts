@@ -5,6 +5,7 @@ import {
   type TranscriptionEngineId,
 } from "@stutter-tracker/shared";
 import { HttpError } from "./http";
+import type { ServerFormData } from "./http";
 
 const PROVIDERS = new Set<TranscriptionEngineId>([
   "browser",
@@ -126,6 +127,23 @@ export function validateTranscribeAudioRequest(
     provider: selectedProvider,
     model: requiredTrimmedString(body.model, "model"),
     language: optionalTrimmedString(body.language, "language"),
+  };
+}
+
+export function validateTranscribeAudioFileForm(formData: ServerFormData) {
+  const audio = formData.get("audio");
+  if (!(audio instanceof File)) {
+    throw invalid("audio file is required");
+  }
+  const selectedProvider = provider(formData.get("provider"));
+  if (selectedProvider === "browser") {
+    throw invalid("browser transcription runs in the client");
+  }
+  return {
+    audio,
+    provider: selectedProvider as Exclude<TranscriptionEngineId, "browser">,
+    model: requiredTrimmedString(formData.get("model"), "model"),
+    language: optionalTrimmedString(formData.get("language"), "language"),
   };
 }
 

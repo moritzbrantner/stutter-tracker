@@ -4,9 +4,9 @@ use std::process::ExitCode;
 use serde::Deserialize;
 use serde_json::Value;
 use stutter_tracker_lib::transcription::{
-    download_transcription_model_impl, transcribe_audio_impl, transcription_models_impl,
-    DownloadTranscriptionModelRequest, TranscribeAudioRequest, TranscriptionModelsRequest,
-    TranscriptionProgressEvent,
+    download_transcription_model_impl, transcribe_audio_file_impl, transcribe_audio_impl,
+    transcription_models_impl, DownloadTranscriptionModelRequest, TranscribeAudioFileRequest,
+    TranscribeAudioRequest, TranscriptionModelsRequest, TranscriptionProgressEvent,
 };
 
 #[derive(Debug, Deserialize)]
@@ -15,6 +15,7 @@ enum WorkerCommand {
     TranscriptionModels(TranscriptionModelsRequest),
     DownloadTranscriptionModel(DownloadTranscriptionModelRequest),
     TranscribeAudio(TranscribeAudioRequest),
+    TranscribeAudioFile(TranscribeAudioFileRequest),
 }
 
 fn main() -> ExitCode {
@@ -39,6 +40,9 @@ fn run() -> Result<(), String> {
         )?,
         WorkerCommand::TranscribeAudio(request) => {
             to_value(transcribe_audio_impl(request).map_err(|error| error.to_string())?)?
+        }
+        WorkerCommand::TranscribeAudioFile(request) => {
+            to_value(transcribe_audio_file_impl(request).map_err(|error| error.to_string())?)?
         }
     };
     println!("{response}");
@@ -98,5 +102,23 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("unknown variant"));
+    }
+
+    #[test]
+    fn parses_transcribe_audio_file_command() {
+        let command: WorkerCommand = serde_json::from_str(
+            r#"{"command":"transcribe-audio-file","request":{"path":"/tmp/input.m4a","provider":"whisperCpp","model":"base.en","language":"en-US"}}"#,
+        )
+        .unwrap();
+        match command {
+            WorkerCommand::TranscribeAudioFile(request) => {
+                assert_eq!(request.path.to_string_lossy(), "/tmp/input.m4a");
+                assert!(matches!(
+                    request.provider,
+                    TranscriptionProvider::WhisperCpp
+                ));
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 }

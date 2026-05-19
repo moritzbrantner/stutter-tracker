@@ -9,6 +9,8 @@
     "android": "expo start --android",
     "ios": "expo start --ios",
     "web": "expo start --web",
+    "build": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run src/*.test.ts",
     "format": "oxfmt --write \"src/**/*.{ts,tsx}\" App.tsx",
     "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\" App.tsx"
   },
@@ -16,6 +18,8 @@
     "@stutter-tracker/compute-client": "workspace:*",
     "@stutter-tracker/shared": "workspace:*",
     "expo": "^55.0.0",
+    "expo-audio": "~55.0.14",
+    "expo-file-system": "~55.0.21",
     "react": "^19.2.0",
     "react-native": "^0.83.1"
   },

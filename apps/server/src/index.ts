@@ -9,8 +9,17 @@ import {
   staticModelStatuses,
 } from "@stutter-tracker/shared";
 import { timingSafeEqual } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { parseServerConfig, type ServerConfig } from "./config";
-import { errorResponse, HttpError, jsonResponse, readJson, type ResponseHeaders } from "./http";
+import {
+  errorResponse,
+  HttpError,
+  jsonResponse,
+  readFormDataWithLimit,
+  readJson,
+  type ResponseHeaders,
+} from "./http";
 import { createNativeWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 import {
@@ -20,6 +29,7 @@ import {
   validateIdentifySpeakerRequest,
   validateSpeakerProfilesBody,
   validateTranscribeAudioRequest,
+  validateTranscribeAudioFileForm,
   validateTranscriptionModelsRequest,
 } from "./validation";
 
@@ -106,6 +116,30 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
         return jsonResponse(await deps.nativeWorker.transcribeAudio(body), 200, cors);
       }
 
+      if (request.method === "POST" && url.pathname === "/transcriptions/file") {
+        const form = validateTranscribeAudioFileForm(
+          await readFormDataWithLimit(request, deps.config.maxAudioBytes),
+        );
+        const uploadDir = await mkdtemp(join(deps.config.uploadTmpDir, "stutter-upload-"));
+        const uploadPath = join(uploadDir, safeUploadName(form.audio.name));
+        try {
+          await writeFile(uploadPath, Buffer.from(await form.audio.arrayBuffer()));
+          return jsonResponse(
+            await deps.nativeWorker.transcribeAudioFile({
+              path: uploadPath,
+              provider: form.provider,
+              model: form.model,
+              language: form.language,
+              ffmpegBin: deps.config.ffmpegBin,
+            }),
+            200,
+            cors,
+          );
+        } finally {
+          await rm(uploadDir, { recursive: true, force: true });
+        }
+      }
+
       if (request.method === "POST" && url.pathname === "/transcriptions/models/download") {
         const body = validateDownloadModelRequest(
           await readJson(request, deps.config.maxBodyBytes),
@@ -122,6 +156,15 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
       return handleError(deps.config, error, cors);
     }
   };
+}
+
+function safeUploadName(filename: string) {
+  const suffix = filename
+    .split(".")
+    .at(-1)
+    ?.replace(/[^a-z0-9]/gi, "")
+    .toLowerCase();
+  return `audio-${crypto.randomUUID()}${suffix ? `.${suffix}` : ""}`;
 }
 
 export function startComputeServer(config = parseServerConfig()) {

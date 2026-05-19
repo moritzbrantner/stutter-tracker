@@ -1,6 +1,19 @@
 import { createComputeClient } from "@stutter-tracker/compute-client";
-import { type AnalysisReport, type AnalyzeSpeechRequest } from "@stutter-tracker/shared";
-import { useMemo, useState } from "react";
+import type {
+  AnalysisReport,
+  TranscriptionEngineId,
+  TranscriptionModelStatus,
+} from "@stutter-tracker/shared";
+import {
+  AudioModule,
+  RecordingPresets,
+  setAudioModeAsync,
+  useAudioRecorder,
+  useAudioRecorderState,
+} from "expo-audio";
+import { File } from "expo-file-system";
+import type React from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   SafeAreaView,
@@ -11,107 +24,261 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import {
+  mobileErrorMessage,
+  recordingFileInfo,
+  transcriptionToAnalysisRequest,
+} from "./src/recording";
 
-const sampleRequest: AnalyzeSpeechRequest = {
-  segments: [
-    {
-      text: "I I want to sssstart now",
-      startSeconds: 0,
-      endSeconds: 3,
-      isFinal: true,
-    },
-  ],
-  pauses: [{ startSeconds: 3.2, endSeconds: 4.1, afterText: "now" }],
-};
+const providers: Array<Exclude<TranscriptionEngineId, "browser">> = [
+  "whisperCpp",
+  "whisperCli",
+  "fasterWhisper",
+];
 
 export default function App() {
   const [serverUrl, setServerUrl] = useState("http://127.0.0.1:8787");
   const [apiToken, setApiToken] = useState("");
+  const [provider, setProvider] = useState<Exclude<TranscriptionEngineId, "browser">>("whisperCpp");
+  const [model, setModel] = useState("base.en");
+  const [language, setLanguage] = useState("en-US");
   const [status, setStatus] = useState("Idle");
+  const [isUploading, setIsUploading] = useState(false);
+  const [permissionGranted, setPermissionGranted] = useState<boolean | null>(null);
+  const [transcript, setTranscript] = useState("");
   const [report, setReport] = useState<AnalysisReport | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [lastRecordingUri, setLastRecordingUri] = useState("");
+  const [modelStatuses, setModelStatuses] = useState<TranscriptionModelStatus[]>([]);
+  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  const recorderState = useAudioRecorderState(audioRecorder);
   const client = useMemo(() => createComputeClient({ serverUrl, apiToken }), [apiToken, serverUrl]);
 
-  async function analyzeSample() {
-    setBusy(true);
-    setStatus("Calling compute server");
+  useEffect(() => {
+    let cancelled = false;
+    async function prepareAudio() {
+      try {
+        const permission = await AudioModule.requestRecordingPermissionsAsync();
+        if (cancelled) {
+          return;
+        }
+        setPermissionGranted(permission.granted);
+        if (!permission.granted) {
+          setStatus("Microphone permission was denied");
+          return;
+        }
+        await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true });
+      } catch (error) {
+        if (!cancelled) {
+          setStatus(mobileErrorMessage(error));
+        }
+      }
+    }
+    void prepareAudio();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  async function checkHealth() {
+    setStatus("Checking server");
     try {
-      const nextReport = await client.analyzeSpeechSession(sampleRequest);
-      setReport(nextReport);
-      setStatus("Server analysis complete");
+      const response = await fetch(`${serverUrl.replace(/\/+$/, "")}/health`, {
+        headers: apiToken ? { authorization: `Bearer ${apiToken}` } : undefined,
+      });
+      setStatus(response.ok ? "Server reachable" : `Server returned ${response.status}`);
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
+      setStatus(mobileErrorMessage(error));
     }
   }
 
-  async function checkHealth() {
-    setBusy(true);
-    setStatus("Checking server");
+  async function loadModelStatuses() {
+    setStatus("Loading models");
     try {
-      const response = await fetch(`${serverUrl.replace(/\/+$/, "")}/health`);
-      setStatus(response.ok ? "Server reachable" : `Server returned ${response.status}`);
+      const statuses = await client.transcriptionModels(provider);
+      setModelStatuses(statuses);
+      setStatus("Model status loaded");
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : String(error));
-    } finally {
-      setBusy(false);
+      setStatus(mobileErrorMessage(error));
     }
   }
+
+  async function downloadSelectedModel() {
+    setStatus(`Downloading ${model}`);
+    try {
+      const status = await client.downloadTranscriptionModel(provider, model);
+      setModelStatuses((current) => [status, ...current.filter((item) => item.id !== status.id)]);
+      setStatus(`${model} ready`);
+    } catch (error) {
+      setStatus(mobileErrorMessage(error));
+    }
+  }
+
+  async function startRecording() {
+    if (!permissionGranted) {
+      setStatus("Microphone permission was denied");
+      return;
+    }
+    setReport(null);
+    setTranscript("");
+    setStatus("Recording");
+    await audioRecorder.prepareToRecordAsync();
+    audioRecorder.record();
+  }
+
+  async function stopRecording() {
+    try {
+      setStatus("Stopping recording");
+      await audioRecorder.stop();
+      const uri = audioRecorder.uri;
+      if (!uri) {
+        setStatus("Recording did not produce an audio file");
+        return;
+      }
+      setLastRecordingUri(uri);
+      await uploadRecording(uri);
+    } catch (error) {
+      setStatus(mobileErrorMessage(error));
+    }
+  }
+
+  async function uploadRecording(uri: string) {
+    setIsUploading(true);
+    setStatus("Uploading and transcribing");
+    try {
+      const file = new File(uri);
+      const { filename, mimeType } = recordingFileInfo(uri);
+      const result = await client.transcribeAudioFile({
+        file: file as unknown as Blob,
+        filename,
+        mimeType,
+        provider,
+        model,
+        language,
+      });
+      setTranscript(result.segments.map((segment) => segment.text).join(" "));
+      setStatus("Analyzing transcript");
+      const nextReport = await client.analyzeSpeechSession(transcriptionToAnalysisRequest(result));
+      setReport(nextReport);
+      setStatus("Complete");
+    } catch (error) {
+      setStatus(mobileErrorMessage(error));
+    } finally {
+      setIsUploading(false);
+    }
+  }
+
+  const selectedModelStatus = modelStatuses.find((item) => item.id === model);
+  const busy = isUploading || recorderState.isRecording;
 
   return (
     <SafeAreaView style={styles.shell}>
       <ScrollView contentContainerStyle={styles.content}>
         <View style={styles.header}>
           <Text style={styles.eyebrow}>Stutter Tracker</Text>
-          <Text style={styles.title}>Mobile</Text>
+          <Text style={styles.title}>Mobile Recorder</Text>
         </View>
 
-        <View style={styles.panel}>
-          <Text style={styles.label}>Compute server</Text>
-          <TextInput
-            value={serverUrl}
-            onChangeText={setServerUrl}
-            autoCapitalize="none"
-            autoCorrect={false}
-            inputMode="url"
-            style={styles.input}
+        <Panel title="Compute server">
+          <Field label="Server URL" value={serverUrl} onChangeText={setServerUrl} />
+          <Field label="API token" value={apiToken} onChangeText={setApiToken} secureTextEntry />
+          <TouchableOpacity style={styles.button} onPress={checkHealth} disabled={busy}>
+            <Text style={styles.buttonText}>Health</Text>
+          </TouchableOpacity>
+        </Panel>
+
+        <Panel title="Transcription">
+          <Field
+            label="Provider"
+            value={provider}
+            onChangeText={(value) => {
+              if (providers.includes(value as Exclude<TranscriptionEngineId, "browser">)) {
+                setProvider(value as Exclude<TranscriptionEngineId, "browser">);
+              }
+            }}
           />
-          <Text style={styles.label}>API token</Text>
-          <TextInput
-            value={apiToken}
-            onChangeText={setApiToken}
-            autoCapitalize="none"
-            autoCorrect={false}
-            secureTextEntry
-            style={styles.input}
-          />
+          <Field label="Model" value={model} onChangeText={setModel} />
+          <Field label="Language" value={language} onChangeText={setLanguage} />
           <View style={styles.actions}>
-            <TouchableOpacity style={styles.button} onPress={checkHealth} disabled={busy}>
-              <Text style={styles.buttonText}>Health</Text>
+            <TouchableOpacity style={styles.button} onPress={loadModelStatuses} disabled={busy}>
+              <Text style={styles.buttonText}>Models</Text>
             </TouchableOpacity>
-            <TouchableOpacity style={styles.primaryButton} onPress={analyzeSample} disabled={busy}>
-              <Text style={styles.primaryButtonText}>Analyze Sample</Text>
+            <TouchableOpacity
+              style={styles.button}
+              onPress={downloadSelectedModel}
+              disabled={busy || !selectedModelStatus?.downloadable || selectedModelStatus.cached}
+            >
+              <Text style={styles.buttonText}>Download</Text>
             </TouchableOpacity>
           </View>
-        </View>
+        </Panel>
 
-        <View style={styles.panel}>
+        <Panel title="Recording">
           <View style={styles.statusRow}>
             <Text style={styles.status}>{status}</Text>
-            {busy && <ActivityIndicator />}
+            {isUploading && <ActivityIndicator />}
           </View>
-          {report && (
+          <TouchableOpacity
+            style={recorderState.isRecording ? styles.stopButton : styles.primaryButton}
+            onPress={recorderState.isRecording ? stopRecording : startRecording}
+            disabled={isUploading || permissionGranted === false}
+          >
+            <Text style={styles.primaryButtonText}>
+              {recorderState.isRecording ? "Stop" : "Record"}
+            </Text>
+          </TouchableOpacity>
+          {!!lastRecordingUri && <Text style={styles.detail}>{lastRecordingUri}</Text>}
+          <Text style={styles.transcript}>{transcript || "Transcript will appear here."}</Text>
+        </Panel>
+
+        <Panel title="Metrics">
+          {report ? (
             <View style={styles.metrics}>
               <Metric label="Events" value={String(report.stutterCount)} />
               <Metric label="Rate" value={`${report.stuttersPerMinute.toFixed(1)}/min`} />
               <Metric label="Words" value={String(report.wordCount)} />
               <Metric label="Severity" value={report.severity} />
             </View>
+          ) : (
+            <Text style={styles.detail}>No analysis yet.</Text>
           )}
-        </View>
+        </Panel>
       </ScrollView>
     </SafeAreaView>
+  );
+}
+
+function Panel({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <View style={styles.panel}>
+      <Text style={styles.panelTitle}>{title}</Text>
+      {children}
+    </View>
+  );
+}
+
+function Field({
+  label,
+  value,
+  onChangeText,
+  secureTextEntry,
+}: {
+  label: string;
+  value: string;
+  onChangeText(value: string): void;
+  secureTextEntry?: boolean;
+}) {
+  return (
+    <View style={styles.field}>
+      <Text style={styles.label}>{label}</Text>
+      <TextInput
+        value={value}
+        onChangeText={onChangeText}
+        autoCapitalize="none"
+        autoCorrect={false}
+        secureTextEntry={secureTextEntry}
+        style={styles.input}
+      />
+    </View>
   );
 }
 
@@ -127,44 +294,52 @@ function Metric({ label, value }: { label: string; value: string }) {
 const styles = StyleSheet.create({
   shell: {
     flex: 1,
-    backgroundColor: "#f5f7f5",
+    backgroundColor: "#f6f7f4",
   },
   content: {
-    gap: 16,
-    padding: 20,
+    gap: 14,
+    padding: 18,
   },
   header: {
     gap: 4,
   },
   eyebrow: {
-    color: "#647169",
+    color: "#5d6b64",
     fontSize: 12,
     fontWeight: "700",
     textTransform: "uppercase",
   },
   title: {
-    color: "#17201b",
-    fontSize: 42,
+    color: "#15201a",
+    fontSize: 34,
     fontWeight: "800",
   },
   panel: {
     backgroundColor: "#ffffff",
-    borderColor: "#dae2dd",
+    borderColor: "#d9e1dc",
     borderRadius: 8,
     borderWidth: 1,
     gap: 12,
-    padding: 16,
+    padding: 14,
+  },
+  panelTitle: {
+    color: "#15201a",
+    fontSize: 17,
+    fontWeight: "800",
+  },
+  field: {
+    gap: 6,
   },
   label: {
-    color: "#17201b",
-    fontSize: 14,
+    color: "#15201a",
+    fontSize: 13,
     fontWeight: "700",
   },
   input: {
-    borderColor: "#cbd6cf",
+    borderColor: "#c9d4ce",
     borderRadius: 8,
     borderWidth: 1,
-    color: "#17201b",
+    color: "#15201a",
     minHeight: 44,
     paddingHorizontal: 12,
   },
@@ -174,7 +349,7 @@ const styles = StyleSheet.create({
   },
   button: {
     alignItems: "center",
-    borderColor: "#cbd6cf",
+    borderColor: "#c9d4ce",
     borderRadius: 8,
     borderWidth: 1,
     flex: 1,
@@ -182,20 +357,26 @@ const styles = StyleSheet.create({
     minHeight: 44,
   },
   buttonText: {
-    color: "#17201b",
+    color: "#15201a",
     fontWeight: "700",
   },
   primaryButton: {
     alignItems: "center",
-    backgroundColor: "#1c6b5a",
+    backgroundColor: "#196d5c",
     borderRadius: 8,
-    flex: 1,
     justifyContent: "center",
-    minHeight: 44,
+    minHeight: 48,
+  },
+  stopButton: {
+    alignItems: "center",
+    backgroundColor: "#8b2f34",
+    borderRadius: 8,
+    justifyContent: "center",
+    minHeight: 48,
   },
   primaryButtonText: {
     color: "#ffffff",
-    fontWeight: "700",
+    fontWeight: "800",
   },
   statusRow: {
     alignItems: "center",
@@ -203,26 +384,35 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   status: {
-    color: "#17201b",
+    color: "#15201a",
     flex: 1,
     fontSize: 16,
     fontWeight: "700",
+  },
+  detail: {
+    color: "#66746c",
+    fontSize: 13,
+  },
+  transcript: {
+    color: "#15201a",
+    fontSize: 16,
+    lineHeight: 23,
   },
   metrics: {
     gap: 10,
   },
   metric: {
-    borderColor: "#dae2dd",
+    borderColor: "#d9e1dc",
     borderRadius: 8,
     borderWidth: 1,
     padding: 12,
   },
   metricLabel: {
-    color: "#647169",
+    color: "#66746c",
     fontSize: 13,
   },
   metricValue: {
-    color: "#17201b",
+    color: "#15201a",
     fontSize: 24,
     fontWeight: "800",
     textTransform: "capitalize",
