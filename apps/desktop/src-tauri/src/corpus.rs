@@ -198,6 +198,11 @@ pub fn load_speech_corpus_impl(path: &Path) -> Result<SpeechCorpusAnalysis> {
     analyze_store(&store)
 }
 
+pub fn export_speech_corpus_impl(path: &Path) -> Result<serde_json::Value> {
+    let store = read_store(path)?;
+    Ok(serde_json::to_value(store)?)
+}
+
 pub fn save_speech_corpus_session_impl(
     path: &Path,
     request: CorpusSessionInput,

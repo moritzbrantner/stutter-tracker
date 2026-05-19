@@ -39,6 +39,7 @@ type InsightsSidebarProps = {
   onModelDownload: (model: string) => void;
   onSpeakerLabelChange: (label: string) => void;
   onEnroll: () => void;
+  onCorpusExport: () => void;
 };
 
 export function InsightsSidebar({
@@ -62,6 +63,7 @@ export function InsightsSidebar({
   onModelDownload,
   onSpeakerLabelChange,
   onEnroll,
+  onCorpusExport,
 }: InsightsSidebarProps) {
   return (
     <aside className={`${panelClass} w-[22rem] shrink-0 p-4 max-lg:w-full`}>
@@ -115,6 +117,10 @@ export function InsightsSidebar({
             value={`${(corpusAnalysis.stats.lexicalDiversity * 100).toFixed(0)}%`}
           />
         </StatsList>
+        <button className={`${buttonClass} mt-3 w-full`} onClick={onCorpusExport}>
+          <Download size={16} />
+          Download JSON
+        </button>
         {corpusAnalysis.topTerms.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {corpusAnalysis.topTerms.slice(0, 6).map((term) => (

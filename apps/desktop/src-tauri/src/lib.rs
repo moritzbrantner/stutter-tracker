@@ -6,8 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use corpus::{
-    load_speech_corpus_impl, save_speech_corpus_session_impl, CorpusSessionInput,
-    SpeechCorpusAnalysis,
+    export_speech_corpus_impl, load_speech_corpus_impl, save_speech_corpus_session_impl,
+    CorpusSessionInput, SpeechCorpusAnalysis,
 };
 use speech_analysis::{
     analyze_speech_session_impl, compare_voiceprint_impl, create_voiceprint_impl, AnalysisReport,
@@ -80,6 +80,11 @@ fn load_speech_corpus(app: tauri::AppHandle) -> Result<SpeechCorpusAnalysis, Str
 }
 
 #[tauri::command]
+fn export_speech_corpus(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    export_speech_corpus_impl(&speech_corpus_path(&app)?).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn save_speech_corpus_session(
     app: tauri::AppHandle,
     session: CorpusSessionInput,
@@ -123,6 +128,7 @@ pub fn run() {
             load_speaker_profiles,
             save_speaker_profiles,
             load_speech_corpus,
+            export_speech_corpus,
             save_speech_corpus_session,
             transcribe_audio,
             transcription_models,

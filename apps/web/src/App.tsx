@@ -697,11 +697,24 @@ export function App() {
   }
 
   function exportJson() {
-    const payload = JSON.stringify({ sessions, speakers, corpus: corpusAnalysis }, null, 2);
+    downloadJsonFile("stutter-tracker-export.json", { sessions, speakers, corpus: corpusAnalysis });
+  }
+
+  async function exportCorpusJson() {
+    const corpus = await loadSpeechCorpusExport(sessions);
+    downloadJsonFile("stutter-tracker-corpus.json", {
+      exportedAt: new Date().toISOString(),
+      corpus,
+      analysis: corpusAnalysis,
+    });
+  }
+
+  function downloadJsonFile(filename: string, value: unknown) {
+    const payload = JSON.stringify(value, null, 2);
     const url = URL.createObjectURL(new Blob([payload], { type: "application/json" }));
     const link = document.createElement("a");
     link.href = url;
-    link.download = "stutter-tracker-export.json";
+    link.download = filename;
     link.click();
     URL.revokeObjectURL(url);
   }
@@ -1000,6 +1013,7 @@ export function App() {
           onModelDownload={(model) => downloadModel(model)}
           onSpeakerLabelChange={setSpeakerLabel}
           onEnroll={saveSpeakerProfile}
+          onCorpusExport={exportCorpusJson}
         />
       </section>
 
@@ -1179,6 +1193,17 @@ async function loadSpeechCorpus(): Promise<SpeechCorpusAnalysis> {
     throw new Error("desktop corpus is only available in the Tauri app");
   }
   return invoke<SpeechCorpusAnalysis>("load_speech_corpus");
+}
+
+async function loadSpeechCorpusExport(sessions: SavedSession[]) {
+  if (!isDesktopApp()) {
+    return localSpeechCorpusExport(sessions);
+  }
+  try {
+    return await invoke<unknown>("export_speech_corpus");
+  } catch {
+    return localSpeechCorpusExport(sessions);
+  }
 }
 
 async function saveSpeechCorpusSession(session: SavedSession): Promise<SpeechCorpusAnalysis> {
@@ -1380,6 +1405,20 @@ function emptyCorpusAnalysis(): SpeechCorpusAnalysis {
     keywords: [],
     summary: [],
     speakers: [],
+  };
+}
+
+function localSpeechCorpusExport(sessions: SavedSession[]) {
+  return {
+    sessions: sessions.map((session) => ({
+      id: session.id,
+      startedAt: session.startedAt,
+      segments: session.segments.filter((segment) => segment.isFinal && segment.text.trim()),
+      totalDurationSeconds: session.report.totalDurationSeconds,
+      wordCount: session.report.wordCount,
+      stutterCount: session.report.stutterCount,
+      stuttersPerMinute: session.report.stuttersPerMinute,
+    })),
   };
 }
 
