@@ -1,0 +1,16 @@
+{
+  "name": "@stutter-tracker/desktop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri",
+    "format": "cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "format:check": "cargo fmt --manifest-path src-tauri/Cargo.toml --check"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.10.1"
+  }
+}

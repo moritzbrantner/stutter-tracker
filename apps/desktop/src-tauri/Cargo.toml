@@ -1,0 +1,36 @@
+[package]
+name = "stutter-tracker"
+version = "0.1.0"
+description = "Speech fluency tracker for recording, voice matching, transcription, and stutter analysis."
+authors = ["Moritz Brantner"]
+edition = "2021"
+
+[lib]
+name = "stutter_tracker_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+audio-analysis-core = { path = "../../../../rust-packages/crates/audio/audio-analysis-core" }
+audio-analysis-fourier = { path = "../../../../rust-packages/crates/audio/audio-analysis-fourier" }
+audio-analysis-pitch = { path = "../../../../rust-packages/crates/audio/audio-analysis-pitch" }
+audio-analysis-recognition = { path = "../../../../rust-packages/crates/audio/audio-analysis-recognition" }
+audio-analysis-rhythm = { path = "../../../../rust-packages/crates/audio/audio-analysis-rhythm" }
+audio-analysis-speakers = { path = "../../../../rust-packages/crates/audio/audio-analysis-speakers" }
+hound = "3.5"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tauri = { version = "2", features = [] }
+text-analysis-corpus = { path = "../../../../rust-packages/crates/text/text-analysis-corpus" }
+text-analysis-features = { path = "../../../../rust-packages/crates/text/text-analysis-features" }
+text-analysis-linguistics = { path = "../../../../rust-packages/crates/text/text-analysis-linguistics" }
+text-analysis-transcription = { path = "../../../../rust-packages/crates/text/text-analysis-transcription" }
+thiserror = "2"
+ureq = "2"
+video-analysis-core = { path = "../../../../rust-packages/crates/video/video-analysis-core" }
+
+[dev-dependencies]
+approx = "0.5"

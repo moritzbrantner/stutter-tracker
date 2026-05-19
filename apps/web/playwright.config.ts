@@ -11,7 +11,7 @@ export default defineConfig({
     trace: "on-first-retry",
   },
   webServer: {
-    command: "bun run dev",
+    command: "bun --filter @stutter-tracker/web dev",
     url: "http://127.0.0.1:1421",
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

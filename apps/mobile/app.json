@@ -1,0 +1,16 @@
+{
+  "expo": {
+    "name": "Stutter Tracker",
+    "slug": "stutter-tracker",
+    "scheme": "stuttertracker",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "newArchEnabled": true,
+    "ios": {
+      "bundleIdentifier": "com.moenarch.stuttertracker"
+    },
+    "android": {
+      "package": "com.moenarch.stuttertracker"
+    }
+  }
+}

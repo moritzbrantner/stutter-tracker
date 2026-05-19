@@ -1,0 +1,26 @@
+{
+  "name": "@stutter-tracker/mobile",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "expo/AppEntry.js",
+  "scripts": {
+    "start": "expo start",
+    "android": "expo start --android",
+    "ios": "expo start --ios",
+    "web": "expo start --web",
+    "format": "oxfmt --write \"src/**/*.{ts,tsx}\" App.tsx",
+    "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\" App.tsx"
+  },
+  "dependencies": {
+    "@stutter-tracker/compute-client": "workspace:*",
+    "@stutter-tracker/shared": "workspace:*",
+    "expo": "^55.0.0",
+    "react": "^19.2.0",
+    "react-native": "^0.83.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.14",
+    "typescript": "~5.8.3"
+  }
+}

@@ -1,13 +1,21 @@
+mod corpus;
 mod speech_analysis;
 mod transcription;
 
+use std::fs;
+use std::path::PathBuf;
+
+use corpus::{
+    load_speech_corpus_impl, save_speech_corpus_session_impl, CorpusSessionInput,
+    SpeechCorpusAnalysis,
+};
 use speech_analysis::{
     analyze_speech_session_impl, compare_voiceprint_impl, create_voiceprint_impl, AnalysisReport,
     AnalyzeSpeechRequest, SpeakerIdentificationRequest, SpeakerIdentificationResult,
     SpeakerProfileRequest, SpeakerProfileResult, VoiceMatchRequest, VoiceMatchResult,
     VoiceprintRequest, VoiceprintResult,
 };
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use transcription::{
     download_transcription_model_impl, transcribe_audio_impl, transcription_models_impl,
     DownloadTranscriptionModelRequest, TranscribeAudioRequest, TranscribeAudioResult,
@@ -43,6 +51,44 @@ fn identify_speaker(
 }
 
 #[tauri::command]
+fn load_speaker_profiles(app: tauri::AppHandle) -> Result<Vec<SpeakerProfileResult>, String> {
+    let path = speaker_profiles_path(&app)?;
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(path).map_err(|err| err.to_string())?;
+    let speakers: Vec<SpeakerProfileResult> =
+        serde_json::from_str(&content).map_err(|err| err.to_string())?;
+    Ok(normalize_speaker_profiles(speakers))
+}
+
+#[tauri::command]
+fn save_speaker_profiles(
+    app: tauri::AppHandle,
+    speakers: Vec<SpeakerProfileResult>,
+) -> Result<Vec<SpeakerProfileResult>, String> {
+    let path = speaker_profiles_path(&app)?;
+    let speakers = normalize_speaker_profiles(speakers);
+    let content = serde_json::to_string_pretty(&speakers).map_err(|err| err.to_string())?;
+    fs::write(path, content).map_err(|err| err.to_string())?;
+    Ok(speakers)
+}
+
+#[tauri::command]
+fn load_speech_corpus(app: tauri::AppHandle) -> Result<SpeechCorpusAnalysis, String> {
+    load_speech_corpus_impl(&speech_corpus_path(&app)?).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn save_speech_corpus_session(
+    app: tauri::AppHandle,
+    session: CorpusSessionInput,
+) -> Result<SpeechCorpusAnalysis, String> {
+    save_speech_corpus_session_impl(&speech_corpus_path(&app)?, session)
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn transcribe_audio(request: TranscribeAudioRequest) -> Result<TranscribeAudioResult, String> {
     transcribe_audio_impl(request).map_err(|err| err.to_string())
 }
@@ -74,10 +120,37 @@ pub fn run() {
             compare_voiceprint,
             create_speaker_profile,
             identify_speaker,
+            load_speaker_profiles,
+            save_speaker_profiles,
+            load_speech_corpus,
+            save_speech_corpus_session,
             transcribe_audio,
             transcription_models,
             download_transcription_model
         ])
         .run(tauri::generate_context!())
         .expect("error while running Stutter Tracker");
+}
+
+fn speaker_profiles_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
+    Ok(data_dir.join("known-speakers.json"))
+}
+
+fn speech_corpus_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let data_dir = app.path().app_data_dir().map_err(|err| err.to_string())?;
+    fs::create_dir_all(&data_dir).map_err(|err| err.to_string())?;
+    Ok(data_dir.join("speech-corpus.json"))
+}
+
+fn normalize_speaker_profiles(speakers: Vec<SpeakerProfileResult>) -> Vec<SpeakerProfileResult> {
+    speakers
+        .into_iter()
+        .filter(|speaker| {
+            !speaker.id.trim().is_empty()
+                && !speaker.label.trim().is_empty()
+                && !speaker.embeddings.is_empty()
+        })
+        .collect()
 }

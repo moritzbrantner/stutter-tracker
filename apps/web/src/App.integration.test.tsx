@@ -62,6 +62,11 @@ describe("App integration", () => {
             text: "start",
             detail: "0.9s silent pause before speech",
             confidence: 0.62,
+            source: "fused",
+            acousticEvidence: {
+              silenceSeconds: 0.9,
+              onsetCount: 1,
+            },
           },
         ],
         byKind: { wordRepetition: 1, block: 1 },
@@ -77,10 +82,11 @@ describe("App integration", () => {
 
     expect(await screen.findAllByText("I I want to start")).toHaveLength(2);
     expect(await screen.findByText("Repeated word sequence")).toBeInTheDocument();
+    expect((await screen.findAllByText("Text")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("0:00")).toHaveLength(2);
   });
 
-  it("forces native transcription settings back to browser settings in web mode", async () => {
+  it("keeps external-server transcription settings in web mode", async () => {
     localStorage.setItem(
       TRANSCRIPTION_KEY,
       JSON.stringify({ engine: "whisperCpp", model: "small.en" }),
@@ -91,11 +97,11 @@ describe("App integration", () => {
     const engineSelect = screen.getByLabelText<HTMLSelectElement>("Transcription engine");
     const modelSelect = screen.getByLabelText<HTMLSelectElement>("Transcription model");
 
-    await waitFor(() => expect(engineSelect.value).toBe("browser"));
-    expect(modelSelect.value).toBe("default");
+    await waitFor(() => expect(engineSelect.value).toBe("whisperCpp"));
+    expect(modelSelect.value).toBe("small.en");
     expect(JSON.parse(localStorage.getItem(TRANSCRIPTION_KEY) ?? "{}")).toEqual({
-      engine: "browser",
-      model: "default",
+      engine: "whisperCpp",
+      model: "small.en",
     });
   });
 

@@ -3,6 +3,8 @@ dist/
 playwright-report/
 test-results/
 src-tauri/target/
+apps/desktop/src-tauri/target/
+.benchmarks/
 
 .env
 .env.*

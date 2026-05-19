@@ -1,0 +1,22 @@
+{
+  "name": "@stutter-tracker/shared",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "types": "./src/index.ts",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "format": "oxfmt --write \"src/**/*.{ts,tsx}\"",
+    "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\""
+  },
+  "devDependencies": {
+    "typescript": "~5.8.3"
+  }
+}

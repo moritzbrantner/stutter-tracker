@@ -277,6 +277,16 @@ fn transcribe_with_temp_dir(
         }
         TranscriptionProvider::WhisperCpp => {
             let parsed_model = parse_whisper_cpp_model(&model)?;
+            let store = WhisperCppModelStore::default();
+            if !store.model_path(parsed_model).is_file() {
+                download_transcription_model_impl(
+                    DownloadTranscriptionModelRequest {
+                        provider: TranscriptionProvider::WhisperCpp,
+                        model: parsed_model.id().to_string(),
+                    },
+                    |_| {},
+                )?;
+            }
             let mut transcriber = WhisperCppTranscriber::new(WhisperCppConfig {
                 model: parsed_model,
                 language,
