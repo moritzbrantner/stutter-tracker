@@ -1,14 +1,16 @@
 use std::fs::{self, File};
+use std::io::ErrorKind;
 use std::io::{BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use text_analysis_transcription::{
-    Transcriber, TranscriptionResult, WhisperCliTranscriber, WhisperCppConfig, WhisperCppModel,
-    WhisperCppModelStore, WhisperCppTranscriber,
+    Transcriber, TranscriptionError, TranscriptionResult, WhisperCliTranscriber, WhisperCppConfig,
+    WhisperCppModel, WhisperCppModelStore, WhisperCppTranscriber,
 };
 use thiserror::Error;
 
@@ -27,6 +29,8 @@ pub enum TranscriptionCommandError {
 }
 
 type Result<T> = std::result::Result<T, TranscriptionCommandError>;
+
+static TEMP_DIR_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -351,17 +355,32 @@ fn transcribe_with_input_path(
             let mut transcriber = WhisperCliTranscriber::new("whisper")
                 .args(cli_args(&model, language.as_deref()))
                 .output_dir(temp_dir.join("whisper-output"));
-            let result = transcriber.transcribe(input_path)?;
+            let result = transcriber
+                .transcribe(input_path)
+                .map_err(|error| cli_transcription_error("whisper", error))?;
             build_result(result, TranscriptionProviderResult::WhisperCli, model)
         }
         TranscriptionProvider::FasterWhisper => {
             let mut transcriber = WhisperCliTranscriber::new("faster-whisper")
                 .args(cli_args(&model, language.as_deref()))
                 .output_dir(temp_dir.join("faster-whisper-output"));
-            let result = transcriber.transcribe(input_path)?;
+            let result = transcriber
+                .transcribe(input_path)
+                .map_err(|error| cli_transcription_error("faster-whisper", error))?;
             build_result(result, TranscriptionProviderResult::FasterWhisper, model)
         }
     })
+}
+
+fn cli_transcription_error(command: &str, error: TranscriptionError) -> TranscriptionCommandError {
+    match error {
+        TranscriptionError::Io(error) if error.kind() == ErrorKind::NotFound => {
+            TranscriptionCommandError::Invalid(format!(
+                "`{command}` was not found on PATH. Install it, or switch the transcription engine to whisper.cpp."
+            ))
+        }
+        other => other.into(),
+    }
 }
 
 fn validate_input_file(path: &Path) -> Result<()> {
@@ -526,16 +545,25 @@ fn normalize_language(value: Option<&str>) -> Option<String> {
 }
 
 fn temp_transcription_dir() -> Result<PathBuf> {
-    let millis = SystemTime::now()
+    let nanos = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
+        .map(|duration| duration.as_nanos())
         .unwrap_or_default();
-    let dir = std::env::temp_dir().join(format!(
-        "stutter-tracker-transcription-{}-{millis}",
-        std::process::id()
-    ));
-    fs::create_dir_all(&dir)?;
-    Ok(dir)
+    let counter = TEMP_DIR_COUNTER.fetch_add(1, Ordering::Relaxed);
+    for attempt in 0..100 {
+        let dir = std::env::temp_dir().join(format!(
+            "stutter-tracker-transcription-{}-{nanos}-{counter}-{attempt}",
+            std::process::id()
+        ));
+        match fs::create_dir(&dir) {
+            Ok(()) => return Ok(dir),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.into()),
+        }
+    }
+    Err(TranscriptionCommandError::Invalid(
+        "could not create a unique transcription temp directory".to_string(),
+    ))
 }
 
 fn write_mono_wav(path: &Path, samples: &[f32], sample_rate: u32) -> Result<()> {
@@ -582,5 +610,30 @@ mod tests {
 
         assert_eq!(selected, wav);
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn cli_missing_command_reports_actionable_error() {
+        let error = cli_transcription_error(
+            "whisper",
+            TranscriptionError::Io(std::io::Error::from(ErrorKind::NotFound)),
+        );
+
+        let message = error.to_string();
+        assert!(message.contains("`whisper` was not found on PATH"));
+        assert!(message.contains("whisper.cpp"));
+    }
+
+    #[test]
+    fn temp_transcription_dirs_are_unique() {
+        let first = temp_transcription_dir().unwrap();
+        let second = temp_transcription_dir().unwrap();
+
+        assert_ne!(first, second);
+        assert!(first.is_dir());
+        assert!(second.is_dir());
+
+        let _ = fs::remove_dir_all(first);
+        let _ = fs::remove_dir_all(second);
     }
 }

@@ -1905,15 +1905,25 @@ function loadTranscriptionSettings(): TranscriptionSettings {
     const parsed = JSON.parse(
       localStorage.getItem(TRANSCRIPTION_KEY) ?? "null",
     ) as Partial<TranscriptionSettings> | null;
+    const fallback = defaultTranscriptionSettings();
     const engine =
-      TRANSCRIPTION_ENGINES.find((item) => item.id === parsed?.engine) ?? TRANSCRIPTION_ENGINES[0];
+      TRANSCRIPTION_ENGINES.find((item) => item.id === parsed?.engine) ??
+      getTranscriptionEngine(fallback.engine);
     const model = engine.models.includes(parsed?.model ?? "")
       ? (parsed?.model ?? engine.models[0])
-      : engine.models[0];
+      : engine.models.includes(fallback.model)
+        ? fallback.model
+        : engine.models[0];
     return { engine: engine.id, model };
   } catch {
-    return { engine: "browser", model: "default" };
+    return defaultTranscriptionSettings();
   }
+}
+
+function defaultTranscriptionSettings(): TranscriptionSettings {
+  return isDesktopApp()
+    ? { engine: "whisperCpp", model: "base.en" }
+    : { engine: "browser", model: "default" };
 }
 
 export function staticModelStatuses(engine: TranscriptionEngineId): TranscriptionModelStatus[] {
