@@ -1,4 +1,4 @@
-name: Source mode CI
+name: Source mode contract
 
 on:
   pull_request:
@@ -9,68 +9,30 @@ permissions:
   contents: read
 
 jobs:
-  source-mode:
-    name: exact capability source graph
-    if: github.event_name == 'workflow_dispatch' || github.event.pull_request.head.repo.full_name == github.repository
+  source-contract:
+    name: local-only capability source graph
     runs-on: ubuntu-latest
-    env:
-      GH_PACKAGES_TOKEN: ${{ secrets.GH_PACKAGES_TOKEN }}
     steps:
-      - name: Require private source token
+      - uses: actions/checkout@v5
+
+      - name: Verify local-only dependency declaration
         run: |
-          if [ -z "$GH_PACKAGES_TOKEN" ]; then
-            echo "GH_PACKAGES_TOKEN must have contents:read access to audio-analysis, nlp-stack, moenarch-foundation, and coding-tooling." >&2
+          jq -e '.schemaVersion == 1 and .cargo.localOnly == true' .coding-tooling.source-deps.json >/dev/null
+          jq -e '.cargo.patches | length > 0 and all(.[]; (.package | length > 0) and (.git | length > 0) and (.rev | test("^[0-9a-f]{40}$")) and (.localPath | length > 0))' .coding-tooling.source-deps.json >/dev/null
+          if grep -R --line-number --fixed-string 'GH_PACKAGES_TOKEN' .github/workflows; then
+            echo "Hosted source validation must not depend on private cross-repository credentials." >&2
             exit 1
           fi
 
-      - name: Check out candidate
-        uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
         with:
-          persist-credentials: false
+          components: rustfmt
 
-      - name: Configure private source auth
-        run: |
-          git config --global url."https://x-access-token:${GH_PACKAGES_TOKEN}@github.com/moritzbrantner/".insteadOf "https://github.com/moritzbrantner/"
-
-      - name: Check out source-dependency tooling
-        uses: actions/checkout@v5
-        with:
-          repository: moritzbrantner/coding-tooling
-          ref: f9133fe3ca885c2538d2fc92cd52427f4b7ab738
-          token: ${{ secrets.GH_PACKAGES_TOKEN }}
-          path: .source/coding-tooling
-          persist-credentials: false
-
-      - name: Install Bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Install Tauri system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install --yes libwebkit2gtk-4.1-dev libgtk-3-dev libayatana-appindicator3-dev librsvg2-dev
-
-      - name: Activate exact source graph
-        env:
-          CODING_TOOLING_DIR: ${{ github.workspace }}/.source/coding-tooling
-        run: |
-          bash scripts/source-deps activate
-          bash scripts/source-deps status
-
-      - name: Verify Rust application
+      - name: Check Rust formatting
         working-directory: apps/desktop/src-tauri
-        run: |
-          cargo fmt -- --check
-          cargo check
-          cargo clippy --all-targets -- -D warnings
-          cargo test
+        run: cargo fmt -- --check
 
-      - name: Deactivate source graph
-        if: ${{ always() && hashFiles('scripts/source-deps') != '' }}
-        env:
-          CODING_TOOLING_DIR: ${{ github.workspace }}/.source/coding-tooling
-        run: bash scripts/source-deps deactivate || true
+      - name: Explain source verification boundary
+        run: |
+          echo "Rust check, clippy, and tests run in the local coding workspace against the exact sibling audio-analysis, nlp-stack, and moenarch-foundation sources."
+          echo "Hosted CI validates the contract without cloning those private repositories."
