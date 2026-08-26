@@ -1,7 +1,7 @@
 name: Source mode CI
 
 on:
-  pull_request_target:
+  pull_request:
     types: [opened, synchronize, reopened, ready_for_review]
   workflow_dispatch:
 
@@ -26,7 +26,6 @@ jobs:
       - name: Check out candidate
         uses: actions/checkout@v5
         with:
-          ref: ${{ github.event_name == 'pull_request_target' && format('refs/pull/{0}/merge', github.event.pull_request.number) || github.sha }}
           persist-credentials: false
 
       - name: Configure private source auth
