@@ -1,8 +1,8 @@
 mod corpus;
 mod prediction;
 mod speech_analysis;
-pub mod transcription;
 mod text_analysis_transcription;
+pub mod transcription;
 
 // Local compatibility names keep product code stable while the historical
 // monolith package surfaces are mapped to their extracted capability owners.
