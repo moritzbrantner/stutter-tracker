@@ -76,7 +76,8 @@ fn fuse_observations(observations: &ObservationBatch) -> FusedObservationContext
     FusedObservationContext {
         channels,
         timeline_end_seconds: observations.timeline_end_seconds,
-        has_complete_audio_input: observations.audio_sample_count > 0 && observations.sample_rate.is_some(),
+        has_complete_audio_input: observations.audio_sample_count > 0
+            && observations.sample_rate.is_some(),
     }
 }
 
@@ -90,7 +91,10 @@ fn interpret_session(
     debug_assert!(context.timeline_end_seconds >= 0.0);
     debug_assert_eq!(
         context.has_complete_audio_input,
-        request.samples.as_ref().is_some_and(|samples| !samples.is_empty())
+        request
+            .samples
+            .as_ref()
+            .is_some_and(|samples| !samples.is_empty())
             && request.sample_rate.is_some()
     );
     debug_assert_eq!(
