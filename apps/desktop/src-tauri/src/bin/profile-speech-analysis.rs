@@ -16,7 +16,8 @@ fn main() {
     let options = Options::parse();
     let request = fixture(options.duration_seconds, options.audio);
     let started = Instant::now();
-    let report = analyze_speech_session_impl(request).expect("synthetic speech analysis must succeed");
+    let report =
+        analyze_speech_session_impl(request).expect("synthetic speech analysis must succeed");
     let elapsed = started.elapsed().as_secs_f64();
     let real_time_factor = elapsed / options.duration_seconds.max(0.001);
 
