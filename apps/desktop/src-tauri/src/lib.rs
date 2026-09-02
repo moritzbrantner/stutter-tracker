@@ -1,6 +1,7 @@
 mod corpus;
 mod prediction;
 mod speech_analysis;
+mod speech_pipeline;
 mod text_analysis_transcription;
 pub mod transcription;
 
@@ -23,10 +24,9 @@ use corpus::{
 };
 use prediction::{predict_speaker_intent_impl, SpeakerIntentPrediction, SpeakerIntentRequest};
 use speech_analysis::{
-    analyze_speech_session_impl, compare_voiceprint_impl, create_voiceprint_impl, AnalysisReport,
-    AnalyzeSpeechRequest, SpeakerIdentificationRequest, SpeakerIdentificationResult,
-    SpeakerProfileRequest, SpeakerProfileResult, VoiceMatchRequest, VoiceMatchResult,
-    VoiceprintRequest, VoiceprintResult,
+    compare_voiceprint_impl, create_voiceprint_impl, AnalysisReport, AnalyzeSpeechRequest,
+    SpeakerIdentificationRequest, SpeakerIdentificationResult, SpeakerProfileRequest,
+    SpeakerProfileResult, VoiceMatchRequest, VoiceMatchResult, VoiceprintRequest, VoiceprintResult,
 };
 use tauri::{Emitter, Manager};
 use transcription::{
@@ -38,7 +38,7 @@ use transcription::{
 
 #[tauri::command]
 fn analyze_speech_session(request: AnalyzeSpeechRequest) -> Result<AnalysisReport, String> {
-    analyze_speech_session_impl(request).map_err(|err| err.to_string())
+    speech_pipeline::analyze_speech_session(request).map_err(|err| err.to_string())
 }
 
 #[tauri::command]
