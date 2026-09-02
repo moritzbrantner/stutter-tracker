@@ -114,9 +114,31 @@ jobs:
         working-directory: stutter-tracker/apps/desktop/src-tauri
         run: cargo fmt -- --check
 
+      - name: Capture native reverse dependency
+        working-directory: stutter-tracker/apps/desktop/src-tauri
+        run: cargo tree -i whisper-rs-sys -e all > /tmp/whisper-rs-sys-tree.txt 2>&1 || true
+
       - name: Rust check
         working-directory: stutter-tracker/apps/desktop/src-tauri
-        run: cargo check --all-targets
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          cargo check --all-targets 2>&1 | tee /tmp/cargo-check.txt
+          status=${PIPESTATUS[0]}
+          echo "$status" > /tmp/cargo-check-status.txt
+          exit "$status"
+
+      - name: Upload check diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1-rust-diagnostics
+          path: |
+            /tmp/whisper-rs-sys-tree.txt
+            /tmp/cargo-check.txt
+            /tmp/cargo-check-status.txt
+          if-no-files-found: error
 
       - name: Rust clippy
         working-directory: stutter-tracker/apps/desktop/src-tauri
