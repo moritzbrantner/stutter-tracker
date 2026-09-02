@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 
-import { evaluateClips, normalizeSep28kRow, shouldEvaluateSep28k, speakerSafeSplit } from "./index";
+import {
+  evaluateClips,
+  normalizeSep28kRow,
+  shouldEvaluateSep28k,
+  speakerSafeSplit,
+} from "./index";
 
 describe("normalizeSep28kRow", () => {
   test("maps majority-vote SEP-28k labels to product kinds", () => {
@@ -24,9 +29,18 @@ describe("normalizeSep28kRow", () => {
     });
 
     expect(entry.id).toBe("HeStutters:7:12");
+    expect(entry.speakerId).toBeNull();
     expect(entry.referenceKinds).toEqual(["wordRepetition", "prolongation", "filler"]);
     expect(entry.annotationVotes.soundRepetition).toBe(1);
     expect(shouldEvaluateSep28k(entry)).toBe(true);
+  });
+
+  test("uses explicit speaker metadata when supplied", () => {
+    const entry = normalizeSep28kRow(
+      { Show: "show", EpId: 1, ClipId: 2 },
+      { speakerId: "speaker-17" },
+    );
+    expect(entry.speakerId).toBe("speaker-17");
   });
 
   test("excludes clips with majority-vote quality flags", () => {
@@ -85,5 +99,11 @@ describe("speakerSafeSplit", () => {
 
     for (const speaker of trainSpeakers) expect(evaluationSpeakers.has(speaker)).toBe(false);
     expect(split.train.length + split.evaluation.length).toBe(items.length);
+  });
+
+  test("refuses a split when speaker identity is unavailable", () => {
+    expect(() => speakerSafeSplit([{ speakerId: null, clip: 1 }])).toThrow(
+      "speakerSafeSplit requires explicit speaker metadata for every item",
+    );
   });
 });
