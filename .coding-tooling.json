@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "profile": "repository-foundation-v1",
+  "tiers": {
+    "fast": ["format:check", "build", "test"],
+    "standard": ["format:check", "build", "test", "test:integration"],
+    "deep": ["format:check", "build", "test", "test:integration", "test:e2e"]
+  },
+  "requiredCapabilities": ["format:check", "build", "test"],
+  "optionalCapabilities": ["test:integration", "test:e2e"]
+}
