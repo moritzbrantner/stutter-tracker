@@ -14,7 +14,7 @@ def fail(message: str) -> None:
     raise SystemExit(message)
 
 
-def load_target(scenario_path: Path) -> tuple[Path, list[str], int, int]:
+def load_target(scenario_path: Path) -> tuple[Path, list[str], Path, int, int]:
     program: str | None = None
     args: list[str] | None = None
     working_directory: str | None = None
@@ -38,12 +38,16 @@ def load_target(scenario_path: Path) -> tuple[Path, list[str], int, int]:
         fail(f"scenario does not declare a command target: {scenario_path}")
 
     scenario_directory = scenario_path.parent.resolve()
-    cwd = scenario_directory if working_directory is None else (scenario_directory / working_directory).resolve()
+    cwd = (
+        scenario_directory
+        if working_directory is None
+        else (scenario_directory / working_directory).resolve()
+    )
     executable = Path(program)
     if not executable.is_absolute():
         executable = (cwd / executable).resolve()
 
-    return executable, args, warmups, iterations
+    return executable, args, cwd, warmups, iterations
 
 
 def run_once(executable: Path, args: list[str], cwd: Path) -> dict[str, Any]:
@@ -82,8 +86,7 @@ def main() -> None:
 
     scenario_path = Path(sys.argv[1]).resolve()
     output_path = Path(sys.argv[2]).resolve()
-    executable, args, warmups, iterations = load_target(scenario_path)
-    cwd = (scenario_path.parent / "../..").resolve()
+    executable, args, cwd, warmups, iterations = load_target(scenario_path)
 
     if not executable.is_file():
         fail(f"profile workload binary does not exist: {executable}")
@@ -94,8 +97,7 @@ def main() -> None:
 
     metric_names = ["elapsedSeconds", "realTimeFactor", "eventCount", "wordCount"]
     metrics = {
-        name: summarize([float(sample[name]) for sample in samples])
-        for name in metric_names
+        name: summarize([float(sample[name]) for sample in samples]) for name in metric_names
     }
     analyzed_audio = [
         float(sample["analyzedAudioSeconds"])
