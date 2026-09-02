@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use text_analysis_corpus::{CorpusOptions, CorpusStats, CorpusTermStats, TfIdfCorpus};
-use text_analysis_features::{
+use crate::text_analysis_features::{
     extractive_summary, keywords, readability_summary, sentiment, summarize_text,
     ExtractiveSummaryOptions, KeywordOptions, ReadabilitySummary, SentimentLexicon,
     SentimentSummary, TextFeatureSummary,
@@ -19,7 +19,7 @@ pub enum CorpusError {
     #[error("invalid corpus JSON: {0}")]
     Json(#[from] serde_json::Error),
     #[error("{0}")]
-    Analysis(#[from] video_analysis_core::DetectError),
+    Analysis(#[from] crate::video_analysis_core::DetectError),
 }
 
 type Result<T> = std::result::Result<T, CorpusError>;
@@ -514,7 +514,7 @@ fn term_output(term: CorpusTermStats) -> CorpusTerm {
     }
 }
 
-fn keyword_output(keyword: text_analysis_features::Keyword) -> CorpusKeyword {
+fn keyword_output(keyword: crate::text_analysis_features::Keyword) -> CorpusKeyword {
     CorpusKeyword {
         text: keyword.text,
         score: keyword.score,
