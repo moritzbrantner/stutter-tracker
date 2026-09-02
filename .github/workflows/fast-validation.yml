@@ -1,0 +1,27 @@
+name: Fast validation
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web-fast:
+    permissions:
+      contents: read
+    uses: moritzbrantner/reusable-workflows/.github/workflows/coding-tooling-validation.yml@8da6ad737d4746159414bde686d5c7422e0a9232
+    with:
+      tier: fast
+      component: apps/web
+      strict: true
+      install_mode: auto
+      report_path: .artifacts/coding-tooling/web-fast.json
+      timeout_minutes: 30
