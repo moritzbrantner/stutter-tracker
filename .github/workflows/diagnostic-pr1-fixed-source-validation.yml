@@ -1,0 +1,152 @@
+name: Diagnostic PR1 fixed source validation
+
+on:
+  push:
+    branches:
+      - diagnostic/pr1-source-validation-fixed
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    env:
+      CARGO_INCREMENTAL: 0
+      CARGO_PROFILE_DEV_DEBUG: 0
+      CARGO_PROFILE_TEST_DEBUG: 0
+      CC: clang
+      CXX: clang++
+    steps:
+      - name: Check out fixed Stutter Tracker snapshot
+        uses: actions/checkout@v5
+        with:
+          path: stutter-tracker
+
+      - name: Check out exact audio-analysis source
+        uses: actions/checkout@v5
+        with:
+          repository: moritzbrantner/audio-analysis
+          ref: d81bfcf600145c9e12f8bb835ac394ca86ebf262
+          path: audio-analysis
+
+      - name: Check out exact nlp-stack source
+        uses: actions/checkout@v5
+        with:
+          repository: moritzbrantner/nlp-stack
+          ref: 057689ca1df031d677f4afd9d65eed181c6fca06
+          path: nlp-stack
+
+      - name: Check out exact moenarch-foundation source
+        uses: actions/checkout@v5
+        with:
+          repository: moritzbrantner/moenarch-foundation
+          ref: 565fa0046ff96032832a21493e5334c6506ffef1
+          path: moenarch-foundation
+
+      - name: Check out source-deps tooling
+        uses: actions/checkout@v5
+        with:
+          repository: moritzbrantner/coding-tooling
+          ref: 7f63dade760bfb1020c69d1a0ac7319cbbdf91ab
+          path: coding-tooling
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential \
+            clang \
+            libasound2-dev \
+            libssl-dev \
+            libwebkit2gtk-4.1-dev \
+            pkg-config
+
+      - name: Verify exact sibling revisions
+        run: |
+          test "$(git -C audio-analysis rev-parse HEAD)" = d81bfcf600145c9e12f8bb835ac394ca86ebf262
+          test "$(git -C nlp-stack rev-parse HEAD)" = 057689ca1df031d677f4afd9d65eed181c6fca06
+          test "$(git -C moenarch-foundation rev-parse HEAD)" = 565fa0046ff96032832a21493e5334c6506ffef1
+
+      - name: Activate exact local-only source graph
+        working-directory: stutter-tracker
+        run: |
+          bash scripts/source-deps activate
+          bash scripts/source-deps status
+
+      - name: Verify patched packages resolve from sibling source
+        working-directory: stutter-tracker/apps/desktop/src-tauri
+        run: |
+          cargo metadata --format-version 1 > /tmp/metadata.json
+          jq -e --arg root "$GITHUB_WORKSPACE" '
+            [
+              .packages[]
+              | select(.name == "moenarch-audio-analysis-core"
+                    or .name == "moenarch-audio-analysis-fourier"
+                    or .name == "moenarch-audio-analysis-pitch"
+                    or .name == "moenarch-audio-analysis-recognition"
+                    or .name == "moenarch-audio-analysis-rhythm"
+                    or .name == "moenarch-audio-analysis-speakers"
+                    or .name == "moenarch-audio-analysis-transcription"
+                    or .name == "moenarch-text-core"
+                    or .name == "moenarch-text-lexical"
+                    or .name == "moenarch-text-linguistics"
+                    or .name == "moenarch-text-generation"
+                    or .name == "moenarch-text-transcripts"
+                    or .name == "moenarch-media-core")
+              | .manifest_path
+            ] as $paths
+            | ($paths | length == 13)
+              and all($paths[]; startswith($root + "/audio-analysis/")
+                              or startswith($root + "/nlp-stack/")
+                              or startswith($root + "/moenarch-foundation/"))
+          ' /tmp/metadata.json
+
+      - name: Rust format
+        working-directory: stutter-tracker/apps/desktop/src-tauri
+        run: cargo fmt -- --check
+
+      - name: Run Rust source-workspace matrix
+        working-directory: stutter-tracker/apps/desktop/src-tauri
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+
+          cargo check --all-targets 2>&1 | tee /tmp/cargo-check.txt
+          check_status=${PIPESTATUS[0]}
+          echo "$check_status" > /tmp/cargo-check-status.txt
+
+          cargo clippy --all-targets -- -D warnings 2>&1 | tee /tmp/cargo-clippy.txt
+          clippy_status=${PIPESTATUS[0]}
+          echo "$clippy_status" > /tmp/cargo-clippy-status.txt
+
+          cargo test --all-targets 2>&1 | tee /tmp/cargo-test.txt
+          test_status=${PIPESTATUS[0]}
+          echo "$test_status" > /tmp/cargo-test-status.txt
+
+          if (( check_status != 0 || clippy_status != 0 || test_status != 0 )); then
+            exit 1
+          fi
+
+      - name: Upload Rust diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr1-fixed-rust-diagnostics
+          path: |
+            /tmp/cargo-check.txt
+            /tmp/cargo-check-status.txt
+            /tmp/cargo-clippy.txt
+            /tmp/cargo-clippy-status.txt
+            /tmp/cargo-test.txt
+            /tmp/cargo-test-status.txt
+          if-no-files-found: error
