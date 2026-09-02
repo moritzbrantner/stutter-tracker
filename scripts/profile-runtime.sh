@@ -9,6 +9,7 @@ fi
 root="$(git rev-parse --show-toplevel)"
 scenario="$root/.runtime-profiler/scenarios/$1.yaml"
 output="$2"
+domain_output="${output%/}.domain.json"
 profiler_root="${RUNTIME_PROFILER_ROOT:-$root/../runtime-profiler}"
 
 if [[ ! -f "$scenario" ]]; then
@@ -36,7 +37,11 @@ cargo run \
   -- validate \
   --bundle "$output"
 
+python3 "$root/scripts/profile-domain-metrics.py" "$scenario" "$domain_output"
+
 cargo run \
   --manifest-path "$profiler_root/Cargo.toml" \
   -- summarize \
   --bundle "$output"
+
+printf 'domain metrics: %s\n' "$domain_output"
