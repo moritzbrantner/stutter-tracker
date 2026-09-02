@@ -1,0 +1,77 @@
+name: Apply PR1 migration path fix
+
+on:
+  push:
+    branches:
+      - diagnostic/pr1-source-validation
+    paths:
+      - diagnostics/apply-pr1-migration-fix-trigger.txt
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out PR 1 branch
+        uses: actions/checkout@v5
+        with:
+          ref: chore/source-first-capability-migration
+          fetch-depth: 0
+
+      - name: Apply only migration path fixes
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          replacements = {
+              Path("apps/desktop/src-tauri/src/corpus.rs"): [
+                  ("use text_analysis_features::{", "use crate::text_analysis_features::{", 1),
+                  ("video_analysis_core::DetectError", "crate::video_analysis_core::DetectError", 1),
+                  ("text_analysis_features::Keyword", "crate::text_analysis_features::Keyword", 1),
+              ],
+              Path("apps/desktop/src-tauri/src/transcription.rs"): [
+                  ("use text_analysis_transcription::{", "use crate::text_analysis_transcription::{", 1),
+                  ("text_analysis_transcription::TranscriptionError", "crate::text_analysis_transcription::TranscriptionError", 1),
+              ],
+              Path("apps/desktop/src-tauri/src/prediction.rs"): [
+                  ("video_analysis_core::DetectError", "crate::video_analysis_core::DetectError", 1),
+              ],
+              Path("apps/desktop/src-tauri/src/speech_analysis.rs"): [
+                  ("video_analysis_core::DetectError", "crate::video_analysis_core::DetectError", 1),
+              ],
+          }
+
+          for path, edits in replacements.items():
+              text = path.read_text()
+              for old, new, expected in edits:
+                  actual = text.count(old)
+                  if actual != expected:
+                      raise SystemExit(f"{path}: expected {expected} occurrence(s) of {old!r}, found {actual}")
+                  text = text.replace(old, new)
+              path.write_text(text)
+          PY
+
+          git diff --check
+          actual="$(git diff --name-only | sort)"
+          expected="$(printf '%s\n' \
+            apps/desktop/src-tauri/src/corpus.rs \
+            apps/desktop/src-tauri/src/prediction.rs \
+            apps/desktop/src-tauri/src/speech_analysis.rs \
+            apps/desktop/src-tauri/src/transcription.rs | sort)"
+          test "$actual" = "$expected"
+          git diff -- apps/desktop/src-tauri/src/corpus.rs apps/desktop/src-tauri/src/prediction.rs apps/desktop/src-tauri/src/speech_analysis.rs apps/desktop/src-tauri/src/transcription.rs
+
+      - name: Commit narrow migration fix
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add \
+            apps/desktop/src-tauri/src/corpus.rs \
+            apps/desktop/src-tauri/src/prediction.rs \
+            apps/desktop/src-tauri/src/speech_analysis.rs \
+            apps/desktop/src-tauri/src/transcription.rs
+          git commit -m "fix: qualify migration compatibility modules"
+          git push origin HEAD:chore/source-first-capability-migration
