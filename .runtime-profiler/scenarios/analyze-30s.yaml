@@ -4,7 +4,7 @@ target:
   type: command
   program: ./apps/desktop/src-tauri/target/release/profile-speech-analysis
   args: ["--duration-seconds", "30", "--audio"]
-  working_directory: .
+  working_directory: ../..
 run:
   warmup_iterations: 1
   measurement_iterations: 5
