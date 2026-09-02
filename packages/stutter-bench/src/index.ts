@@ -57,7 +57,7 @@ export type Sep28kManifestEntry = {
   clipId: string;
   startSample?: number;
   stopSample?: number;
-  speakerId: string;
+  speakerId: string | null;
   referenceKinds: StutterKind[];
   annotationVotes: Record<StutterKind, number>;
   flags: {
@@ -114,7 +114,7 @@ export function normalizeSep28kRow(
   const episodeId = String(first(row, ["EpId", "episodeId", "episode_id"]) ?? "unknown-episode");
   const clipId = String(first(row, ["ClipId", "clipId", "clip_id"]) ?? "unknown-clip");
   const speakerFromRow = first(row, ["speaker", "Speaker", "speakerId", "speaker_id"]);
-  const speakerId = options.speakerId ?? String(speakerFromRow ?? `${show}:${episodeId}`);
+  const speakerId = options.speakerId ?? (speakerFromRow === undefined ? null : String(speakerFromRow));
 
   const annotationVotes = Object.fromEntries(
     stutterKinds.map((kind) => [kind, votes(row, sep28kColumns[kind])]),
@@ -231,7 +231,7 @@ export function evaluateClips(clips: readonly BenchmarkClip[]): BenchmarkReport 
   };
 }
 
-export function speakerSafeSplit<T extends { speakerId: string }>(
+export function speakerSafeSplit<T extends { speakerId: string | null | undefined }>(
   items: readonly T[],
   options: { evaluationFraction?: number; seed?: string } = {},
 ): { train: T[]; evaluation: T[] } {
@@ -244,7 +244,11 @@ export function speakerSafeSplit<T extends { speakerId: string }>(
   const evaluation: T[] = [];
 
   for (const item of items) {
-    const bucket = stableHash(`${seed}:${item.speakerId}`) / 0xffffffff;
+    const speakerId = item.speakerId?.trim();
+    if (!speakerId) {
+      throw new Error("speakerSafeSplit requires explicit speaker metadata for every item");
+    }
+    const bucket = stableHash(`${seed}:${speakerId}`) / 0xffffffff;
     (bucket < evaluationFraction ? evaluation : train).push(item);
   }
 
