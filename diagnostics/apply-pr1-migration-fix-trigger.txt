@@ -1,0 +1,1 @@
+Apply the seven source-mode path-resolution fixes identified by the exact-revision Rust diagnostic.
