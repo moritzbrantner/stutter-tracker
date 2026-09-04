@@ -7,10 +7,10 @@ track = "latest-stable"
 apt = []
 
 [setup]
-commands = ["bun install --frozen-lockfile", "cargo fetch --manifest-path apps/desktop/src-tauri/Cargo.toml"]
+commands = ["bun install --frozen-lockfile"]
 
 [maintenance]
-commands = ["bun install --frozen-lockfile", "cargo fetch --manifest-path apps/desktop/src-tauri/Cargo.toml"]
+commands = ["bun install --frozen-lockfile"]
 
 [cache]
 paths = ["~/.bun/install/cache", "~/.cargo", "node_modules", "apps/desktop/src-tauri/target"]
