@@ -14,14 +14,28 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  web-fast:
+  package-fast:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: apps/web
+            report: web
+          - component: apps/server
+            report: server
+          - component: apps/mobile
+            report: mobile
+          - component: packages/shared
+            report: shared
+          - component: packages/compute-client
+            report: compute-client
     permissions:
       contents: read
     uses: moritzbrantner/reusable-workflows/.github/workflows/coding-tooling-validation.yml@8da6ad737d4746159414bde686d5c7422e0a9232
     with:
       tier: fast
-      component: apps/web
+      component: ${{ matrix.component }}
       strict: true
       install_mode: auto
-      report_path: .artifacts/coding-tooling/web-fast.json
+      report_path: .artifacts/coding-tooling/${{ matrix.report }}-fast.json
       timeout_minutes: 30
