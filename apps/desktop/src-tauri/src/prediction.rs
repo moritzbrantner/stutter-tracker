@@ -8,7 +8,7 @@ use thiserror::Error;
 #[derive(Debug, Error)]
 pub enum PredictionError {
     #[error("{0}")]
-    Model(#[from] video_analysis_core::DetectError),
+    Model(#[from] crate::video_analysis_core::DetectError),
 }
 
 type Result<T> = std::result::Result<T, PredictionError>;

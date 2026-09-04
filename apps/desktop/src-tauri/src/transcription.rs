@@ -6,12 +6,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
-use text_analysis_transcription::{
+use crate::text_analysis_transcription::{
     Transcriber, TranscriptionError, TranscriptionResult, WhisperCliTranscriber, WhisperCppConfig,
     WhisperCppModel, WhisperCppModelStore, WhisperCppTranscriber,
 };
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -25,7 +25,7 @@ pub enum TranscriptionCommandError {
     #[error("network error: {0}")]
     Network(String),
     #[error("{0}")]
-    Transcription(#[from] text_analysis_transcription::TranscriptionError),
+    Transcription(#[from] crate::text_analysis_transcription::TranscriptionError),
 }
 
 type Result<T> = std::result::Result<T, TranscriptionCommandError>;
