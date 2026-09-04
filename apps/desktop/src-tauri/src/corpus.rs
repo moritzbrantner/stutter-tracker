@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
-use serde::{Deserialize, Serialize};
-use text_analysis_corpus::{CorpusOptions, CorpusStats, CorpusTermStats, TfIdfCorpus};
 use crate::text_analysis_features::{
     extractive_summary, keywords, readability_summary, sentiment, summarize_text,
     ExtractiveSummaryOptions, KeywordOptions, ReadabilitySummary, SentimentLexicon,
     SentimentSummary, TextFeatureSummary,
 };
+use serde::{Deserialize, Serialize};
+use text_analysis_corpus::{CorpusOptions, CorpusStats, CorpusTermStats, TfIdfCorpus};
 use text_analysis_linguistics::{analyze_text, LinguisticAnalysis, LinguisticAnalysisOptions};
 use thiserror::Error;
 

@@ -6,12 +6,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use crate::text_analysis_transcription::{
     Transcriber, TranscriptionError, TranscriptionResult, WhisperCliTranscriber, WhisperCppConfig,
     WhisperCppModel, WhisperCppModelStore, WhisperCppTranscriber,
 };
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
