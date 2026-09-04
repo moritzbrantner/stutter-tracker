@@ -26,7 +26,7 @@
     "artifacts:download": "cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --bin ensure-artifacts --",
     "artifacts:download:all": "cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --bin ensure-artifacts -- --all",
     "benchmark:youtube": "bun scripts/benchmark-youtube.ts",
-    "benchmark:stutter": "bun test packages/stutter-bench/src/index.test.ts",
+    "benchmark:stutter": "cargo test --manifest-path apps/desktop/src-tauri/Cargo.toml stutter_bench -- --nocapture",
     "transcribe:youtube": "python3 scripts/transcribe-youtube.py",
     "transcribe:youtube:cuda": "python3 scripts/transcribe-youtube.py --device cuda --compute-type float16",
     "build": "turbo run build",
