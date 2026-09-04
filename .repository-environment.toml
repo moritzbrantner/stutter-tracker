@@ -4,7 +4,17 @@ schema_version = 1
 track = "latest-stable"
 
 [system]
-apt = []
+apt = [
+  "build-essential",
+  "curl",
+  "file",
+  "libayatana-appindicator3-dev",
+  "librsvg2-dev",
+  "libssl-dev",
+  "libwebkit2gtk-4.1-dev",
+  "libxdo-dev",
+  "wget",
+]
 
 [setup]
 commands = ["bun install --frozen-lockfile"]
