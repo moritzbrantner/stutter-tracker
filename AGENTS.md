@@ -26,5 +26,5 @@ A feature is not complete merely because it compiles. Prefer changes whose corre
 
 - Use `.repository-environment.toml` and `scripts/codex-environment.sh` as the environment-v1 contract.
 - Use `.coding-tooling.json` as the semantic validation-tier contract. Hosted workflows are adapters; they do not own validation semantics.
-- For Rust changes that cross capability repositories, run `bash scripts/verify-source-workspace`; it composes exact source activation, the `source-development` environment fingerprint, and the application fmt/check/clippy/test gate while preserving distribution-state files.
+- Use `coding-tooling pr integrate` for PR integration. When the candidate declares `cargo.localOnly = true`, coding-tooling owns exact source activation, `source-development` environment certification, temporary source-mode Cargo resolution, distribution-state restoration, and the selected validation tier before merge.
 - Keep fast checks deterministic and cheap. Put corpus evaluation and runtime profiling in explicit benchmark/performance tiers rather than making every edit pay the full cost.
