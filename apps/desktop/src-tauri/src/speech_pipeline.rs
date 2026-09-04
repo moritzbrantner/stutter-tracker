@@ -64,7 +64,9 @@ fn collect_observations(request: &AnalyzeSpeechRequest) -> ObservationBatch {
 
 fn fuse_observations(observations: &ObservationBatch) -> FusedObservationContext {
     let has_complete_audio_input = observations.audio_sample_count > 0
-        && observations.sample_rate.is_some_and(|sample_rate| sample_rate > 0);
+        && observations
+            .sample_rate
+            .is_some_and(|sample_rate| sample_rate > 0);
     let mut channels = Vec::with_capacity(3);
     if observations.finalized_transcript_segments > 0 {
         channels.push(ObservationChannel::Transcript);
@@ -97,7 +99,9 @@ fn interpret_session(
             .samples
             .as_ref()
             .is_some_and(|samples| !samples.is_empty())
-            && request.sample_rate.is_some_and(|sample_rate| sample_rate > 0)
+            && request
+                .sample_rate
+                .is_some_and(|sample_rate| sample_rate > 0)
     );
     debug_assert_eq!(
         context.channels.contains(&ObservationChannel::Acoustic),
