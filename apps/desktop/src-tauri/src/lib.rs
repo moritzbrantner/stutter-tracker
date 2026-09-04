@@ -1,6 +1,8 @@
 mod corpus;
 mod prediction;
 mod speech_analysis;
+#[cfg(test)]
+mod stutter_bench;
 mod text_analysis_transcription;
 pub mod transcription;
 
