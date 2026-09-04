@@ -1,0 +1,13 @@
+schema_version: runtime-profiler/scenario/v1
+id: stutter-tracker-analyze-transcript-5m
+target:
+  type: command
+  program: ./apps/desktop/src-tauri/target/release/profile-speech-analysis
+  args: ["--duration-seconds", "300", "--no-audio"]
+  working_directory: ../..
+run:
+  warmup_iterations: 1
+  measurement_iterations: 5
+  timeout_seconds: 30
+collectors:
+  - process
