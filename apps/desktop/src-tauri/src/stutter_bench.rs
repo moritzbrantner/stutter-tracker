@@ -1,8 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
-use crate::speech_analysis::{
-    analyze_speech_session_impl, AnalyzeSpeechRequest, StutterKind,
-};
+use crate::speech_analysis::{analyze_speech_session_impl, AnalyzeSpeechRequest, StutterKind};
 
 const BENCHMARK_KINDS: [StutterKind; 5] = [
     StutterKind::WordRepetition,
@@ -109,12 +107,11 @@ fn normalize_sep28k_row(
     }
 
     let show = first(row, &["Show", "show"]).unwrap_or("unknown-show");
-    let episode_id = first(row, &["EpId", "episodeId", "episode_id"])
-        .unwrap_or("unknown-episode");
+    let episode_id = first(row, &["EpId", "episodeId", "episode_id"]).unwrap_or("unknown-episode");
     let clip_id = first(row, &["ClipId", "clipId", "clip_id"]).unwrap_or("unknown-clip");
-    let speaker_id = speaker_id
-        .map(str::to_owned)
-        .or_else(|| first(row, &["speaker", "Speaker", "speakerId", "speaker_id"]).map(str::to_owned));
+    let speaker_id = speaker_id.map(str::to_owned).or_else(|| {
+        first(row, &["speaker", "Speaker", "speakerId", "speaker_id"]).map(str::to_owned)
+    });
 
     let annotation_votes = BENCHMARK_KINDS
         .into_iter()
@@ -194,13 +191,11 @@ fn evaluate_clips(clips: &[BenchmarkClip]) -> Result<BenchmarkReport, BenchmarkE
         }
 
         let probabilities = if score_calibration {
-            Some(
-                clip.predicted_probabilities
-                    .as_ref()
-                    .ok_or_else(|| BenchmarkError::IncompleteProbabilityVector {
-                        clip_id: clip.id.clone(),
-                    })?,
-            )
+            Some(clip.predicted_probabilities.as_ref().ok_or_else(|| {
+                BenchmarkError::IncompleteProbabilityVector {
+                    clip_id: clip.id.clone(),
+                }
+            })?)
         } else {
             None
         };
@@ -242,8 +237,14 @@ fn evaluate_clips(clips: &[BenchmarkClip]) -> Result<BenchmarkReport, BenchmarkE
         let metrics = by_kind
             .get_mut(&kind)
             .expect("all benchmark kinds are initialized");
-        metrics.precision = ratio(metrics.true_positive, metrics.true_positive + metrics.false_positive);
-        metrics.recall = ratio(metrics.true_positive, metrics.true_positive + metrics.false_negative);
+        metrics.precision = ratio(
+            metrics.true_positive,
+            metrics.true_positive + metrics.false_positive,
+        );
+        metrics.recall = ratio(
+            metrics.true_positive,
+            metrics.true_positive + metrics.false_negative,
+        );
         metrics.f1 = f1(metrics.precision, metrics.recall);
         true_positive += metrics.true_positive;
         false_positive += metrics.false_positive;
@@ -270,12 +271,8 @@ fn evaluate_clips(clips: &[BenchmarkClip]) -> Result<BenchmarkReport, BenchmarkE
             .sum::<f64>()
             / BENCHMARK_KINDS.len() as f64,
         false_positive_clip_rate: ratio(false_positive_fluent_clips, fluent_clip_count),
-        brier_score: score_calibration.then(|| {
-            ratio_f64(
-                brier_sum,
-                clips.len().saturating_mul(BENCHMARK_KINDS.len()),
-            )
-        }),
+        brier_score: score_calibration
+            .then(|| ratio_f64(brier_sum, clips.len().saturating_mul(BENCHMARK_KINDS.len()))),
         by_kind,
     })
 }
@@ -316,7 +313,11 @@ fn evaluate_existing_detector(cases: &[BaselineCase]) -> Result<BenchmarkReport,
     for case in cases {
         let report = analyze_speech_session_impl(case.request.clone())
             .map_err(|error| BenchmarkError::Detector(error.to_string()))?;
-        let observed = report.events.iter().map(|event| event.kind).collect::<HashSet<_>>();
+        let observed = report
+            .events
+            .iter()
+            .map(|event| event.kind)
+            .collect::<HashSet<_>>();
         let predicted_kinds = BENCHMARK_KINDS
             .into_iter()
             .filter(|kind| observed.contains(kind))
@@ -359,9 +360,11 @@ fn unsigned(row: &Sep28kRow, columns: &[&str]) -> Option<u64> {
 }
 
 fn first<'a>(row: &'a Sep28kRow, columns: &[&str]) -> Option<&'a str> {
-    columns
-        .iter()
-        .find_map(|column| row.get(*column).map(String::as_str).filter(|value| !value.is_empty()))
+    columns.iter().find_map(|column| {
+        row.get(*column)
+            .map(String::as_str)
+            .filter(|value| !value.is_empty())
+    })
 }
 
 fn stable_hash(value: &str) -> u32 {
@@ -477,7 +480,12 @@ mod tests {
 
     #[test]
     fn sep28k_quality_flags_fail_closed_for_evaluation() {
-        let input = row(&[("Show", "show"), ("EpId", "1"), ("ClipId", "2"), ("PoorAudioQuality", "2")]);
+        let input = row(&[
+            ("Show", "show"),
+            ("EpId", "1"),
+            ("ClipId", "2"),
+            ("PoorAudioQuality", "2"),
+        ]);
         let entry = normalize_sep28k_row(&input, 2, None).unwrap();
         assert!(!should_evaluate_sep28k(&entry));
     }
@@ -497,12 +505,7 @@ mod tests {
                 vec![StutterKind::Block],
                 vec![StutterKind::Filler],
             ),
-            clip(
-                "c",
-                Some("speaker-c"),
-                vec![],
-                vec![StutterKind::Filler],
-            ),
+            clip("c", Some("speaker-c"), vec![], vec![StutterKind::Filler]),
         ])
         .unwrap();
 
@@ -551,7 +554,9 @@ mod tests {
         item.predicted_probabilities = Some(probabilities);
 
         let report = evaluate_clips(&[item]).unwrap();
-        assert!(report.brier_score.is_some_and(|score| score > 0.0 && score < 0.1));
+        assert!(report
+            .brier_score
+            .is_some_and(|score| score > 0.0 && score < 0.1));
     }
 
     #[test]
