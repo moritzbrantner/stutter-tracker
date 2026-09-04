@@ -19,7 +19,7 @@ jobs:
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
         with:
           repository: moritzbrantner/coding-tooling
-          ref: 35d32f320c84e5f2e453106c4af047377f76dd05
+          ref: 0402168aca8ada58b7fe2cb200723292e7ccd7be
           path: .tooling/coding-tooling
 
       - name: Set up Bun
