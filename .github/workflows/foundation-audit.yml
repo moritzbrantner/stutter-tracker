@@ -1,0 +1,42 @@
+name: Foundation Fleet Audit
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/foundation-audit.yml
+      - .repository-environment.toml
+      - scripts/codex-environment.sh
+      - .coding-tooling.json
+      - conventions.json
+      - conventions.lock.json
+      - .conventions/**
+      - renovate.json
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/foundation-audit.yml
+      - .repository-environment.toml
+      - scripts/codex-environment.sh
+      - .coding-tooling.json
+      - conventions.json
+      - conventions.lock.json
+      - .conventions/**
+      - renovate.json
+  schedule:
+    - cron: '53 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  foundation:
+    permissions:
+      contents: read
+    uses: moritzbrantner/reusable-workflows/.github/workflows/coding-tooling-validation.yml@e49cb679edee28770a399cba31204c5e73682102
+    with:
+      operation: foundation
+      install_mode: none
+      allow_missing_foundation: true
+      report_path: .artifacts/coding-tooling/foundation.json
+      artifact_retention_days: 14
