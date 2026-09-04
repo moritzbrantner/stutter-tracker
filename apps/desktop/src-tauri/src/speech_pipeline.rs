@@ -63,6 +63,8 @@ fn collect_observations(request: &AnalyzeSpeechRequest) -> ObservationBatch {
 }
 
 fn fuse_observations(observations: &ObservationBatch) -> FusedObservationContext {
+    let has_complete_audio_input = observations.audio_sample_count > 0
+        && observations.sample_rate.is_some_and(|sample_rate| sample_rate > 0);
     let mut channels = Vec::with_capacity(3);
     if observations.finalized_transcript_segments > 0 {
         channels.push(ObservationChannel::Transcript);
@@ -70,15 +72,14 @@ fn fuse_observations(observations: &ObservationBatch) -> FusedObservationContext
     if observations.pause_observations > 0 {
         channels.push(ObservationChannel::Pause);
     }
-    if observations.audio_sample_count > 0 && observations.sample_rate.is_some() {
+    if has_complete_audio_input {
         channels.push(ObservationChannel::Acoustic);
     }
 
     FusedObservationContext {
         channels,
         timeline_end_seconds: observations.timeline_end_seconds,
-        has_complete_audio_input: observations.audio_sample_count > 0
-            && observations.sample_rate.is_some(),
+        has_complete_audio_input,
     }
 }
 
@@ -96,7 +97,7 @@ fn interpret_session(
             .samples
             .as_ref()
             .is_some_and(|samples| !samples.is_empty())
-            && request.sample_rate.is_some()
+            && request.sample_rate.is_some_and(|sample_rate| sample_rate > 0)
     );
     debug_assert_eq!(
         context.channels.contains(&ObservationChannel::Acoustic),
@@ -199,6 +200,21 @@ mod tests {
             pause_observations: 0,
             audio_sample_count: 1_600,
             sample_rate: None,
+            timeline_end_seconds: 1.0,
+        };
+
+        let fused = fuse_observations(&observations);
+        assert!(!fused.channels.contains(&ObservationChannel::Acoustic));
+        assert!(!fused.has_complete_audio_input);
+    }
+
+    #[test]
+    fn zero_sample_rate_does_not_claim_an_acoustic_channel() {
+        let observations = ObservationBatch {
+            finalized_transcript_segments: 1,
+            pause_observations: 0,
+            audio_sample_count: 1_600,
+            sample_rate: Some(0),
             timeline_end_seconds: 1.0,
         };
 
