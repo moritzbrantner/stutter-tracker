@@ -10,6 +10,8 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build": "tsc -p tsconfig.json --noEmit",
+    "lint": "bunx oxlint@1.80.0 src App.tsx --format=github",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run src/*.test.ts",
     "format": "oxfmt --write \"src/**/*.{ts,tsx}\" App.tsx",
     "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\" App.tsx"

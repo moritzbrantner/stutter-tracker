@@ -1,0 +1,28 @@
+schema_version = 1
+
+[policy]
+track = "latest-stable"
+
+[system]
+apt = [
+  "build-essential",
+  "curl",
+  "file",
+  "libayatana-appindicator3-dev",
+  "librsvg2-dev",
+  "libssl-dev",
+  "libwebkit2gtk-4.1-dev",
+  "libxdo-dev",
+  "wget",
+]
+
+[setup]
+commands = ["bun install --frozen-lockfile"]
+
+[maintenance]
+commands = ["bun install --frozen-lockfile"]
+
+[cache]
+paths = ["~/.bun/install/cache", "~/.cargo", "node_modules", "apps/desktop/src-tauri/target"]
+
+[compatibility_holds]
