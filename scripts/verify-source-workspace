@@ -1,0 +1,173 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+root="$(git rev-parse --show-toplevel)"
+desktop="$root/apps/desktop/src-tauri"
+tooling_dir="${CODING_TOOLING_DIR:-$root/../coding-tooling}"
+revision="$(git -C "$root" rev-parse HEAD)"
+started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+run_id="$(date -u +%Y%m%dT%H%M%SZ)-${revision:0:12}"
+evidence_root="${SOURCE_VERIFY_EVIDENCE_DIR:-$root/.artifacts/source-workspace-verification}"
+run_dir="$evidence_root/$run_id"
+scratch="$(mktemp -d)"
+cargo_config="$root/.cargo/config.toml"
+cargo_lock="$desktop/Cargo.lock"
+cargo_dir_existed=false
+[[ -d "$root/.cargo" ]] && cargo_dir_existed=true
+
+mkdir -p "$run_dir"
+
+preserve_file() {
+  local path="$1"
+  local name="$2"
+  if [[ -f "$path" ]]; then
+    cp -p -- "$path" "$scratch/$name"
+    printf 'present\n' >"$scratch/$name.state"
+  else
+    printf 'absent\n' >"$scratch/$name.state"
+  fi
+}
+
+restore_file() {
+  local path="$1"
+  local name="$2"
+  if [[ "$(cat "$scratch/$name.state")" == "present" ]]; then
+    mkdir -p "$(dirname "$path")"
+    cp -p -- "$scratch/$name" "$path"
+  else
+    rm -f -- "$path"
+  fi
+}
+
+sha256_file() {
+  python3 - "$1" <<'PY'
+import hashlib
+import pathlib
+import sys
+
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+}
+
+coding_tooling() {
+  if command -v coding-tooling >/dev/null 2>&1; then
+    (cd "$root" && coding-tooling "$@")
+    return
+  fi
+  if [[ -f "$tooling_dir/src/cli.ts" ]]; then
+    (cd "$root" && bun "$tooling_dir/src/cli.ts" "$@")
+    return
+  fi
+  printf '%s\n' "coding-tooling is required. Install it or set CODING_TOOLING_DIR to a sibling checkout." >&2
+  return 2
+}
+
+source_deps() {
+  (cd "$root" && bash "$root/scripts/source-deps" "$@")
+}
+
+cargo_desktop() {
+  (cd "$desktop" && cargo "$@")
+}
+
+run_step() {
+  local name="$1"
+  shift
+  {
+    printf '%q ' "$@"
+    printf '\n'
+  } >"$run_dir/$name.command"
+
+  set +e
+  "$@" > >(tee "$run_dir/$name.stdout.log") 2> >(tee "$run_dir/$name.stderr.log" >&2)
+  local code=$?
+  set -e
+  printf '%s\n' "$code" >"$run_dir/$name.exit-code"
+  return "$code"
+}
+
+preserve_file "$cargo_config" cargo-config
+preserve_file "$cargo_lock" cargo-lock
+
+cleanup() {
+  local code=$?
+  trap - EXIT
+  set +e
+
+  source_deps deactivate --json >"$run_dir/source-deps-cleanup.stdout.log" 2>"$run_dir/source-deps-cleanup.stderr.log"
+  local cleanup_code=$?
+  printf '%s\n' "$cleanup_code" >"$run_dir/source-deps-cleanup.exit-code"
+
+  local lock_after="absent"
+  if [[ -f "$cargo_lock" ]]; then
+    lock_after="$(sha256_file "$cargo_lock")"
+  fi
+
+  restore_file "$cargo_config" cargo-config
+  restore_file "$cargo_lock" cargo-lock
+  if [[ "$cargo_dir_existed" == false ]]; then
+    rmdir "$root/.cargo" 2>/dev/null || true
+  fi
+
+  python3 - "$run_dir" "$revision" "$started_at" "$code" "$cleanup_code" "$lock_after" <<'PY' >"$run_dir/summary.json"
+import json
+import pathlib
+import sys
+
+run_dir = pathlib.Path(sys.argv[1])
+revision = sys.argv[2]
+started_at = sys.argv[3]
+exit_code = int(sys.argv[4])
+cleanup_code = int(sys.argv[5])
+lock_after = sys.argv[6]
+
+steps = {}
+for status_path in sorted(run_dir.glob("*.exit-code")):
+    suffix = ".exit-code"
+    steps[status_path.name[:-len(suffix)]] = int(status_path.read_text().strip())
+
+fingerprint = None
+environment_log = run_dir / "environment-source-development.stdout.log"
+if environment_log.is_file():
+    try:
+        payload = json.loads(environment_log.read_text())
+        fingerprint = payload.get("data", {}).get("verifiedFingerprint")
+    except (json.JSONDecodeError, AttributeError):
+        pass
+
+summary = {
+    "schemaVersion": "stutter-tracker/source-workspace-verification/v1",
+    "status": "passed" if exit_code == 0 else "failed",
+    "sourceRevision": revision,
+    "startedAt": started_at,
+    "exitCode": exit_code,
+    "sourceDevelopmentFingerprint": fingerprint,
+    "cargoLockObservedSha256BeforeRestore": None if lock_after == "absent" else lock_after,
+    "cleanupExitCode": cleanup_code,
+    "steps": steps,
+}
+print(json.dumps(summary, indent=2, sort_keys=True))
+PY
+
+  rm -rf -- "$scratch"
+  printf 'source-workspace evidence: %s\n' "$run_dir"
+  exit "$code"
+}
+trap cleanup EXIT
+
+tracked_status="$(git -C "$root" status --porcelain --untracked-files=no)"
+if [[ -n "$tracked_status" ]]; then
+  printf '%s\n' "$tracked_status" | tee "$run_dir/tracked-worktree.stderr.log" >&2
+  printf 'source verification requires a clean tracked worktree\n' | tee -a "$run_dir/tracked-worktree.stderr.log" >&2
+  printf '2\n' >"$run_dir/tracked-worktree.exit-code"
+  exit 2
+fi
+printf '0\n' >"$run_dir/tracked-worktree.exit-code"
+
+run_step source-deps-activate source_deps activate --json
+run_step source-deps-status source_deps status --json
+run_step environment-source-development coding_tooling environment verify --profile source-development --json
+run_step rust-fmt cargo_desktop fmt -- --check
+run_step rust-check cargo_desktop check
+run_step rust-clippy cargo_desktop clippy --all-targets -- -D warnings
+run_step rust-test cargo_desktop test
