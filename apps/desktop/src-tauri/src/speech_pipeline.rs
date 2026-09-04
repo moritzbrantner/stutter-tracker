@@ -43,6 +43,7 @@ fn collect_observations(request: &AnalyzeSpeechRequest) -> ObservationBatch {
     let timeline_end_seconds = request
         .segments
         .iter()
+        .filter(|segment| segment.is_final)
         .map(|segment| segment.end_seconds)
         .chain(request.pauses.iter().map(|pause| pause.end_seconds))
         .filter(|value| value.is_finite())
@@ -157,6 +158,38 @@ mod tests {
             ]
         );
         assert!(fused.has_complete_audio_input);
+    }
+
+    #[test]
+    fn partial_transcript_does_not_extend_the_interpreted_timeline() {
+        let request = AnalyzeSpeechRequest {
+            segments: vec![
+                TranscriptSegmentInput {
+                    text: "final".to_string(),
+                    start_seconds: 0.0,
+                    end_seconds: 1.0,
+                    confidence: Some(0.9),
+                    speaker_score: Some(0.9),
+                    is_final: true,
+                },
+                TranscriptSegmentInput {
+                    text: "partial".to_string(),
+                    start_seconds: 1.0,
+                    end_seconds: 5.0,
+                    confidence: None,
+                    speaker_score: None,
+                    is_final: false,
+                },
+            ],
+            pauses: vec![],
+            session_started_at: None,
+            samples: None,
+            sample_rate: None,
+        };
+
+        let observations = collect_observations(&request);
+        assert_eq!(observations.finalized_transcript_segments, 1);
+        assert_eq!(observations.timeline_end_seconds, 1.0);
     }
 
     #[test]
