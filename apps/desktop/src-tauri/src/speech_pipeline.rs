@@ -173,4 +173,34 @@ mod tests {
         assert!(!fused.channels.contains(&ObservationChannel::Acoustic));
         assert!(!fused.has_complete_audio_input);
     }
+
+    #[test]
+    fn orchestration_seam_preserves_legacy_detector_output() {
+        let request = AnalyzeSpeechRequest {
+            segments: vec![TranscriptSegmentInput {
+                text: "I I want to explain this clearly".to_string(),
+                start_seconds: 0.0,
+                end_seconds: 2.0,
+                confidence: Some(0.95),
+                speaker_score: Some(0.98),
+                is_final: true,
+            }],
+            pauses: vec![PauseInput {
+                start_seconds: 2.0,
+                end_seconds: 2.7,
+                after_text: Some("clearly".to_string()),
+            }],
+            session_started_at: Some("fixture-session".to_string()),
+            samples: None,
+            sample_rate: None,
+        };
+
+        let legacy = analyze_speech_session_impl(request.clone()).unwrap();
+        let orchestrated = analyze_speech_session(request).unwrap();
+
+        assert_eq!(
+            serde_json::to_value(orchestrated).unwrap(),
+            serde_json::to_value(legacy).unwrap()
+        );
+    }
 }
