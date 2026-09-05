@@ -1,0 +1,34 @@
+name: Source mode contract
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  source-contract:
+    name: local-only capability source graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Verify local-only dependency declaration
+        run: |
+          jq -e '.schemaVersion == 2 and .cargo.localOnly == true' .coding-tooling.source-deps.json >/dev/null
+          jq -e '.cargo.patches | length > 0 and all(.[]; (.package | length > 0) and (.git | length > 0) and (.rev | test("^[0-9a-f]{40}$")) and (.localPath | length > 0))' .coding-tooling.source-deps.json >/dev/null
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        working-directory: apps/desktop/src-tauri
+        run: cargo fmt -- --check
+
+      - name: Explain source verification boundary
+        run: |
+          echo "Rust check, clippy, and tests run in the local coding workspace against the exact sibling audio-analysis, nlp-stack, and moenarch-foundation sources."
+          echo "Hosted CI validates the contract without cloning those private repositories."
