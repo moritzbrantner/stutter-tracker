@@ -1,11 +1,4 @@
-import {
-  BarChart3,
-  BrainCircuit,
-  ListChecks,
-  PlayCircle,
-  TrendingUp,
-  Waves,
-} from "lucide-react";
+import { BarChart3, BrainCircuit, ListChecks, PlayCircle, TrendingUp, Waves } from "lucide-react";
 import type { ReactNode } from "react";
 import { buildSessionHistory, type SessionHistoryPoint } from "../storage/sessionHistory";
 import type {
@@ -331,7 +324,8 @@ function TrendMetric({
       >
         {points.map((point, index) => {
           const metric = values[index];
-          const height = metric == null ? 5 : Math.max(6, Math.min(100, (metric / chartCeiling) * 100));
+          const height =
+            metric == null ? 5 : Math.max(6, Math.min(100, (metric / chartCeiling) * 100));
           const date = new Date(point.startedAt).toLocaleDateString();
           const display = metric == null ? "No data" : format(metric);
 
@@ -384,14 +378,16 @@ function SessionsPanel({
               >
                 <PlayCircle className="shrink-0" size={18} />
                 <span className="min-w-0 flex-1 text-left">
-                  <span className="block truncate">{new Date(session.startedAt).toLocaleString()}</span>
+                  <span className="block truncate">
+                    {new Date(session.startedAt).toLocaleString()}
+                  </span>
                   {historyPoint && (
                     <span className={`mt-1 block text-xs ${mutedTextClass}`}>
                       {formatSessionDuration(historyPoint.durationSeconds)} ·{" "}
                       {historyPoint.fluencyPercentage == null
                         ? "fluency unavailable"
-                        : `${historyPoint.fluencyPercentage.toFixed(0)}% fluency`} ·{" "}
-                      {historyPoint.stuttersPerMinute.toFixed(1)} events/min
+                        : `${historyPoint.fluencyPercentage.toFixed(0)}% fluency`}{" "}
+                      · {historyPoint.stuttersPerMinute.toFixed(1)} events/min
                     </span>
                   )}
                 </span>

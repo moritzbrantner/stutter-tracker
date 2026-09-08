@@ -10,10 +10,7 @@ export type SessionHistoryPoint = {
   wordsPerMinute: number | null;
 };
 
-export function buildSessionHistory(
-  sessions: SavedSession[],
-  limit = 12,
-): SessionHistoryPoint[] {
+export function buildSessionHistory(sessions: SavedSession[], limit = 12): SessionHistoryPoint[] {
   const normalizedLimit = Number.isFinite(limit) ? Math.max(0, Math.floor(limit)) : 12;
   if (normalizedLimit === 0) {
     return [];
