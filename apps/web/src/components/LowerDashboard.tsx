@@ -1,5 +1,13 @@
-import { BarChart3, BrainCircuit, ListChecks, PlayCircle, Waves } from "lucide-react";
+import {
+  BarChart3,
+  BrainCircuit,
+  ListChecks,
+  PlayCircle,
+  TrendingUp,
+  Waves,
+} from "lucide-react";
 import type { ReactNode } from "react";
+import { buildSessionHistory, type SessionHistoryPoint } from "../storage/sessionHistory";
 import type {
   AnalysisReport,
   BlockerStats,
@@ -42,6 +50,7 @@ export function LowerDashboard({
       <IntentPanel predictions={intentPredictions} />
       <SpeechLogPanel segments={segments} />
       <ChunkAnalysisPanel chunks={analyzedChunks} report={report} blockerStats={blockerStats} />
+      <ProgressPanel sessions={sessions} />
       <SessionsPanel sessions={sessions} onSessionLoad={onSessionLoad} />
     </section>
   );
@@ -231,6 +240,118 @@ function ChunkAnalysisPanel({
   );
 }
 
+function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
+  const history = buildSessionHistory(sessions);
+
+  return (
+    <div className={`${panelClass} min-w-0 flex-[1.2_1_28rem] max-lg:w-full`}>
+      <div className={`${panelHeaderClass} p-4`}>
+        <div>
+          <h2 className="m-0 text-xl font-semibold">Progress</h2>
+          <p className={`m-0 mt-1 text-sm ${mutedTextClass}`}>
+            Last {history.length || "saved"} sessions · oldest to newest
+          </p>
+        </div>
+      </div>
+      <div className="border-t border-[#edf1ee]">
+        {history.length < 2 ? (
+          <EmptyState
+            icon={<TrendingUp size={24} />}
+            label="Save at least two sessions to compare changes over time."
+          />
+        ) : (
+          <>
+            <TrendMetric
+              label="Fluency"
+              hint="Computed fluency percentage"
+              points={history}
+              value={(point) => point.fluencyPercentage}
+              format={(value) => `${value.toFixed(0)}%`}
+              ceiling={100}
+            />
+            <TrendMetric
+              label="Events/min"
+              hint="Detected events per minute"
+              points={history}
+              value={(point) => point.stuttersPerMinute}
+              format={(value) => `${value.toFixed(1)}/min`}
+            />
+            <TrendMetric
+              label="Words/min"
+              hint="Speaking pace"
+              points={history}
+              value={(point) => point.wordsPerMinute}
+              format={(value) => `${value.toFixed(0)} wpm`}
+            />
+            <p className={`m-0 px-4 py-3 text-xs ${mutedTextClass}`}>
+              Tracking metrics are for personal review and are not diagnostic scores.
+            </p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function TrendMetric({
+  label,
+  hint,
+  points,
+  value,
+  format,
+  ceiling,
+}: {
+  label: string;
+  hint: string;
+  points: SessionHistoryPoint[];
+  value: (point: SessionHistoryPoint) => number | null;
+  format: (value: number) => string;
+  ceiling?: number;
+}) {
+  const values = points.map(value);
+  const availableValues = values.filter((candidate): candidate is number => candidate != null);
+  const chartCeiling = Math.max(1, ceiling ?? Math.max(1, ...availableValues));
+  const latest = [...values].reverse().find((candidate) => candidate != null) ?? null;
+
+  return (
+    <div className="grid gap-2 border-b border-[#edf1ee] px-4 py-3 last:border-b-0">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div>
+          <strong>{label}</strong>
+          <span className={`ml-2 text-xs ${mutedTextClass}`}>{hint}</span>
+        </div>
+        <span className={`text-sm ${mutedTextClass}`}>
+          Latest: {latest == null ? "No data" : format(latest)}
+        </span>
+      </div>
+      <div
+        className="flex h-16 items-end gap-1"
+        role="img"
+        aria-label={`${label} across the last ${points.length} saved sessions, oldest to newest`}
+      >
+        {points.map((point, index) => {
+          const metric = values[index];
+          const height = metric == null ? 5 : Math.max(6, Math.min(100, (metric / chartCeiling) * 100));
+          const date = new Date(point.startedAt).toLocaleDateString();
+          const display = metric == null ? "No data" : format(metric);
+
+          return (
+            <span
+              key={`${point.id}-${point.startedAt}`}
+              className={cx(
+                "min-w-1 flex-1 rounded-t",
+                metric == null ? "bg-[#dce4df]" : "bg-[#1c6b5a]",
+              )}
+              style={{ height: `${height}%` }}
+              title={`${date}: ${display}`}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function SessionsPanel({
   sessions,
   onSessionLoad,
@@ -238,21 +359,47 @@ function SessionsPanel({
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
 }) {
+  const historyById = new Map(
+    buildSessionHistory(sessions, Math.max(1, sessions.length)).map((point) => [point.id, point]),
+  );
+
   return (
     <div className={`${panelClass} w-96 shrink-0 max-lg:w-full`}>
       <PanelHeader title="Sessions" count={sessions.length} />
       <div className="max-h-88 overflow-auto border-t border-[#edf1ee]">
-        {sessions.map((session) => (
-          <button
-            key={session.id}
-            className={`session-row ${buttonClass} w-full justify-start rounded-none border-0 border-b border-[#edf1ee] px-4 py-3 last:border-b-0`}
-            onClick={() => onSessionLoad(session)}
-          >
-            <PlayCircle size={18} />
-            <span>{new Date(session.startedAt).toLocaleString()}</span>
-            <strong className="ml-auto">{session.report.stutterCount}</strong>
-          </button>
-        ))}
+        {sessions.length === 0 ? (
+          <EmptyState
+            icon={<PlayCircle size={24} />}
+            label="Saved sessions will appear here after your first recording."
+          />
+        ) : (
+          sessions.map((session) => {
+            const historyPoint = historyById.get(session.id);
+
+            return (
+              <button
+                key={session.id}
+                className={`session-row ${buttonClass} w-full justify-start rounded-none border-0 border-b border-[#edf1ee] px-4 py-3 last:border-b-0`}
+                onClick={() => onSessionLoad(session)}
+              >
+                <PlayCircle className="shrink-0" size={18} />
+                <span className="min-w-0 flex-1 text-left">
+                  <span className="block truncate">{new Date(session.startedAt).toLocaleString()}</span>
+                  {historyPoint && (
+                    <span className={`mt-1 block text-xs ${mutedTextClass}`}>
+                      {formatSessionDuration(historyPoint.durationSeconds)} ·{" "}
+                      {historyPoint.fluencyPercentage == null
+                        ? "fluency unavailable"
+                        : `${historyPoint.fluencyPercentage.toFixed(0)}% fluency`} ·{" "}
+                      {historyPoint.stuttersPerMinute.toFixed(1)} events/min
+                    </span>
+                  )}
+                </span>
+                <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
+              </button>
+            );
+          })
+        )}
       </div>
     </div>
   );
@@ -287,6 +434,16 @@ function EmptyState({ icon, label }: { icon: ReactNode; label: string }) {
       <span>{label}</span>
     </div>
   );
+}
+
+function formatSessionDuration(seconds: number) {
+  if (seconds < 60) {
+    return `${Math.round(seconds)}s`;
+  }
+
+  const minutes = Math.floor(seconds / 60);
+  const remainingSeconds = Math.round(seconds % 60);
+  return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m ${remainingSeconds}s`;
 }
 
 function eventKindClass(kind: AnalysisReport["events"][number]["kind"]) {
