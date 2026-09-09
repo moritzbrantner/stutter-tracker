@@ -19,6 +19,7 @@ import type {
 } from "../types";
 import { formatPercent, modelStatusLabel } from "../utils/formatting";
 import { ChunkProgressPanel } from "./ChunkProgressPanel";
+import { SessionRestoreButton } from "./SessionRestoreButton";
 import {
   buttonClass,
   cx,
@@ -81,6 +82,11 @@ export function RecordingWorkspace({
   onSave,
   onExport,
 }: RecordingWorkspaceProps) {
+  const restoreDisabled =
+    isRecording ||
+    isTranscribing ||
+    Boolean(transcript.trim() || interimText.trim() || hasAnalysisEvents);
+
   return (
     <div className={`${panelClass} min-w-0 flex-1 p-4`}>
       <div className={`${panelHeaderClass} mb-4 max-sm:flex-col max-sm:items-start`}>
@@ -195,6 +201,7 @@ export function RecordingWorkspace({
           <Download size={17} />
           Export
         </button>
+        <SessionRestoreButton disabled={restoreDisabled} />
       </div>
     </div>
   );
