@@ -76,6 +76,38 @@ describe("session backup", () => {
     );
   });
 
+  test("rejects malformed optional report structures when they are present", () => {
+    expect(() =>
+      parseSessionBackup({
+        sessions: [
+          {
+            ...session,
+            report: { ...session.report, speechStats: {} },
+          },
+        ],
+      }),
+    ).toThrow("Backup session 1 is invalid.");
+    expect(() =>
+      parseSessionBackup({
+        sessions: [
+          {
+            ...session,
+            report: { ...session.report, chunks: {} },
+          },
+        ],
+      }),
+    ).toThrow("Backup session 1 is invalid.");
+  });
+
+  test("rejects unsupported versions and invalid export timestamps", () => {
+    expect(() => parseSessionBackup({ version: 2, sessions: [session] })).toThrow(
+      "Unsupported backup version 2.",
+    );
+    expect(() => parseSessionBackup({ exportedAt: "not-a-date", sessions: [session] })).toThrow(
+      "Backup export timestamp is invalid.",
+    );
+  });
+
   test("rejects duplicate ids and backups outside the product retention boundary", () => {
     expect(() => parseSessionBackup({ sessions: [session, session] })).toThrow(
       "Backup contains duplicate session id session-1.",
