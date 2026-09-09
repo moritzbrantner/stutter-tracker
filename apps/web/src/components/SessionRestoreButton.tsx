@@ -4,7 +4,7 @@ import { STORE_KEY } from "../storage/localStorage";
 import { parseSessionBackup } from "../storage/sessionBackup";
 import { buttonClass, mutedTextClass } from "./styles";
 
-export function SessionRestoreButton() {
+export function SessionRestoreButton({ disabled = false }: { disabled?: boolean }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -32,6 +32,7 @@ export function SessionRestoreButton() {
         type="file"
         accept=".json,application/json"
         aria-label="Choose session backup"
+        disabled={disabled}
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
           event.currentTarget.value = "";
@@ -41,7 +42,12 @@ export function SessionRestoreButton() {
           }
         }}
       />
-      <button className={buttonClass} onClick={() => inputRef.current?.click()}>
+      <button
+        className={buttonClass}
+        onClick={() => inputRef.current?.click()}
+        disabled={disabled}
+        title={disabled ? "Stop recording and transcription before restoring sessions" : undefined}
+      >
         <Upload size={17} />
         Restore sessions
       </button>
