@@ -83,7 +83,9 @@ export function RecordingWorkspace({
   onExport,
 }: RecordingWorkspaceProps) {
   const restoreDisabled =
-    isRecording || isTranscribing || Boolean(transcript.trim() || interimText.trim() || hasAnalysisEvents);
+    isRecording ||
+    isTranscribing ||
+    Boolean(transcript.trim() || interimText.trim() || hasAnalysisEvents);
 
   return (
     <div className={`${panelClass} min-w-0 flex-1 p-4`}>
