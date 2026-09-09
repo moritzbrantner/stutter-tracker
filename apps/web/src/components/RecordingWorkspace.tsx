@@ -82,6 +82,9 @@ export function RecordingWorkspace({
   onSave,
   onExport,
 }: RecordingWorkspaceProps) {
+  const restoreDisabled =
+    isRecording || isTranscribing || Boolean(transcript.trim() || interimText.trim() || hasAnalysisEvents);
+
   return (
     <div className={`${panelClass} min-w-0 flex-1 p-4`}>
       <div className={`${panelHeaderClass} mb-4 max-sm:flex-col max-sm:items-start`}>
@@ -196,7 +199,7 @@ export function RecordingWorkspace({
           <Download size={17} />
           Export
         </button>
-        <SessionRestoreButton disabled={isRecording || isTranscribing} />
+        <SessionRestoreButton disabled={restoreDisabled} />
       </div>
     </div>
   );
