@@ -196,7 +196,7 @@ export function RecordingWorkspace({
           <Download size={17} />
           Export
         </button>
-        <SessionRestoreButton />
+        <SessionRestoreButton disabled={isRecording || isTranscribing} />
       </div>
     </div>
   );
