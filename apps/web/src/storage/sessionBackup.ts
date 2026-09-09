@@ -221,10 +221,7 @@ function isOptionalArray(value: unknown, predicate: (item: unknown) => boolean) 
   return value == null || (Array.isArray(value) && value.every(predicate));
 }
 
-function isOptionalObject(
-  value: unknown,
-  predicate: (item: Record<string, unknown>) => boolean,
-) {
+function isOptionalObject(value: unknown, predicate: (item: Record<string, unknown>) => boolean) {
   return value == null || (isRecord(value) && predicate(value));
 }
 
