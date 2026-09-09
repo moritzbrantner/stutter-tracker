@@ -304,7 +304,7 @@ function TrendMetric({
   const values = points.map(value);
   const availableValues = values.filter((candidate): candidate is number => candidate != null);
   const chartCeiling = Math.max(1, ceiling ?? Math.max(1, ...availableValues));
-  const latest = [...values].reverse().find((candidate) => candidate != null) ?? null;
+  const latest = values[values.length - 1] ?? null;
 
   return (
     <div className="grid gap-2 border-b border-[#edf1ee] px-4 py-3 last:border-b-0">
@@ -433,12 +433,13 @@ function EmptyState({ icon, label }: { icon: ReactNode; label: string }) {
 }
 
 function formatSessionDuration(seconds: number) {
-  if (seconds < 60) {
-    return `${Math.round(seconds)}s`;
+  const roundedSeconds = Math.round(seconds);
+  if (roundedSeconds < 60) {
+    return `${roundedSeconds}s`;
   }
 
-  const minutes = Math.floor(seconds / 60);
-  const remainingSeconds = Math.round(seconds % 60);
+  const minutes = Math.floor(roundedSeconds / 60);
+  const remainingSeconds = roundedSeconds % 60;
   return remainingSeconds === 0 ? `${minutes}m` : `${minutes}m ${remainingSeconds}s`;
 }
 
