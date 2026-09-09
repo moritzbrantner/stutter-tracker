@@ -193,7 +193,9 @@ function isAcousticStats(value: Record<string, unknown>) {
 function isByKind(value: unknown) {
   return (
     isRecord(value) &&
-    Object.entries(value).every(([kind, count]) => isStutterKind(kind) && isNonNegativeNumber(count))
+    Object.entries(value).every(
+      ([kind, count]) => isStutterKind(kind) && isNonNegativeNumber(count),
+    )
   );
 }
 
