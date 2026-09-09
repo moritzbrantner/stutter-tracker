@@ -62,13 +62,15 @@ describe("session backup", () => {
 
   test("accepts current and legacy exports that contain valid sessions", () => {
     expect(parseSessionBackup(createSessionBackup([session]))).toEqual([session]);
-    expect(parseSessionBackup({ sessions: [session], speakers: [], corpus: {} })).toEqual([session]);
+    expect(parseSessionBackup({ sessions: [session], speakers: [], corpus: {} })).toEqual([
+      session,
+    ]);
   });
 
   test("fails closed for malformed session data", () => {
-    expect(() => parseSessionBackup({ sessions: [{ ...session, startedAt: "not-a-date" }] })).toThrow(
-      "Backup session 1 is invalid.",
-    );
+    expect(() =>
+      parseSessionBackup({ sessions: [{ ...session, startedAt: "not-a-date" }] }),
+    ).toThrow("Backup session 1 is invalid.");
     expect(() => parseSessionBackup({ sessions: "bad" })).toThrow(
       "Backup must contain a sessions array.",
     );
