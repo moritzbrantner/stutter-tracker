@@ -6,6 +6,7 @@ import {
   Mic,
   Save,
   ShieldCheck,
+  Upload,
   UserCheck,
   Waves,
 } from "lucide-react";
@@ -54,6 +55,7 @@ type RecordingWorkspaceProps = {
   onEnroll: () => void;
   onSave: () => void;
   onExport: () => void;
+  onRestore: () => void;
 };
 
 export function RecordingWorkspace({
@@ -80,6 +82,7 @@ export function RecordingWorkspace({
   onEnroll,
   onSave,
   onExport,
+  onRestore,
 }: RecordingWorkspaceProps) {
   return (
     <div className={`${panelClass} min-w-0 flex-1 p-4`}>
@@ -194,6 +197,10 @@ export function RecordingWorkspace({
         <button className={buttonClass} onClick={onExport}>
           <Download size={17} />
           Export
+        </button>
+        <button className={buttonClass} onClick={onRestore}>
+          <Upload size={17} />
+          Restore sessions
         </button>
       </div>
     </div>
