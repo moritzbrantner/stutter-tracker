@@ -46,7 +46,7 @@ export function SessionRestoreButton({ disabled = false }: { disabled?: boolean 
         className={buttonClass}
         onClick={() => inputRef.current?.click()}
         disabled={disabled}
-        title={disabled ? "Stop recording and transcription before restoring sessions" : undefined}
+        title={disabled ? "Finish or clear the current session before restoring sessions" : undefined}
       >
         <Upload size={17} />
         Restore sessions
