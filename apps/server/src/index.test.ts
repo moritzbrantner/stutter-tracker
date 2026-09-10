@@ -422,7 +422,7 @@ async function putSpeakers(
   handler: ReturnType<typeof createComputeRequestHandler>,
   speakers: SpeakerProfile[],
 ) {
-  const response = await postJson(handler, "/speakers", { speakers }, "PUT");
+  const response = await putJson(handler, "/speakers", { speakers });
   expect(response.status).toBe(200);
 }
 
@@ -430,11 +430,24 @@ function postJson(
   handler: ReturnType<typeof createComputeRequestHandler>,
   path: string,
   body: unknown,
-  method = "POST",
 ) {
   return handler(
     new Request(`http://server${path}`, {
-      method,
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  );
+}
+
+function putJson(
+  handler: ReturnType<typeof createComputeRequestHandler>,
+  path: string,
+  body: unknown,
+) {
+  return handler(
+    new Request(`http://server${path}`, {
+      method: "PUT",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
     }),
