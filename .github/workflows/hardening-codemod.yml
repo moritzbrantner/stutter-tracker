@@ -1,0 +1,36 @@
+name: One-shot repository hardening
+
+on:
+  push:
+    branches:
+      - chore/harden-repository
+    paths:
+      - scripts/harden-repository-once.py
+      - .github/workflows/hardening-codemod.yml
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: chore/harden-repository
+
+      - name: Apply bounded hardening edits
+        run: python3 scripts/harden-repository-once.py
+
+      - name: Verify patch shape
+        run: |
+          git diff --check
+          git status --short
+
+      - name: Commit hardening edits
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -m "Harden validation and shared utilities"
+          git push origin HEAD:chore/harden-repository
