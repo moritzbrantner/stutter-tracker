@@ -1,6 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { createComputeClient } from "@stutter-tracker/compute-client";
-import { fallbackAnalyze as sharedFallbackAnalyze } from "@stutter-tracker/shared";
+import {
+  fallbackAnalyze as sharedFallbackAnalyze,
+  resampleSamples as sharedResampleSamples,
+} from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
@@ -1276,22 +1279,7 @@ function analysisAudioPayload(samples: number[], sampleRate: number) {
   };
 }
 
-export function resampleSamples(samples: number[], sampleRate: number, targetSampleRate: number) {
-  if (sampleRate === targetSampleRate) {
-    return samples;
-  }
-  const resultLength = Math.max(1, Math.round((samples.length * targetSampleRate) / sampleRate));
-  const result = new Array<number>(resultLength);
-  const ratio = sampleRate / targetSampleRate;
-  for (let index = 0; index < resultLength; index += 1) {
-    const sourceIndex = index * ratio;
-    const left = Math.floor(sourceIndex);
-    const right = Math.min(samples.length - 1, left + 1);
-    const fraction = sourceIndex - left;
-    result[index] = samples[left] * (1 - fraction) + samples[right] * fraction;
-  }
-  return result;
-}
+export const resampleSamples = sharedResampleSamples;
 
 export function offsetTranscriptSegments(
   segments: TranscriptSegment[],

@@ -1046,7 +1046,7 @@ export function resampleSamples(samples: number[], sampleRate: number, targetSam
     return samples;
   }
   const resultLength = Math.max(1, Math.round((samples.length * targetSampleRate) / sampleRate));
-  const result = new Array<number>(resultLength);
+  const result = Array.from({ length: resultLength }, () => 0);
   const ratio = sampleRate / targetSampleRate;
   for (let index = 0; index < resultLength; index += 1) {
     const sourceIndex = index * ratio;
