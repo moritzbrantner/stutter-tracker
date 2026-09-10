@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/harden-repository-once.py
       - .github/workflows/hardening-codemod.yml
+  workflow_dispatch:
 
 permissions:
   contents: write
