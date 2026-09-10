@@ -14,26 +14,29 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-audio-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-core" }
-audio-analysis-fourier = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-fourier" }
-audio-analysis-pitch = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-pitch" }
-audio-analysis-recognition = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-recognition" }
-audio-analysis-rhythm = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-rhythm" }
-audio-analysis-speakers = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "audio-analysis-speakers" }
+# Registry coordinates remain the distribution contract. Ordinary development
+# activates the exact capability source graph from the repository root.
+audio-analysis-core = { package = "moenarch-audio-analysis-core", version = "=0.1.0" }
+audio-analysis-fourier = { package = "moenarch-audio-analysis-fourier", version = "=0.1.0" }
+audio-analysis-pitch = { package = "moenarch-audio-analysis-pitch", version = "=0.1.0" }
+audio-analysis-recognition = { package = "moenarch-audio-analysis-recognition", version = "=0.1.0" }
+audio-analysis-rhythm = { package = "moenarch-audio-analysis-rhythm", version = "=0.1.0" }
+audio-analysis-speakers = { package = "moenarch-audio-analysis-speakers", version = "=0.1.4" }
+audio-analysis-transcription = { package = "moenarch-audio-analysis-transcription", version = "=0.1.15", features = ["native"] }
 hound = "3.5"
+media-core = { package = "moenarch-media-core", version = "=0.1.0" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.10"
 tauri = { version = "2", features = [] }
-text-analysis-corpus = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-corpus" }
-text-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-core" }
-text-analysis-features = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-features" }
-text-analysis-linguistics = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-linguistics" }
-text-analysis-prediction = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-prediction" }
-text-analysis-transcription = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "text-analysis-transcription" }
+# Historical text-analysis package surfaces now map to their extracted owners.
+text-analysis-core = { package = "moenarch-text-core", version = "=0.1.1" }
+text-analysis-corpus = { package = "moenarch-text-lexical", version = "=0.1.1" }
+text-analysis-linguistics = { package = "moenarch-text-linguistics", version = "=0.1.1" }
+text-analysis-prediction = { package = "moenarch-text-generation", version = "=0.1.1" }
+text-transcripts = { package = "moenarch-text-transcripts", version = "=0.1.3" }
 thiserror = "2"
 ureq = "2"
-video-analysis-core = { git = "https://github.com/moritzbrantner/rust-packages.git", rev = "78a9c6e9eb33730b60c9584ceffb9dc982f5b9da", package = "video-analysis-core" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 webkit2gtk = { version = "=2.0.2", features = ["v2_38"] }

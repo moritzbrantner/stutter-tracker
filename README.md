@@ -105,19 +105,24 @@ failure. Non-WAV uploads for `whisperCpp` are normalized with `ffmpeg`; set
 
 ## Desktop Rust Dependencies
 
-The desktop crate fetches the Rust analysis crates from the pinned
-`https://github.com/moritzbrantner/rust-packages.git` revision in
-`apps/desktop/src-tauri/Cargo.toml`. A clean `stutter-tracker` checkout no
-longer needs a sibling `../rust-packages` checkout for normal builds.
+The desktop crate now follows the extracted capability owners instead of the monolithic `rust-packages` Git revision. Registry coordinates remain the distribution contract; ordinary cross-repository development uses the exact local source graph declared in `.coding-tooling.source-deps.json`.
 
-For local cross-repo crate development, copy the example patch config:
+Keep `stutter-tracker`, `audio-analysis`, `nlp-stack`, `moenarch-foundation`, and `coding-tooling` as sibling repositories/worktrees. The outer coding workspace should place each source repository at the exact revision declared by Stutter Tracker, then activate it with:
 
 ```sh
-cp apps/desktop/src-tauri/.cargo/config.toml.example apps/desktop/src-tauri/.cargo/config.toml
+bash scripts/source-deps activate
+bash scripts/source-deps status
 ```
 
-That local-only config patches the pinned git crates back to
-`../../../../rust-packages/...`.
+Local-only source mode validates every sibling `HEAD`. Missing or mismatched source fails explicitly and never falls back to authenticated Git. Normal feature development therefore does not require a private-repository token or upstream package publication.
+
+When source work is complete, remove the generated Cargo override with:
+
+```sh
+bash scripts/source-deps deactivate
+```
+
+The generated `.cargo/config.toml` is local development state and must not be committed. The committed Cargo lockfile remains part of the reproducible distribution graph and should be regenerated deliberately when registry coordinates change.
 
 ## Artifacts
 

@@ -14,6 +14,9 @@ apps/desktop/src-tauri/target/
 .expo/
 .vite/
 
+# Generated source-development state
+/.cargo/config.toml
+
 # Runtime/downloaded artifacts
 .artifacts/
 artifacts/

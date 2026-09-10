@@ -1,7 +1,18 @@
 mod corpus;
 mod prediction;
 mod speech_analysis;
+mod text_analysis_transcription;
 pub mod transcription;
+
+// Local compatibility names keep product code stable while the historical
+// monolith package surfaces are mapped to their extracted capability owners.
+mod text_analysis_features {
+    pub use text_analysis_corpus::*;
+}
+
+mod video_analysis_core {
+    pub use media_core::DetectError;
+}
 
 use std::fs;
 use std::path::PathBuf;

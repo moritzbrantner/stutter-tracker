@@ -19,7 +19,7 @@ pub enum SpeechAnalysisError {
     #[error("{0}")]
     Invalid(String),
     #[error("{0}")]
-    Audio(#[from] video_analysis_core::DetectError),
+    Audio(#[from] crate::video_analysis_core::DetectError),
 }
 
 type Result<T> = std::result::Result<T, SpeechAnalysisError>;
