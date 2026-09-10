@@ -7,17 +7,17 @@ mod video_analysis_core {
 
 #[path = "../speech_analysis.rs"]
 mod speech_analysis;
+#[path = "../speech_pipeline.rs"]
+mod speech_pipeline;
 
-use speech_analysis::{
-    analyze_speech_session_impl, AnalyzeSpeechRequest, PauseInput, TranscriptSegmentInput,
-};
+use speech_analysis::{AnalyzeSpeechRequest, PauseInput, TranscriptSegmentInput};
 
 fn main() {
     let options = Options::parse();
     let request = fixture(options.duration_seconds, options.audio);
     let started = Instant::now();
     let report =
-        analyze_speech_session_impl(request).expect("synthetic speech analysis must succeed");
+        speech_pipeline::analyze_speech_session(request).expect("synthetic speech analysis must succeed");
     let elapsed = started.elapsed().as_secs_f64();
     let real_time_factor = elapsed / options.duration_seconds.max(0.001);
 
