@@ -1,0 +1,94 @@
+name: Profiler scenario contract
+
+on:
+  pull_request:
+    paths:
+      - ".runtime-profiler/**"
+      - "scripts/profile-*.py"
+      - "scripts/profile-*.sh"
+      - "apps/desktop/src-tauri/src/bin/profile-speech-analysis.rs"
+      - ".github/workflows/profiler-scenario-contract.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - ".runtime-profiler/**"
+      - "scripts/profile-*.py"
+      - "scripts/profile-*.sh"
+      - "apps/desktop/src-tauri/src/bin/profile-speech-analysis.rs"
+      - ".github/workflows/profiler-scenario-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check helper syntax
+        run: |
+          bash -n scripts/profile-runtime.sh
+          python3 -m py_compile scripts/profile-domain-metrics.py
+
+      - name: Validate scenario structure
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.cwd().resolve()
+          scenarios = sorted((root / ".runtime-profiler" / "scenarios").glob("*.yaml"))
+          if not scenarios:
+              raise SystemExit("no runtime-profiler scenarios found")
+
+          seen_ids: set[str] = set()
+          expected_program = "./apps/desktop/src-tauri/target/release/profile-speech-analysis"
+
+          def scalar(lines: list[str], name: str) -> str:
+              prefix = f"{name}:"
+              for raw in lines:
+                  line = raw.strip()
+                  if line.startswith(prefix):
+                      value = line.split(":", 1)[1].strip()
+                      if value:
+                          return value
+              raise SystemExit(f"missing {name}")
+
+          for scenario in scenarios:
+              lines = scenario.read_text(encoding="utf-8").splitlines()
+              if scalar(lines, "schema_version") != "runtime-profiler/scenario/v1":
+                  raise SystemExit(f"unsupported scenario schema: {scenario}")
+
+              scenario_id = scalar(lines, "id")
+              if scenario_id in seen_ids:
+                  raise SystemExit(f"duplicate scenario id: {scenario_id}")
+              seen_ids.add(scenario_id)
+
+              if scalar(lines, "type") != "command":
+                  raise SystemExit(f"scenario must use a command target: {scenario}")
+              if scalar(lines, "program") != expected_program:
+                  raise SystemExit(f"unexpected profiler target: {scenario}")
+
+              args = json.loads(scalar(lines, "args"))
+              if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+                  raise SystemExit(f"scenario args must be a JSON string array: {scenario}")
+
+              working_directory = scalar(lines, "working_directory")
+              if (scenario.parent / working_directory).resolve() != root:
+                  raise SystemExit(f"scenario working directory must resolve to repository root: {scenario}")
+
+              warmups = int(scalar(lines, "warmup_iterations"))
+              measurements = int(scalar(lines, "measurement_iterations"))
+              timeout = int(scalar(lines, "timeout_seconds"))
+              if warmups < 0 or measurements < 1 or timeout < 1:
+                  raise SystemExit(f"invalid run counts or timeout: {scenario}")
+
+              if not any(line.strip() == "- process" for line in lines):
+                  raise SystemExit(f"scenario must retain the process collector: {scenario}")
+          PY
