@@ -1,0 +1,75 @@
+name: Stutter benchmark contract
+
+on:
+  pull_request:
+    paths:
+      - "apps/desktop/src-tauri/src/stutter_bench.rs"
+      - "apps/desktop/src-tauri/src/lib.rs"
+      - "apps/desktop/src-tauri/STUTTER_BENCH.md"
+      - "package.json"
+      - ".github/workflows/stutter-benchmark-contract.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "apps/desktop/src-tauri/src/stutter_bench.rs"
+      - "apps/desktop/src-tauri/src/lib.rs"
+      - "apps/desktop/src-tauri/STUTTER_BENCH.md"
+      - "package.json"
+      - ".github/workflows/stutter-benchmark-contract.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Check Rust formatting
+        run: cargo fmt --manifest-path apps/desktop/src-tauri/Cargo.toml -- --check
+
+      - name: Verify benchmark ownership and entry point
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          root = Path.cwd()
+          module = root / "apps/desktop/src-tauri/src/stutter_bench.rs"
+          lib = root / "apps/desktop/src-tauri/src/lib.rs"
+          package = json.loads((root / "package.json").read_text(encoding="utf-8"))
+          if not module.is_file():
+              raise SystemExit("missing Rust stutter benchmark module")
+          text = module.read_text(encoding="utf-8")
+          for marker in (
+              "crate::speech_analysis",
+              "StutterKind",
+              "NoStutteredWords",
+              "speaker_safe_split",
+              "evaluate_existing_detector",
+          ):
+              if marker not in text:
+                  raise SystemExit(f"missing benchmark contract marker: {marker}")
+          if "mod stutter_bench;" not in lib.read_text(encoding="utf-8"):
+              raise SystemExit("Rust benchmark module is not registered")
+          command = package.get("scripts", {}).get("benchmark:stutter", "")
+          if "cargo test" not in command or "stutter_bench" not in command:
+              raise SystemExit("benchmark:stutter must execute the Rust harness")
+          if (root / "packages/stutter-bench/src/index.ts").exists():
+              raise SystemExit("stutter benchmark semantics must not have a second TypeScript owner")
+          PY
+
+      - name: Explain source-development boundary
+        run: |
+          echo "Hosted CI checks the Rust benchmark source contract without resolving private/local-only capability dependencies."
+          echo "The semantic harness runs through bun run benchmark:stutter inside the verified source-development graph."
