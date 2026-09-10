@@ -39,3 +39,20 @@ jobs:
       install_mode: auto
       report_path: .artifacts/coding-tooling/${{ matrix.report }}-fast.json
       timeout_minutes: 30
+
+  fast-gate:
+    name: Fast gate
+    needs: package-fast
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Require the complete fast matrix
+        env:
+          MATRIX_RESULT: ${{ needs.package-fast.result }}
+        run: |
+          if [ "$MATRIX_RESULT" != "success" ]; then
+            echo "Fast validation matrix result: $MATRIX_RESULT" >&2
+            exit 1
+          fi
