@@ -5,7 +5,6 @@ on:
     branches:
       - chore/harden-repository
     paths:
-      - scripts/harden-repository-once.py
       - .github/workflows/hardening-codemod.yml
   workflow_dispatch:
 
@@ -33,5 +32,5 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
-          git commit -m "Harden validation and shared utilities"
+          git commit -m "Harden shared utility ownership and request tests"
           git push origin HEAD:chore/harden-repository
