@@ -5,5 +5,5 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async () => {
     throw new Error("Tauri invoke is unavailable in tests");
   }),
-  isTauri: () => false,
+  isTauri: vi.fn(() => false),
 }));
