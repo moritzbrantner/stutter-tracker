@@ -114,7 +114,7 @@ export function App() {
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [chunkStats, setChunkStats] = useState<TranscriptionChunkStats>(() => emptyChunkStats());
   const [transcriptionChunks, setTranscriptionChunks] = useState<TranscriptionChunkRecord[]>([]);
-  const [sessionMutationPending, setSessionMutationPending] = useState(false);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -127,11 +127,11 @@ export function App() {
   const [speakerMatch, setSpeakerMatch] = useState<SpeakerMatch | null>(null);
   const [message, setMessage] = useState("Idle");
 
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
-  const browserRecorderRef = useRef<BrowserRecorder | null>(null);
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef<string | null>(null);
-  const sessionMutationPendingRef = useRef(false);
+  const sessionMutationTailRef = useRef<Promise<void>>(Promise.resolve());
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const browserRecorderRef = useRef<BrowserRecorder | null>(null);
   const startedAtRef = useRef<Date | null>(null);
   const lastFinalEndRef = useRef(0);
   const lastVoiceAtRef = useRef(0);
@@ -416,7 +416,7 @@ export function App() {
       recordingLanguageRef.current = language;
       resetChunkTranscription();
       startedAtRef.current = new Date();
-      setActiveSession(null);
+      activeSessionIdRef.current = null;
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -656,37 +656,24 @@ export function App() {
     }
   }
 
-  function setActiveSession(sessionId: string | null) {
-    activeSessionIdRef.current = sessionId;
-  }
-
   function persistSessions(next: SavedSession[]) {
     sessionsRef.current = next;
-    setSessions(next);
     localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    setSessions(next);
   }
 
-  function beginSessionMutation() {
-    if (sessionMutationPendingRef.current) {
-      setMessage("Another session update is still in progress");
-      return false;
-    }
-    sessionMutationPendingRef.current = true;
-    setSessionMutationPending(true);
-    return true;
-  }
-
-  function finishSessionMutation() {
-    sessionMutationPendingRef.current = false;
-    setSessionMutationPending(false);
+  function serializeSessionMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const operation = sessionMutationTailRef.current.then(mutation);
+    sessionMutationTailRef.current = operation.then(
+      () => undefined,
+      () => undefined,
+    );
+    return operation;
   }
 
   async function saveSession() {
     if (!segments.length && !report.events.length) {
       setMessage("Nothing to save");
-      return;
-    }
-    if (!beginSessionMutation()) {
       return;
     }
     const session: SavedSession = {
@@ -696,51 +683,48 @@ export function App() {
       pauses,
       report,
     };
+    const next = [session, ...sessionsRef.current].slice(0, 50);
+    persistSessions(next);
+    activeSessionIdRef.current = session.id;
     try {
-      const next = [session, ...sessionsRef.current].slice(0, 50);
-      persistSessions(next);
-      setActiveSession(session.id);
-      try {
-        const corpus = await saveSpeechCorpusSession(session);
-        setCorpusAnalysis(corpus);
-        setMessage("Session saved to corpus");
-      } catch {
-        setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
-        setMessage("Session saved locally");
-      }
-    } finally {
-      finishSessionMutation();
+      const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(session));
+      setCorpusAnalysis(corpus);
+      setMessage("Session saved to corpus");
+    } catch {
+      setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+      setMessage("Session saved locally");
     }
   }
 
   async function deleteSession(session: SavedSession) {
-    if (!beginSessionMutation()) {
-      return;
-    }
+    setDeletingSessionId(session.id);
     try {
-      const requestedSessions = sessionsRef.current.filter(
-        (candidate) => candidate.id !== session.id,
-      );
-      const corpus = await deleteSpeechCorpusSession(session.id, requestedSessions);
-      const next = sessionsRef.current.filter((candidate) => candidate.id !== session.id);
-      persistSessions(next);
+      const corpus = await serializeSessionMutation(async () => {
+        const remainingSessions = sessionsRef.current.filter(
+          (candidate) => candidate.id !== session.id,
+        );
+        const analysis = await deleteSpeechCorpusSession(session.id, remainingSessions);
+        const next = sessionsRef.current.filter((candidate) => candidate.id !== session.id);
+        persistSessions(next);
+        if (activeSessionIdRef.current === session.id) {
+          startedAtRef.current = null;
+          samplesRef.current = [];
+          setSegments([]);
+          setPauses([]);
+          setReport(emptyReport());
+          setInterimText("");
+          setSpeakerMatch(null);
+          resetChunkTranscription();
+          activeSessionIdRef.current = null;
+        }
+        return analysis;
+      });
       setCorpusAnalysis(corpus);
-      if (activeSessionIdRef.current === session.id) {
-        startedAtRef.current = null;
-        samplesRef.current = [];
-        setSegments([]);
-        setPauses([]);
-        setReport(emptyReport());
-        setInterimText("");
-        setSpeakerMatch(null);
-        resetChunkTranscription();
-        setActiveSession(null);
-      }
       setMessage("Session deleted");
     } catch (error) {
       setMessage(`Delete failed: ${errorMessage(error)}`);
     } finally {
-      finishSessionMutation();
+      setDeletingSessionId(null);
     }
   }
 
@@ -1035,7 +1019,6 @@ export function App() {
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
           onExport={exportJson}
-          sessionMutationPending={sessionMutationPending}
         />
 
         <InsightsSidebar
@@ -1070,10 +1053,10 @@ export function App() {
         analyzedChunks={analyzedChunks}
         blockerStats={blockerStats}
         sessions={sessions}
-        sessionMutationPending={sessionMutationPending}
+        deletingSessionId={deletingSessionId}
         onSessionLoad={(session) => {
           startedAtRef.current = new Date(session.startedAt);
-          setActiveSession(session.id);
+          activeSessionIdRef.current = session.id;
           setSegments(session.segments);
           setPauses(session.pauses);
           setReport(session.report);

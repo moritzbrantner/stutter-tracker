@@ -14,7 +14,7 @@
     "typecheck": "tsc --noEmit",
     "test": "bun run test:unit && bun run test:integration && bun run test:e2e",
     "test:unit": "vitest run src/App.unit.test.ts src/audio/*.test.ts src/recording/*.test.ts src/storage/*.test.ts",
-    "test:integration": "vitest run src/App.integration.test.tsx",
+    "test:integration": "vitest run src/App.integration.test.tsx src/SessionPersistence.integration.test.tsx",
     "test:e2e": "playwright test"
   },
   "dependencies": {
