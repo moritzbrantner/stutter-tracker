@@ -51,7 +51,7 @@ function makeSession(id: string, text: string, startedAt: string): SavedSession 
       wordCount: 1,
       stutterCount: 0,
       stuttersPerMinute: 0,
-      severity: "low",
+      severity: "mild",
       events: [],
       byKind: {},
     },
