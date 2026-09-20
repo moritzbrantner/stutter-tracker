@@ -54,7 +54,16 @@ test("restores a saved session from local storage", async ({ page }) => {
   await page.locator(".session-row").click();
 
   await expect(page.getByText("I I want to start").first()).toBeVisible();
-  await expect(page.getByText("Repeated word sequence")).toBeVisible();
+  await expect(page.getByText("Repeated word sequence")).toHaveText("Repeated word sequence");
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: /Delete saved session from/ }).click();
+
+  await expect(page.locator(".session-row")).toHaveCount(0);
+  await expect(page.getByText("Transcript will appear here.")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("stutter-tracker:sessions")))
+    .toBe("[]");
 });
 
 test("records and stops with fake media devices", async ({ page }, testInfo) => {
@@ -65,7 +74,8 @@ test("records and stops with fake media devices", async ({ page }, testInfo) => 
 
   await page.goto("/");
   await page.getByRole("button", { name: /record/i }).click();
-  await expect(page.getByRole("button", { name: /stop/i })).toBeVisible();
-  await page.getByRole("button", { name: /stop/i }).click();
+  const stopButton = page.getByRole("button", { name: "Stop", exact: true });
+  await expect(stopButton).toBeEnabled();
+  await stopButton.click();
   await expect(page.getByRole("button", { name: /record/i })).toBeVisible();
 });

@@ -36,7 +36,7 @@ afterEach(() => {
 });
 
 describe("App integration", () => {
-  it("loads a saved session and restores it into the active workspace", async () => {
+  it("loads a saved session and deletes it from persistence and the active workspace", async () => {
     const savedSession = {
       id: "session-1",
       startedAt: "2026-05-19T10:00:00.000Z",
@@ -94,6 +94,16 @@ describe("App integration", () => {
     expect(await screen.findByText("Repeated word sequence")).toBeInTheDocument();
     expect((await screen.findAllByText("Text")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("0:00")).toHaveLength(2);
+
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    await userEvent.click(screen.getByRole("button", { name: /Delete saved session from/ }));
+
+    await waitFor(() => expect(container.querySelector(".session-row")).toBeNull());
+    expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "null")).toEqual([]);
+    await waitFor(() =>
+      expect(screen.queryByText("Repeated word sequence")).not.toBeInTheDocument(),
+    );
+    expect(screen.getByText("Transcript will appear here.")).toBeInTheDocument();
   });
 
   it("keeps external-server transcription settings in web mode", async () => {

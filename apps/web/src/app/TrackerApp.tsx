@@ -114,6 +114,8 @@ export function App() {
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [chunkStats, setChunkStats] = useState<TranscriptionChunkStats>(() => emptyChunkStats());
   const [transcriptionChunks, setTranscriptionChunks] = useState<TranscriptionChunkRecord[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
+  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -412,6 +414,7 @@ export function App() {
       recordingLanguageRef.current = language;
       resetChunkTranscription();
       startedAtRef.current = new Date();
+      setActiveSessionId(null);
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -665,6 +668,7 @@ export function App() {
     };
     const next = [session, ...sessions].slice(0, 50);
     setSessions(next);
+    setActiveSessionId(session.id);
     localStorage.setItem(STORE_KEY, JSON.stringify(next));
     try {
       const corpus = await saveSpeechCorpusSession(session);
@@ -673,6 +677,33 @@ export function App() {
     } catch {
       setCorpusAnalysis(analyzeLocalCorpus(next));
       setMessage("Session saved locally");
+    }
+  }
+
+  async function deleteSession(session: SavedSession) {
+    const next = sessions.filter((candidate) => candidate.id !== session.id);
+    setDeletingSessionId(session.id);
+    try {
+      const corpus = await deleteSpeechCorpusSession(session.id, next);
+      localStorage.setItem(STORE_KEY, JSON.stringify(next));
+      setSessions(next);
+      setCorpusAnalysis(corpus);
+      if (activeSessionId === session.id) {
+        startedAtRef.current = null;
+        samplesRef.current = [];
+        setSegments([]);
+        setPauses([]);
+        setReport(emptyReport());
+        setInterimText("");
+        setSpeakerMatch(null);
+        resetChunkTranscription();
+        setActiveSessionId(null);
+      }
+      setMessage("Session deleted");
+    } catch (error) {
+      setMessage(`Delete failed: ${errorMessage(error)}`);
+    } finally {
+      setDeletingSessionId(null);
     }
   }
 
@@ -1001,12 +1032,15 @@ export function App() {
         analyzedChunks={analyzedChunks}
         blockerStats={blockerStats}
         sessions={sessions}
+        deletingSessionId={deletingSessionId}
         onSessionLoad={(session) => {
           startedAtRef.current = new Date(session.startedAt);
+          setActiveSessionId(session.id);
           setSegments(session.segments);
           setPauses(session.pauses);
           setReport(session.report);
         }}
+        onSessionDelete={(session) => void deleteSession(session)}
       />
     </main>
   );
@@ -1218,6 +1252,16 @@ async function saveSpeechCorpusSession(session: SavedSession): Promise<SpeechCor
     throw new Error("desktop corpus is only available in the Tauri app");
   }
   return invoke<SpeechCorpusAnalysis>("save_speech_corpus_session", { session });
+}
+
+async function deleteSpeechCorpusSession(
+  sessionId: string,
+  remainingSessions: SavedSession[],
+): Promise<SpeechCorpusAnalysis> {
+  if (!isDesktopApp()) {
+    return analyzeLocalCorpus(remainingSessions);
+  }
+  return invoke<SpeechCorpusAnalysis>("delete_speech_corpus_session", { sessionId });
 }
 
 export function fallbackAnalyze(request: {

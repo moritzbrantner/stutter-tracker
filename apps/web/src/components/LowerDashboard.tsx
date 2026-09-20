@@ -1,4 +1,12 @@
-import { BarChart3, BrainCircuit, ListChecks, PlayCircle, TrendingUp, Waves } from "lucide-react";
+import {
+  BarChart3,
+  BrainCircuit,
+  ListChecks,
+  PlayCircle,
+  Trash2,
+  TrendingUp,
+  Waves,
+} from "lucide-react";
 import type { ReactNode } from "react";
 import { buildSessionHistory, type SessionHistoryPoint } from "../storage/sessionHistory";
 import type {
@@ -26,6 +34,8 @@ type LowerDashboardProps = {
   blockerStats: BlockerStats;
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
+  onSessionDelete: (session: SavedSession) => void;
+  deletingSessionId: string | null;
 };
 
 export function LowerDashboard({
@@ -36,6 +46,8 @@ export function LowerDashboard({
   blockerStats,
   sessions,
   onSessionLoad,
+  onSessionDelete,
+  deletingSessionId,
 }: LowerDashboardProps) {
   return (
     <section className="flex items-start gap-4 max-lg:flex-col">
@@ -44,7 +56,12 @@ export function LowerDashboard({
       <SpeechLogPanel segments={segments} />
       <ChunkAnalysisPanel chunks={analyzedChunks} report={report} blockerStats={blockerStats} />
       <ProgressPanel sessions={sessions} />
-      <SessionsPanel sessions={sessions} onSessionLoad={onSessionLoad} />
+      <SessionsPanel
+        sessions={sessions}
+        onSessionLoad={onSessionLoad}
+        onSessionDelete={onSessionDelete}
+        deletingSessionId={deletingSessionId}
+      />
     </section>
   );
 }
@@ -349,9 +366,13 @@ function TrendMetric({
 function SessionsPanel({
   sessions,
   onSessionLoad,
+  onSessionDelete,
+  deletingSessionId,
 }: {
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
+  onSessionDelete: (session: SavedSession) => void;
+  deletingSessionId: string | null;
 }) {
   const historyById = new Map(
     buildSessionHistory(sessions, Math.max(1, sessions.length)).map((point) => [point.id, point]),
@@ -371,28 +392,46 @@ function SessionsPanel({
             const historyPoint = historyById.get(session.id);
 
             return (
-              <button
+              <div
                 key={session.id}
-                className={`session-row ${buttonClass} w-full justify-start rounded-none border-0 border-b border-[#edf1ee] px-4 py-3 last:border-b-0`}
-                onClick={() => onSessionLoad(session)}
+                className="flex items-stretch border-b border-[#edf1ee] last:border-b-0"
               >
-                <PlayCircle className="shrink-0" size={18} />
-                <span className="min-w-0 flex-1 text-left">
-                  <span className="block truncate">
-                    {new Date(session.startedAt).toLocaleString()}
-                  </span>
-                  {historyPoint && (
-                    <span className={`mt-1 block text-xs ${mutedTextClass}`}>
-                      {formatSessionDuration(historyPoint.durationSeconds)} ·{" "}
-                      {historyPoint.fluencyPercentage == null
-                        ? "fluency unavailable"
-                        : `${historyPoint.fluencyPercentage.toFixed(0)}% fluency`}{" "}
-                      · {historyPoint.stuttersPerMinute.toFixed(1)} events/min
+                <button
+                  className={`session-row ${buttonClass} min-w-0 flex-1 justify-start rounded-none border-0 px-4 py-3`}
+                  onClick={() => onSessionLoad(session)}
+                >
+                  <PlayCircle className="shrink-0" size={18} />
+                  <span className="min-w-0 flex-1 text-left">
+                    <span className="block truncate">
+                      {new Date(session.startedAt).toLocaleString()}
                     </span>
-                  )}
-                </span>
-                <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
-              </button>
+                    {historyPoint && (
+                      <span className={`mt-1 block text-xs ${mutedTextClass}`}>
+                        {formatSessionDuration(historyPoint.durationSeconds)} ·{" "}
+                        {historyPoint.fluencyPercentage == null
+                          ? "fluency unavailable"
+                          : `${historyPoint.fluencyPercentage.toFixed(0)}% fluency`}{" "}
+                        · {historyPoint.stuttersPerMinute.toFixed(1)} events/min
+                      </span>
+                    )}
+                  </span>
+                  <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
+                </button>
+                <button
+                  type="button"
+                  className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#a33b3b] hover:bg-[#fff4f4] disabled:cursor-wait disabled:opacity-50"
+                  aria-label={`Delete saved session from ${new Date(session.startedAt).toLocaleString()}`}
+                  title="Delete saved session"
+                  disabled={deletingSessionId === session.id}
+                  onClick={() => {
+                    if (window.confirm("Delete this saved session? This cannot be undone.")) {
+                      onSessionDelete(session);
+                    }
+                  }}
+                >
+                  <Trash2 size={18} />
+                </button>
+              </div>
             );
           })
         )}

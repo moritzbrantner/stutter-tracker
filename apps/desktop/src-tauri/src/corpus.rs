@@ -20,6 +20,8 @@ pub enum CorpusError {
     Json(#[from] serde_json::Error),
     #[error("{0}")]
     Analysis(#[from] crate::video_analysis_core::DetectError),
+    #[error("session id must not be empty")]
+    InvalidSessionId,
 }
 
 type Result<T> = std::result::Result<T, CorpusError>;
@@ -216,6 +218,28 @@ pub fn save_speech_corpus_session_impl(
         .sort_by(|left, right| right.started_at.cmp(&left.started_at));
     write_store(path, &store)?;
     analyze_store(&store)
+}
+
+pub fn delete_speech_corpus_session_impl(
+    path: &Path,
+    session_id: &str,
+) -> Result<SpeechCorpusAnalysis> {
+    let session_id = session_id.trim();
+    if session_id.is_empty() {
+        return Err(CorpusError::InvalidSessionId);
+    }
+
+    let mut store = read_store(path)?;
+    if delete_session(&mut store, session_id) {
+        write_store(path, &store)?;
+    }
+    analyze_store(&store)
+}
+
+fn delete_session(store: &mut SpeechCorpusStore, session_id: &str) -> bool {
+    let previous_len = store.sessions.len();
+    store.sessions.retain(|session| session.id != session_id);
+    store.sessions.len() != previous_len
 }
 
 fn normalize_session(request: CorpusSessionInput) -> SpeechCorpusSession {
@@ -603,5 +627,44 @@ mod tests {
         assert_eq!(analysis.stats.stutter_count, 1);
         assert_eq!(analysis.speakers.len(), 2);
         assert!(analysis.top_terms.iter().any(|term| term.term == "speech"));
+    }
+
+    #[test]
+    fn deletes_only_the_requested_corpus_session_idempotently() {
+        let session = SpeechCorpusSession {
+            id: "session-1".to_string(),
+            started_at: "2026-05-19T12:00:00.000Z".to_string(),
+            total_duration_seconds: 20.0,
+            word_count: 5,
+            stutter_count: 1,
+            stutters_per_minute: 3.0,
+            segments: vec![CorpusSegmentInput {
+                text: "I like building speech tools".to_string(),
+                start_seconds: 0.0,
+                end_seconds: 4.0,
+                confidence: Some(0.9),
+                speaker_id: Some("me".to_string()),
+                speaker_label: Some("Me".to_string()),
+                speaker_score: Some(0.95),
+                is_final: true,
+            }],
+        };
+        let mut store = SpeechCorpusStore {
+            sessions: vec![
+                session.clone(),
+                SpeechCorpusSession {
+                    id: "session-2".to_string(),
+                    ..session
+                },
+            ],
+        };
+
+        assert!(delete_session(&mut store, "session-1"));
+        assert!(!delete_session(&mut store, "session-1"));
+
+        let analysis = analyze_store(&store).expect("remaining corpus should analyze");
+        assert_eq!(store.sessions.len(), 1);
+        assert_eq!(store.sessions[0].id, "session-2");
+        assert_eq!(analysis.stats.sessions, 1);
     }
 }
