@@ -55,6 +55,15 @@ test("restores a saved session from local storage", async ({ page }) => {
 
   await expect(page.getByText("I I want to start").first()).toBeVisible();
   await expect(page.getByText("Repeated word sequence")).toBeVisible();
+
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: /Delete saved session from/ }).click();
+
+  await expect(page.locator(".session-row")).toHaveCount(0);
+  await expect(page.getByText("Transcript will appear here.")).toBeVisible();
+  await expect
+    .poll(() => page.evaluate(() => localStorage.getItem("stutter-tracker:sessions")))
+    .toBe("[]");
 });
 
 test("records and stops with fake media devices", async ({ page }, testInfo) => {

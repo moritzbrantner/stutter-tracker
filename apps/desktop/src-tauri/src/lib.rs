@@ -21,8 +21,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use corpus::{
-    export_speech_corpus_impl, load_speech_corpus_impl, save_speech_corpus_session_impl,
-    CorpusSessionInput, SpeechCorpusAnalysis,
+    delete_speech_corpus_session_impl, export_speech_corpus_impl, load_speech_corpus_impl,
+    save_speech_corpus_session_impl, CorpusSessionInput, SpeechCorpusAnalysis,
 };
 use prediction::{predict_speaker_intent_impl, SpeakerIntentPrediction, SpeakerIntentRequest};
 use speech_analysis::{
@@ -109,6 +109,15 @@ fn save_speech_corpus_session(
 }
 
 #[tauri::command]
+fn delete_speech_corpus_session(
+    app: tauri::AppHandle,
+    session_id: String,
+) -> Result<SpeechCorpusAnalysis, String> {
+    delete_speech_corpus_session_impl(&speech_corpus_path(&app)?, &session_id)
+        .map_err(|err| err.to_string())
+}
+
+#[tauri::command]
 fn predict_speaker_intent(
     request: SpeakerIntentRequest,
 ) -> Result<Vec<SpeakerIntentPrediction>, String> {
@@ -156,6 +165,7 @@ pub fn run() {
             load_speech_corpus,
             export_speech_corpus,
             save_speech_corpus_session,
+            delete_speech_corpus_session,
             predict_speaker_intent,
             transcribe_audio,
             transcription_models,
