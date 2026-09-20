@@ -159,7 +159,9 @@ function deleteInvocationCount() {
 afterEach(() => {
   localStorage.clear();
   vi.restoreAllMocks();
+  vi.mocked(isTauri).mockReset();
   vi.mocked(isTauri).mockReturnValue(false);
+  vi.mocked(invoke).mockReset();
   vi.mocked(invoke).mockImplementation(async () => {
     throw new Error("Tauri invoke is unavailable in tests");
   });
@@ -232,5 +234,44 @@ describe("desktop saved-session persistence", () => {
     });
     expect(screen.queryByText("Transcript will appear here.")).not.toBeInTheDocument();
     expect(screen.getAllByText("beta stays").length).toBeGreaterThan(0);
+  });
+
+  it("clears a session selected after its desktop deletion has started", async () => {
+    const deletion = deferred<SpeechCorpusAnalysis>();
+    useDesktopInvokeMock([deletion]);
+
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify([
+        makeSession("session-a", "alpha deleted", "2026-05-19T10:00:00.000Z"),
+        makeSession("session-b", "beta initial", "2026-05-19T11:00:00.000Z"),
+      ]),
+    );
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    const { container } = renderApp();
+    const sessionRows = await waitFor(() => {
+      const rows = container.querySelectorAll<HTMLButtonElement>(".session-row");
+      expect(rows).toHaveLength(2);
+      return rows;
+    });
+
+    await userEvent.click(sessionRows[1]);
+    expect(await screen.findAllByText("beta initial")).not.toHaveLength(0);
+
+    await userEvent.click((await screen.findAllByTitle("Delete saved session"))[0]);
+    await waitFor(() => expect(deleteInvocationCount()).toBe(1));
+
+    await userEvent.click(container.querySelectorAll<HTMLButtonElement>(".session-row")[0]);
+    expect(await screen.findAllByText("alpha deleted")).not.toHaveLength(0);
+
+    deletion.resolve(emptyCorpusAnalysis());
+
+    await waitFor(() => {
+      const persisted = JSON.parse(localStorage.getItem(STORE_KEY) ?? "null") as SavedSession[];
+      expect(persisted.map((session) => session.id)).toEqual(["session-b"]);
+    });
+    expect(screen.getByText("Transcript will appear here.")).toBeInTheDocument();
+    expect(screen.queryByText("alpha deleted")).not.toBeInTheDocument();
   });
 });
