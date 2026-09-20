@@ -35,7 +35,7 @@ type LowerDashboardProps = {
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
   onSessionDelete: (session: SavedSession) => void;
-  deletingSessionId: string | null;
+  sessionMutationPending: boolean;
 };
 
 export function LowerDashboard({
@@ -47,7 +47,7 @@ export function LowerDashboard({
   sessions,
   onSessionLoad,
   onSessionDelete,
-  deletingSessionId,
+  sessionMutationPending,
 }: LowerDashboardProps) {
   return (
     <section className="flex items-start gap-4 max-lg:flex-col">
@@ -60,7 +60,7 @@ export function LowerDashboard({
         sessions={sessions}
         onSessionLoad={onSessionLoad}
         onSessionDelete={onSessionDelete}
-        deletingSessionId={deletingSessionId}
+        sessionMutationPending={sessionMutationPending}
       />
     </section>
   );
@@ -367,12 +367,12 @@ function SessionsPanel({
   sessions,
   onSessionLoad,
   onSessionDelete,
-  deletingSessionId,
+  sessionMutationPending,
 }: {
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
   onSessionDelete: (session: SavedSession) => void;
-  deletingSessionId: string | null;
+  sessionMutationPending: boolean;
 }) {
   const historyById = new Map(
     buildSessionHistory(sessions, Math.max(1, sessions.length)).map((point) => [point.id, point]),
@@ -422,7 +422,7 @@ function SessionsPanel({
                   className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#a33b3b] hover:bg-[#fff4f4] disabled:cursor-wait disabled:opacity-50"
                   aria-label={`Delete saved session from ${new Date(session.startedAt).toLocaleString()}`}
                   title="Delete saved session"
-                  disabled={deletingSessionId === session.id}
+                  disabled={sessionMutationPending}
                   onClick={() => {
                     if (window.confirm("Delete this saved session? This cannot be undone.")) {
                       onSessionDelete(session);

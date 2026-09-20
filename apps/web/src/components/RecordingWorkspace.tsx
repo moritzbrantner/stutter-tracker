@@ -52,6 +52,7 @@ type RecordingWorkspaceProps = {
   transcript: string;
   interimText: string;
   canEnroll: boolean;
+  sessionMutationPending: boolean;
   onEnroll: () => void;
   onSave: () => void;
   onExport: () => void;
@@ -78,11 +79,13 @@ export function RecordingWorkspace({
   transcript,
   interimText,
   canEnroll,
+  sessionMutationPending,
   onEnroll,
   onSave,
   onExport,
 }: RecordingWorkspaceProps) {
   const restoreDisabled =
+    sessionMutationPending ||
     isRecording ||
     isTranscribing ||
     Boolean(transcript.trim() || interimText.trim() || hasAnalysisEvents);
@@ -193,7 +196,7 @@ export function RecordingWorkspace({
           <ShieldCheck size={17} />
           Enroll
         </button>
-        <button className={buttonClass} onClick={onSave}>
+        <button className={buttonClass} onClick={onSave} disabled={sessionMutationPending}>
           <Save size={17} />
           Save
         </button>

@@ -114,8 +114,7 @@ export function App() {
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
   const [chunkStats, setChunkStats] = useState<TranscriptionChunkStats>(() => emptyChunkStats());
   const [transcriptionChunks, setTranscriptionChunks] = useState<TranscriptionChunkRecord[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
+  const [sessionMutationPending, setSessionMutationPending] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
@@ -130,6 +129,9 @@ export function App() {
 
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const browserRecorderRef = useRef<BrowserRecorder | null>(null);
+  const sessionsRef = useRef(sessions);
+  const activeSessionIdRef = useRef<string | null>(null);
+  const sessionMutationPendingRef = useRef(false);
   const startedAtRef = useRef<Date | null>(null);
   const lastFinalEndRef = useRef(0);
   const lastVoiceAtRef = useRef(0);
@@ -414,7 +416,7 @@ export function App() {
       recordingLanguageRef.current = language;
       resetChunkTranscription();
       startedAtRef.current = new Date();
-      setActiveSessionId(null);
+      setActiveSession(null);
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -654,9 +656,37 @@ export function App() {
     }
   }
 
+  function setActiveSession(sessionId: string | null) {
+    activeSessionIdRef.current = sessionId;
+  }
+
+  function persistSessions(next: SavedSession[]) {
+    sessionsRef.current = next;
+    setSessions(next);
+    localStorage.setItem(STORE_KEY, JSON.stringify(next));
+  }
+
+  function beginSessionMutation() {
+    if (sessionMutationPendingRef.current) {
+      setMessage("Another session update is still in progress");
+      return false;
+    }
+    sessionMutationPendingRef.current = true;
+    setSessionMutationPending(true);
+    return true;
+  }
+
+  function finishSessionMutation() {
+    sessionMutationPendingRef.current = false;
+    setSessionMutationPending(false);
+  }
+
   async function saveSession() {
     if (!segments.length && !report.events.length) {
       setMessage("Nothing to save");
+      return;
+    }
+    if (!beginSessionMutation()) {
       return;
     }
     const session: SavedSession = {
@@ -666,29 +696,36 @@ export function App() {
       pauses,
       report,
     };
-    const next = [session, ...sessions].slice(0, 50);
-    setSessions(next);
-    setActiveSessionId(session.id);
-    localStorage.setItem(STORE_KEY, JSON.stringify(next));
     try {
-      const corpus = await saveSpeechCorpusSession(session);
-      setCorpusAnalysis(corpus);
-      setMessage("Session saved to corpus");
-    } catch {
-      setCorpusAnalysis(analyzeLocalCorpus(next));
-      setMessage("Session saved locally");
+      const next = [session, ...sessionsRef.current].slice(0, 50);
+      persistSessions(next);
+      setActiveSession(session.id);
+      try {
+        const corpus = await saveSpeechCorpusSession(session);
+        setCorpusAnalysis(corpus);
+        setMessage("Session saved to corpus");
+      } catch {
+        setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+        setMessage("Session saved locally");
+      }
+    } finally {
+      finishSessionMutation();
     }
   }
 
   async function deleteSession(session: SavedSession) {
-    const next = sessions.filter((candidate) => candidate.id !== session.id);
-    setDeletingSessionId(session.id);
+    if (!beginSessionMutation()) {
+      return;
+    }
     try {
-      const corpus = await deleteSpeechCorpusSession(session.id, next);
-      localStorage.setItem(STORE_KEY, JSON.stringify(next));
-      setSessions(next);
+      const requestedSessions = sessionsRef.current.filter(
+        (candidate) => candidate.id !== session.id,
+      );
+      const corpus = await deleteSpeechCorpusSession(session.id, requestedSessions);
+      const next = sessionsRef.current.filter((candidate) => candidate.id !== session.id);
+      persistSessions(next);
       setCorpusAnalysis(corpus);
-      if (activeSessionId === session.id) {
+      if (activeSessionIdRef.current === session.id) {
         startedAtRef.current = null;
         samplesRef.current = [];
         setSegments([]);
@@ -697,13 +734,13 @@ export function App() {
         setInterimText("");
         setSpeakerMatch(null);
         resetChunkTranscription();
-        setActiveSessionId(null);
+        setActiveSession(null);
       }
       setMessage("Session deleted");
     } catch (error) {
       setMessage(`Delete failed: ${errorMessage(error)}`);
     } finally {
-      setDeletingSessionId(null);
+      finishSessionMutation();
     }
   }
 
@@ -998,6 +1035,7 @@ export function App() {
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
           onExport={exportJson}
+          sessionMutationPending={sessionMutationPending}
         />
 
         <InsightsSidebar
@@ -1032,10 +1070,10 @@ export function App() {
         analyzedChunks={analyzedChunks}
         blockerStats={blockerStats}
         sessions={sessions}
-        deletingSessionId={deletingSessionId}
+        sessionMutationPending={sessionMutationPending}
         onSessionLoad={(session) => {
           startedAtRef.current = new Date(session.startedAt);
-          setActiveSessionId(session.id);
+          setActiveSession(session.id);
           setSegments(session.segments);
           setPauses(session.pauses);
           setReport(session.report);
