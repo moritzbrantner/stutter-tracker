@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createComputeClient } from "@stutter-tracker/compute-client";
+import { createComputeClient, processingPolicyForServerUrl } from "@stutter-tracker/compute-client";
 import {
   fallbackAnalyze as sharedFallbackAnalyze,
   resampleSamples as sharedResampleSamples,
@@ -40,6 +40,7 @@ import type {
   TranscriptionSettings,
   Voiceprint,
 } from "../types";
+import { loadRemoteConsent, saveRemoteConsent } from "../storage/localStorage";
 export { formatTime } from "../utils/formatting";
 
 const STORE_KEY = "stutter-tracker:sessions";
@@ -92,8 +93,14 @@ const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
   },
 ];
 const COMPUTE_API_TOKEN = import.meta.env.VITE_STUTTER_API_TOKEN ?? "";
+const CONSENT_SERVER_URL = COMPUTE_SERVER_URL.trim().replace(/\/+$/, "");
+// The destination is fixed for the page lifetime; consent changes reload the page so an
+// in-flight run can never switch destinations.
 const computeClient = createComputeClient({
-  serverUrl: COMPUTE_SERVER_URL,
+  processingPolicy: processingPolicyForServerUrl(
+    COMPUTE_SERVER_URL,
+    loadRemoteConsent(CONSENT_SERVER_URL),
+  ),
   apiToken: COMPUTE_API_TOKEN,
 });
 
@@ -985,7 +992,12 @@ export function App() {
         language={language}
         isNative={isNative}
         isRecording={isRecording}
-        computeServerUrl={COMPUTE_SERVER_URL}
+        processingDestination={computeClient.destination}
+        onRemoteConsentChange={(granted) => {
+          if (computeClient.destination.kind === "onDevice") return;
+          saveRemoteConsent(CONSENT_SERVER_URL, granted);
+          window.location.reload();
+        }}
         onEngineChange={updateTranscriptionEngine}
         onModelChange={updateTranscriptionModel}
         onLanguageChange={setLanguage}
