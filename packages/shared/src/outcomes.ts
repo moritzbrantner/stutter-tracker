@@ -97,6 +97,8 @@ export type OutcomeComparison = {
   spokenLanguage: SpokenLanguage;
   task: SpeakingTask;
   scale: OutcomeScale;
+  /** Unit of baseline/latest: "events/min" for count scales (normalized by sample duration). */
+  valueUnit?: string;
   baseline?: number;
   latest?: number;
   observationCount: number;
@@ -145,7 +147,10 @@ export function summarizeOutcomes(
     if (
       !Number.isFinite(Date.parse(observation.recordedAt)) ||
       !Number.isFinite(observation.value) ||
-      (countBased && !(observation.sampleDurationSeconds > 0))
+      (countBased &&
+        (observation.value < 0 ||
+          !Number.isFinite(observation.sampleDurationSeconds) ||
+          observation.sampleDurationSeconds <= 0))
     ) {
       excludedObservationIds.push(observation.id);
       continue;
@@ -188,19 +193,20 @@ export function summarizeOutcomes(
       first.condition.kind === "assisted" ? `assisted: ${first.condition.aidId}` : "unassisted";
     const taskLabel = `${first.task.trained ? "trained" : "untrained"} ${first.task.kind}`;
     const label = `${MEASURE_LABELS[first.measure]} (${first.source}, ${conditionLabel}, ${taskLabel}, ${base.spokenLanguage})`;
-    if (ordered.length < 2) {
-      return {
-        ...base,
-        latest: last.value,
-        change: "insufficientData",
-        statement: `${label}: only one observation, no comparison yet.`,
-      };
-    }
     const countBased = first.scale.unit === "events";
     const comparable = (observation: OutcomeObservation) =>
       countBased
         ? round2(observation.value / (observation.sampleDurationSeconds / 60))
         : observation.value;
+    if (ordered.length < 2) {
+      return {
+        ...base,
+        valueUnit: countBased ? "events/min" : first.scale.unit,
+        latest: comparable(last),
+        change: "insufficientData",
+        statement: `${label}: only one observation, no comparison yet.`,
+      };
+    }
     const baseline = comparable(first);
     const latest = comparable(last);
     // Rates have no fixed range, so a change is judged relative to the larger rate.
@@ -222,6 +228,7 @@ export function summarizeOutcomes(
     }[change];
     return {
       ...base,
+      valueUnit: countBased ? "events/min" : first.scale.unit,
       baseline,
       latest,
       change,

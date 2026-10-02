@@ -182,7 +182,36 @@ describe("summarizeOutcomes validity", () => {
       }),
     ]);
 
-    expect(report.comparisons[0]).toMatchObject({ baseline: 5, latest: 1, change: "better" });
+    expect(report.comparisons[0]).toMatchObject({
+      baseline: 5,
+      latest: 1,
+      valueUnit: "events/min",
+      change: "better",
+    });
+  });
+
+  test("normalizes single count observations and rejects impossible ones", () => {
+    const events = { min: 0, max: 100, betterDirection: "lower", unit: "events" } as const;
+    const report = summarizeOutcomes([
+      observation({
+        id: "a",
+        measure: "eventBurden",
+        scale: events,
+        value: 6,
+        sampleDurationSeconds: 120,
+      }),
+      observation({ id: "neg", measure: "eventBurden", scale: events, value: -1 }),
+      observation({
+        id: "inf",
+        measure: "eventBurden",
+        scale: events,
+        value: 1,
+        sampleDurationSeconds: Number.POSITIVE_INFINITY,
+      }),
+    ]);
+
+    expect(report.excludedObservationIds).toEqual(["neg", "inf"]);
+    expect(report.comparisons[0]).toMatchObject({ latest: 3, valueUnit: "events/min" });
   });
 
   test("excludes observations with invalid timestamps", () => {
