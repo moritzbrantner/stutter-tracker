@@ -59,8 +59,8 @@ reference (#23, #24). App self-ratings are not validated instruments; validated 
 id only after licensing review and never reproduced here. German and Spanish adaptations are reviewed
 independently when their rollout starts.
 
-Reports (`summarizeOutcomes`) compare only within the same measure, source, horizon, condition, spoken language
-and task kind, show worse and unchanged results as such, and always include: "This app has not demonstrated a
+Reports (`summarizeOutcomes`) compare only within the same measure, source, horizon, condition (aid and
+settings), spoken language, task (kind and trained/untrained) and scale, order by time instant, show worse and unchanged results as such, and always include: "This app has not demonstrated a
 cure or treatment efficacy."
 
 ## Evidence matrix

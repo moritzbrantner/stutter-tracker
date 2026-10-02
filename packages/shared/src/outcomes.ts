@@ -86,9 +86,10 @@ export type OutcomeComparison = {
   measure: OutcomeMeasure;
   source: OutcomeSource;
   horizon: BenefitHorizon;
-  conditionKind: AssistanceCondition["kind"];
+  condition: AssistanceCondition;
   spokenLanguage: SpokenLanguage;
-  taskKind: SpeakingTask["kind"];
+  task: SpeakingTask;
+  scale: OutcomeScale;
   baseline?: number;
   latest?: number;
   observationCount: number;
@@ -118,8 +119,9 @@ const MEASURE_LABELS: Record<OutcomeMeasure, string> = {
 
 /**
  * Compares the earliest and latest observation inside groups that share measure, source,
- * horizon, condition, spoken language and task kind. Groups are never mixed, so an aid,
- * a language change or a different task cannot masquerade as improvement.
+ * horizon, condition (aid and settings), spoken language, task (kind and trained) and scale.
+ * Groups are never mixed, so a different aid, language, task, trained-vs-transfer task or
+ * scale cannot masquerade as improvement.
  * `minimumChangeFraction` is the share of the scale range treated as no clear change.
  */
 export function summarizeOutcomes(
@@ -129,31 +131,44 @@ export function summarizeOutcomes(
   const threshold = options.minimumChangeFraction ?? 0.1;
   const groups = new Map<string, OutcomeObservation[]>();
   for (const observation of observations) {
-    const key = [
+    const { condition, scale, task } = observation;
+    const key = JSON.stringify([
       observation.measure,
       observation.source,
       observation.horizon,
-      observation.condition.kind,
+      condition.kind,
+      condition.kind === "assisted" ? condition.aidId : null,
+      condition.kind === "assisted" ? sortedEntries(condition.settings) : null,
       observation.spokenLanguage,
-      observation.task.kind,
-    ].join("|");
+      task.kind,
+      task.trained,
+      scale.min,
+      scale.max,
+      scale.betterDirection,
+      scale.unit ?? null,
+      scale.instrumentId ?? null,
+    ]);
     groups.set(key, [...(groups.get(key) ?? []), observation]);
   }
 
   const comparisons = [...groups.values()].map((group): OutcomeComparison => {
-    const ordered = [...group].sort((a, b) => a.recordedAt.localeCompare(b.recordedAt));
+    const ordered = [...group].sort((a, b) => Date.parse(a.recordedAt) - Date.parse(b.recordedAt));
     const first = ordered[0];
     const last = ordered[ordered.length - 1];
     const base = {
       measure: first.measure,
       source: first.source,
       horizon: first.horizon,
-      conditionKind: first.condition.kind,
+      condition: first.condition,
       spokenLanguage: first.spokenLanguage,
-      taskKind: first.task.kind,
+      task: first.task,
+      scale: first.scale,
       observationCount: ordered.length,
     };
-    const label = `${MEASURE_LABELS[first.measure]} (${first.source}, ${first.condition.kind}, ${first.task.kind}, ${first.spokenLanguage})`;
+    const conditionLabel =
+      first.condition.kind === "assisted" ? `assisted: ${first.condition.aidId}` : "unassisted";
+    const taskLabel = `${first.task.trained ? "trained" : "untrained"} ${first.task.kind}`;
+    const label = `${MEASURE_LABELS[first.measure]} (${first.source}, ${conditionLabel}, ${taskLabel}, ${first.spokenLanguage})`;
     if (ordered.length < 2) {
       return {
         ...base,
@@ -183,6 +198,10 @@ export function summarizeOutcomes(
   });
 
   return { comparisons, limitations: [...OUTCOME_REPORT_LIMITATIONS] };
+}
+
+function sortedEntries(settings: Record<string, unknown> | undefined) {
+  return Object.entries(settings ?? {}).sort(([left], [right]) => left.localeCompare(right));
 }
 
 /** Plain-language limits and signposting for help/onboarding surfaces. */

@@ -117,6 +117,50 @@ describe("summarizeOutcomes", () => {
   });
 });
 
+describe("summarizeOutcomes grouping", () => {
+  test("separates aids, aid settings, trained vs untrained tasks and scales", () => {
+    const report = summarizeOutcomes([
+      observation({ id: "a", value: 8, condition: { kind: "assisted", aidId: "delayedFeedback" } }),
+      observation({
+        id: "b",
+        recordedAt: "2026-09-20T09:00:00Z",
+        value: 2,
+        condition: { kind: "assisted", aidId: "pacing" },
+      }),
+      observation({
+        id: "c",
+        recordedAt: "2026-09-21T09:00:00Z",
+        value: 2,
+        condition: { kind: "assisted", aidId: "delayedFeedback", settings: { delayMs: 80 } },
+      }),
+      observation({
+        id: "d",
+        recordedAt: "2026-09-22T09:00:00Z",
+        value: 2,
+        task: { kind: "phoneCall", trained: true },
+      }),
+      observation({
+        id: "e",
+        recordedAt: "2026-09-23T09:00:00Z",
+        value: 2,
+        scale: { min: 0, max: 5, betterDirection: "lower" },
+      }),
+    ]);
+
+    expect(report.comparisons).toHaveLength(5);
+    expect(report.comparisons.every((c) => c.change === "insufficientData")).toBe(true);
+  });
+
+  test("orders observations by instant, not timestamp text", () => {
+    const report = summarizeOutcomes([
+      observation({ id: "late", recordedAt: "2026-10-01T08:30:00Z", value: 2 }),
+      observation({ id: "early", recordedAt: "2026-10-01T09:00:00+02:00", value: 8 }),
+    ]);
+
+    expect(report.comparisons[0]).toMatchObject({ baseline: 8, latest: 2, change: "better" });
+  });
+});
+
 describe("spoken language", () => {
   test("is English first, German and Spanish later, and nothing is validated", () => {
     expect(speechLanguageSupport("en")).toBe("first");
