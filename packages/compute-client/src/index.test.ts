@@ -1,5 +1,17 @@
 import { describe, expect, it } from "bun:test";
-import { createComputeClient } from "./index";
+import {
+  type ComputeClient,
+  createComputeClient,
+  isLoopbackUrl,
+  type ProcessingPolicy,
+  processingPolicyForServerUrl,
+} from "./index";
+
+const remoteWithConsent: ProcessingPolicy = {
+  mode: "remote",
+  serverUrl: "https://compute.example.com",
+  remoteAnalysisConsent: true,
+};
 
 describe("createComputeClient", () => {
   it("attaches bearer auth to GET, POST, and PUT requests", async () => {
@@ -22,7 +34,7 @@ describe("createComputeClient", () => {
       });
     }) as typeof fetch;
     const client = createComputeClient({
-      serverUrl: "https://compute.example.com",
+      processingPolicy: remoteWithConsent,
       apiToken: "secret",
       fetchImpl,
     });
@@ -49,7 +61,7 @@ describe("createComputeClient", () => {
       return json({ speakers: [] });
     }) as typeof fetch;
     const client = createComputeClient({
-      serverUrl: "https://compute.example.com",
+      processingPolicy: remoteWithConsent,
       fetchImpl,
     });
 
@@ -70,7 +82,7 @@ describe("createComputeClient", () => {
         401,
       )) as unknown as typeof fetch;
     const client = createComputeClient({
-      serverUrl: "https://compute.example.com",
+      processingPolicy: remoteWithConsent,
       fetchImpl,
     });
 
@@ -90,7 +102,7 @@ describe("createComputeClient", () => {
       });
     }) as typeof fetch;
     const client = createComputeClient({
-      serverUrl: "https://compute.example.com",
+      processingPolicy: remoteWithConsent,
       apiToken: "secret",
       fetchImpl,
     });
@@ -108,6 +120,146 @@ describe("createComputeClient", () => {
     expect(request?.url).toBe("https://compute.example.com/transcriptions/file");
     expect(request?.headers.get("authorization")).toBe("Bearer secret");
     expect(request?.headers.get("content-type")).toContain("multipart/form-data");
+  });
+});
+
+const samples = [0, 0.2, -0.1, 0.4];
+const analysisRequest = {
+  segments: [{ text: "I I speak", startSeconds: 0, endSeconds: 1, isFinal: true }],
+  pauses: [],
+};
+const speaker = { id: "s", label: "S", embeddings: [[1]], sampleRate: 16_000, sampleCount: 4 };
+
+/** Exercises every speech-content entry point, swallowing the expected local errors. */
+async function exerciseAllEntryPoints(client: ComputeClient) {
+  const settle = (promise: Promise<unknown>) => promise.catch((error: unknown) => error);
+  return Promise.all([
+    settle(client.analyzeSpeechSession(analysisRequest)),
+    settle(client.listSpeakerProfiles()),
+    settle(client.saveSpeakerProfiles([speaker])),
+    settle(client.createSpeakerProfile({ label: "S", samples, sampleRate: 16_000 })),
+    settle(client.identifySpeaker({ samples, sampleRate: 16_000, speakers: [speaker] })),
+    settle(client.transcriptionModels("whisperCpp")),
+    settle(
+      client.transcribeAudio({
+        samples,
+        sampleRate: 16_000,
+        provider: "whisperCpp",
+        model: "base.en",
+      }),
+    ),
+    settle(
+      client.transcribeAudioFile({
+        file: new Blob(["audio"]),
+        filename: "a.m4a",
+        mimeType: "audio/mp4",
+        provider: "whisperCpp",
+        model: "base.en",
+      }),
+    ),
+    settle(client.downloadTranscriptionModel("whisperCpp", "base.en")),
+  ]);
+}
+
+function countingFetch(respond: () => Response | Promise<Response> = () => json({}, 503)) {
+  const calls: string[] = [];
+  const fetchImpl = (async (input: RequestInfo | URL) => {
+    calls.push(String(input instanceof Request ? input.url : input));
+    return respond();
+  }) as typeof fetch;
+  return { calls, fetchImpl };
+}
+
+describe("processing policy", () => {
+  const blockedPolicies: Array<[string, ProcessingPolicy | undefined]> = [
+    ["default (no policy)", undefined],
+    ["on-device", { mode: "onDevice" }],
+    [
+      "remote without consent",
+      { mode: "remote", serverUrl: "https://compute.example.com", remoteAnalysisConsent: false },
+    ],
+    [
+      "local companion on a non-loopback host",
+      { mode: "localCompanion", serverUrl: "https://compute.example.com" },
+    ],
+    ["invalid URL", { mode: "remote", serverUrl: "not a url", remoteAnalysisConsent: true }],
+  ];
+
+  for (const [name, processingPolicy] of blockedPolicies) {
+    it(`sends zero requests: ${name}`, async () => {
+      const { calls, fetchImpl } = countingFetch();
+      const client = createComputeClient({ processingPolicy, apiToken: "secret", fetchImpl });
+
+      const results = await exerciseAllEntryPoints(client);
+
+      expect(calls).toEqual([]);
+      expect(client.destination.kind).not.toBe("server");
+      expect(String(results[6])).toContain("Transcription needs");
+    });
+  }
+
+  it("falls back to on-device analysis, not another destination, when the server fails", async () => {
+    const { calls, fetchImpl } = countingFetch(() => {
+      throw new TypeError("network down");
+    });
+    const client = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl,
+    });
+
+    const report = await client.analyzeSpeechSession(analysisRequest);
+
+    expect(report).toBeDefined();
+    expect(calls).toEqual(["http://127.0.0.1:8787/analysis"]);
+  });
+
+  it("keeps the destination fixed for the client's lifetime", async () => {
+    const { calls, fetchImpl } = countingFetch(() => json({ speakers: [] }));
+    const policy = {
+      mode: "remote",
+      serverUrl: "https://a.example.com",
+      remoteAnalysisConsent: true,
+    };
+    const client = createComputeClient({ processingPolicy: policy as ProcessingPolicy, fetchImpl });
+
+    policy.serverUrl = "https://b.example.com";
+    policy.remoteAnalysisConsent = false;
+    await client.listSpeakerProfiles();
+
+    expect(calls).toEqual(["https://a.example.com/speakers"]);
+    expect(client.destination).toMatchObject({
+      kind: "server",
+      mode: "remote",
+      url: "https://a.example.com",
+    });
+  });
+
+  it("refuses to follow redirects away from the selected destination", async () => {
+    const modes: Array<RequestRedirect | undefined> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      modes.push(init?.redirect);
+      return json({ speakers: [], models: [], segments: [] });
+    }) as typeof fetch;
+    const client = createComputeClient({ processingPolicy: remoteWithConsent, fetchImpl });
+
+    await exerciseAllEntryPoints(client);
+
+    expect(modes.length).toBeGreaterThan(0);
+    expect(modes.every((mode) => mode === "error")).toBe(true);
+  });
+
+  it("treats only loopback URLs as a local companion", () => {
+    expect(isLoopbackUrl("http://127.0.0.1:8787")).toBe(true);
+    expect(isLoopbackUrl("http://localhost:8787")).toBe(true);
+    expect(isLoopbackUrl("http://[::1]:8787")).toBe(true);
+    expect(isLoopbackUrl("http://192.168.1.10:8787")).toBe(false);
+    expect(isLoopbackUrl("http://localhost.example.com")).toBe(false);
+    expect(processingPolicyForServerUrl("http://10.0.2.2:8787", false)).toEqual({
+      mode: "remote",
+      serverUrl: "http://10.0.2.2:8787",
+      remoteAnalysisConsent: false,
+    });
+    expect(processingPolicyForServerUrl("  ", true)).toEqual({ mode: "onDevice" });
   });
 });
 

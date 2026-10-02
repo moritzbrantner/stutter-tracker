@@ -10,6 +10,28 @@ export const STORE_KEY = "stutter-tracker:sessions";
 export const VOICE_KEY = "stutter-tracker:voiceprint";
 export const SPEAKERS_KEY = "stutter-tracker:speakers";
 export const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
+export const REMOTE_CONSENT_KEY = "stutter-tracker:remote-analysis-consent";
+
+/** Remote-analysis consent is bound to one server URL; another URL needs consent again. */
+export function loadRemoteConsent(serverUrl: string, storage: Storage = localStorage) {
+  try {
+    return Boolean(serverUrl) && storage.getItem(REMOTE_CONSENT_KEY) === serverUrl;
+  } catch {
+    return false;
+  }
+}
+
+export function saveRemoteConsent(
+  serverUrl: string,
+  granted: boolean,
+  storage: Storage = localStorage,
+) {
+  if (granted) {
+    storage.setItem(REMOTE_CONSENT_KEY, serverUrl);
+  } else {
+    storage.removeItem(REMOTE_CONSENT_KEY);
+  }
+}
 
 export function loadSessionsFromStorage(storage: Storage = localStorage): SavedSession[] {
   try {

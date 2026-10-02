@@ -1,7 +1,22 @@
 import { describe, expect, it } from "vitest";
-import { loadSessionsFromStorage, normalizeSpeakerProfiles } from "./localStorage";
+import {
+  loadRemoteConsent,
+  loadSessionsFromStorage,
+  normalizeSpeakerProfiles,
+  saveRemoteConsent,
+} from "./localStorage";
 
 describe("local storage helpers", () => {
+  it("binds remote-analysis consent to one server URL and supports revocation", () => {
+    const storage = memoryStorage({});
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+    saveRemoteConsent("https://a.example.com", true, storage);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(true);
+    expect(loadRemoteConsent("https://b.example.com", storage)).toBe(false);
+    saveRemoteConsent("https://a.example.com", false, storage);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+  });
+
   it("falls back safely on invalid JSON", () => {
     const storage = memoryStorage({ "stutter-tracker:sessions": "{" });
     expect(loadSessionsFromStorage(storage)).toEqual([]);

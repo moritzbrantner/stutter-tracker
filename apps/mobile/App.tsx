@@ -1,4 +1,4 @@
-import { createComputeClient } from "@stutter-tracker/compute-client";
+import { createComputeClient, processingPolicyForServerUrl } from "@stutter-tracker/compute-client";
 import type {
   AnalysisReport,
   TranscriptionEngineId,
@@ -51,7 +51,23 @@ export default function App() {
   const [modelStatuses, setModelStatuses] = useState<TranscriptionModelStatus[]>([]);
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
-  const client = useMemo(() => createComputeClient({ serverUrl, apiToken }), [apiToken, serverUrl]);
+  // Consent is bound to the exact URL it was given for; editing the URL withdraws it.
+  const [remoteConsentUrl, setRemoteConsentUrl] = useState("");
+  const normalizedServerUrl = serverUrl.trim().replace(/\/+$/, "");
+  const remoteConsent = remoteConsentUrl !== "" && remoteConsentUrl === normalizedServerUrl;
+  // Each run captures one client, so an endpoint edit cannot redirect an in-flight run.
+  const client = useMemo(
+    () =>
+      createComputeClient({
+        processingPolicy: processingPolicyForServerUrl(serverUrl, remoteConsent),
+        apiToken,
+      }),
+    [apiToken, serverUrl, remoteConsent],
+  );
+  const destination = client.destination;
+  const isRemote =
+    (destination.kind === "server" && destination.mode === "remote") ||
+    (destination.kind === "blocked" && destination.needsRemoteConsent === true);
 
   useEffect(() => {
     let cancelled = false;
@@ -179,8 +195,40 @@ export default function App() {
         </View>
 
         <Panel title="Compute server">
-          <Field label="Server URL" value={serverUrl} onChangeText={setServerUrl} />
-          <Field label="API token" value={apiToken} onChangeText={setApiToken} secureTextEntry />
+          <Field
+            label="Server URL"
+            value={serverUrl}
+            onChangeText={setServerUrl}
+            editable={!busy}
+          />
+          <Field
+            label="API token"
+            value={apiToken}
+            onChangeText={setApiToken}
+            secureTextEntry
+            editable={!busy}
+          />
+          <Text style={styles.detail} accessibilityRole="summary">
+            Processing: {destination.label}
+          </Text>
+          {destination.kind === "blocked" && (
+            <Text style={styles.detail}>{destination.reason}</Text>
+          )}
+          {isRemote && (
+            <TouchableOpacity
+              style={styles.button}
+              disabled={busy}
+              accessibilityRole="switch"
+              accessibilityState={{ checked: remoteConsent }}
+              onPress={() => setRemoteConsentUrl(remoteConsent ? "" : normalizedServerUrl)}
+            >
+              <Text style={styles.buttonText}>
+                {remoteConsent
+                  ? "Withdraw consent for remote analysis"
+                  : "Allow sending recordings, transcripts and voiceprints to this remote server"}
+              </Text>
+            </TouchableOpacity>
+          )}
           <TouchableOpacity style={styles.button} onPress={checkHealth} disabled={busy}>
             <Text style={styles.buttonText}>Health</Text>
           </TouchableOpacity>
@@ -220,12 +268,22 @@ export default function App() {
           <TouchableOpacity
             style={recorderState.isRecording ? styles.stopButton : styles.primaryButton}
             onPress={recorderState.isRecording ? stopRecording : startRecording}
-            disabled={isUploading || permissionGranted === false}
+            disabled={
+              isUploading ||
+              permissionGranted === false ||
+              (!recorderState.isRecording && destination.kind !== "server")
+            }
           >
             <Text style={styles.primaryButtonText}>
               {recorderState.isRecording ? "Stop" : "Record"}
             </Text>
           </TouchableOpacity>
+          {destination.kind !== "server" && (
+            <Text style={styles.detail}>
+              Recording needs a transcription server: the mobile app has no on-device transcription
+              yet. Enter a local companion URL or consent to a remote server.
+            </Text>
+          )}
           {!!lastRecordingUri && <Text style={styles.detail}>{lastRecordingUri}</Text>}
           <Text style={styles.transcript}>{transcript || "Transcript will appear here."}</Text>
         </Panel>
@@ -261,11 +319,13 @@ function Field({
   value,
   onChangeText,
   secureTextEntry,
+  editable,
 }: {
   label: string;
   value: string;
   onChangeText(value: string): void;
   secureTextEntry?: boolean;
+  editable?: boolean;
 }) {
   return (
     <View style={styles.field}>
@@ -276,6 +336,7 @@ function Field({
         autoCapitalize="none"
         autoCorrect={false}
         secureTextEntry={secureTextEntry}
+        editable={editable}
         style={styles.input}
       />
     </View>
