@@ -992,7 +992,11 @@ export function App() {
         language={language}
         isNative={isNative}
         isRecording={isRecording}
-        processingDestination={computeClient.destination}
+        processingDestination={
+          isNative
+            ? { kind: "onDevice", label: "On this device (desktop app)" }
+            : computeClient.destination
+        }
         onRemoteConsentChange={(granted) => {
           if (computeClient.destination.kind === "onDevice") return;
           saveRemoteConsent(CONSENT_SERVER_URL, granted);
@@ -1912,6 +1916,11 @@ async function savePersistedSpeakerProfiles(speakers: SpeakerProfile[]): Promise
   const normalized = normalizeSpeakerProfiles(speakers);
   if (isDesktopApp()) {
     return invoke<SpeakerProfile[]>("save_speaker_profiles", { speakers: normalized });
+  }
+  if (computeClient.destination.kind !== "server") {
+    // No permitted server: voiceprints stay in this browser.
+    localStorage.setItem(SPEAKERS_KEY, JSON.stringify(normalized));
+    return normalized;
   }
   try {
     return await computeClient.saveSpeakerProfiles(normalized);

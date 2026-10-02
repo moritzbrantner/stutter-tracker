@@ -36,7 +36,7 @@ Speech content (audio, transcripts, voiceprints) is processed under one explicit
 
 - **On this device** (`onDevice`, the client default): no server requests at all. Set `VITE_STUTTER_SERVER_URL=` (empty) for the web app or clear the server URL in the mobile app.
 - **Local companion** (`localCompanion`): a server on a loopback address (`localhost`, `127.x.x.x`, `::1`). This is the development default `http://127.0.0.1:8787`.
-- **Remote** (`remote`): any other server, including LAN addresses and the Android emulator alias. Nothing is sent until the user consents in the app for that exact URL; changing the URL withdraws consent.
+- **Remote** (`remote`): any other server, including LAN addresses and the Android emulator alias. Nothing is sent until the user consents in the app for that exact URL; the consent covers recordings, transcripts and speaker profiles (voiceprints), which the server may store; changing the URL withdraws consent.
 
 The destination is shown in the app and fixed for a run. If a server fails, analysis falls back to on-device processing; it never switches to another server. The web app's Browser Speech engine uses the browser's speech recognition, which some browsers run in the cloud; it is outside this policy.
 

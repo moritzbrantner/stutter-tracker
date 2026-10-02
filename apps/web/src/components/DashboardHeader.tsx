@@ -127,7 +127,8 @@ function ProcessingDestinationNotice({
             disabled={disabled}
             onChange={(event) => onRemoteConsentChange(event.target.checked)}
           />
-          Send recordings and transcripts to this remote server for analysis
+          Send recordings, transcripts and speaker profiles (voiceprints) to this remote server for
+          analysis and storage
         </label>
       ) : null}
     </div>

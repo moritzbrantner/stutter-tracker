@@ -225,7 +225,7 @@ export default function App() {
               <Text style={styles.buttonText}>
                 {remoteConsent
                   ? "Withdraw consent for remote analysis"
-                  : "Allow sending recordings to this remote server"}
+                  : "Allow sending recordings, transcripts and voiceprints to this remote server"}
               </Text>
             </TouchableOpacity>
           )}
