@@ -1103,4 +1103,5 @@ function longestRun(value: string) {
   }
   return longest;
 }
+export * from "./capture";
 export * from "./outcomes";
