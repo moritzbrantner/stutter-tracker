@@ -40,22 +40,36 @@ export type RecordingDescriptor = {
     noiseSuppression: PreprocessingSetting;
     autoGainControl: PreprocessingSetting;
   };
+  /** Session-clock intervals for which the stream has no samples (capture resumed afterwards). */
   discontinuities: CaptureInterval[];
   /** Mixed speakers are never attributed to the user by default. */
   speakerAssessment: "singleSpeakerDeclared" | "unknown" | "overlapDetected";
 };
 
-/** True only when nothing is known to have altered the stream before the app saw it. */
+/**
+ * True only when the capture path affirmatively attests nothing altered the stream before the
+ * app saw it. Imported files can never be attested.
+ */
 export function isUnprocessedInput(descriptor: RecordingDescriptor) {
-  if (descriptor.role !== "appInput") return false;
+  if (descriptor.role !== "appInput" || descriptor.origin === "import") return false;
   return Object.values(descriptor.preprocessing).every(
     (setting) => setting.applied === false || (setting.applied === undefined && !setting.requested),
   );
 }
 
-/** Session-clock seconds of a sample index in the descriptor's stream. */
+function sortedGaps(descriptor: RecordingDescriptor) {
+  return [...descriptor.discontinuities]
+    .filter((gap) => gap.endSeconds > gap.startSeconds)
+    .sort((a, b) => a.startSeconds - b.startSeconds);
+}
+
+/** Session-clock seconds of a sample index; skips the gaps that occurred before that sample. */
 export function sampleIndexToSessionSeconds(descriptor: RecordingDescriptor, sampleIndex: number) {
-  return descriptor.startOffsetSeconds + sampleIndex / descriptor.sampleRate;
+  let seconds = descriptor.startOffsetSeconds + sampleIndex / descriptor.sampleRate;
+  for (const gap of sortedGaps(descriptor)) {
+    if (gap.startSeconds <= seconds) seconds += gap.endSeconds - gap.startSeconds;
+  }
+  return seconds;
 }
 
 /** Nearest sample index for session-clock seconds; null outside the stream or inside a gap. */
@@ -64,14 +78,13 @@ export function sessionSecondsToSampleIndex(
   sessionSeconds: number,
   sampleCount: number,
 ): number | null {
-  const index = Math.round(
-    (sessionSeconds - descriptor.startOffsetSeconds) * descriptor.sampleRate,
-  );
-  if (index < 0 || index >= sampleCount) return null;
-  const inGap = descriptor.discontinuities.some(
-    (gap) => sessionSeconds >= gap.startSeconds && sessionSeconds < gap.endSeconds,
-  );
-  return inGap ? null : index;
+  let streamSeconds = sessionSeconds - descriptor.startOffsetSeconds;
+  for (const gap of sortedGaps(descriptor)) {
+    if (sessionSeconds >= gap.startSeconds && sessionSeconds < gap.endSeconds) return null;
+    if (gap.endSeconds <= sessionSeconds) streamSeconds -= gap.endSeconds - gap.startSeconds;
+  }
+  const index = Math.round(streamSeconds * descriptor.sampleRate);
+  return index < 0 || index >= sampleCount ? null : index;
 }
 
 /**
@@ -85,14 +98,18 @@ export function resampledDescriptor(
   return { ...descriptor, sampleRate: targetSampleRate };
 }
 
-/** Converts a time relative to the start of a stream (e.g. a transcript segment) to session time. */
+/** Converts a time relative to the stream's samples (e.g. a transcript segment) to session time. */
 export function streamSecondsToSessionSeconds(
   descriptor: RecordingDescriptor,
   streamSeconds: number,
 ) {
-  return descriptor.startOffsetSeconds + streamSeconds;
+  return sampleIndexToSessionSeconds(descriptor, streamSeconds * descriptor.sampleRate);
 }
 
+/**
+ * Generic PCM observations, measured by the audio-analysis capability
+ * (moritzbrantner/audio-analysis#137). This package owns only their interpretation.
+ */
 export type CaptureMetrics = {
   durationSeconds: number;
   channelCount: number;
@@ -104,52 +121,6 @@ export type CaptureMetrics = {
   /** Longest continuous run of silent frames. */
   longestSilenceSeconds: number;
 };
-
-const FRAME_SECONDS = 0.02;
-const CLIP_LEVEL = 0.999;
-const NO_INPUT_RMS = 1e-4;
-const ACTIVITY_RMS = 0.01;
-
-/** Simple frame scan of mono PCM in [-1, 1]. Generic kernels belong in audio-analysis for native paths. */
-export function measureCapture(
-  samples: ArrayLike<number>,
-  sampleRate: number,
-  channelCount = 1,
-): CaptureMetrics {
-  const frameLength = Math.max(1, Math.round(sampleRate * FRAME_SECONDS));
-  let clipped = 0;
-  let silentFrames = 0;
-  let activeFrames = 0;
-  let silentRun = 0;
-  let longestSilentRun = 0;
-  for (let start = 0; start < samples.length; start += frameLength) {
-    const end = Math.min(samples.length, start + frameLength);
-    let energy = 0;
-    for (let index = start; index < end; index += 1) {
-      const value = samples[index];
-      if (Math.abs(value) >= CLIP_LEVEL) clipped += 1;
-      energy += value * value;
-    }
-    const rms = Math.sqrt(energy / (end - start));
-    if (rms < NO_INPUT_RMS) {
-      silentFrames += 1;
-      silentRun += 1;
-      longestSilentRun = Math.max(longestSilentRun, silentRun);
-    } else {
-      silentRun = 0;
-    }
-    if (rms >= ACTIVITY_RMS) activeFrames += 1;
-  }
-  const frameSeconds = frameLength / sampleRate;
-  return {
-    durationSeconds: samples.length / sampleRate,
-    channelCount,
-    clippedSampleRatio: samples.length ? clipped / samples.length : 0,
-    silentSeconds: silentFrames * frameSeconds,
-    activeSeconds: activeFrames * frameSeconds,
-    longestSilenceSeconds: longestSilentRun * frameSeconds,
-  };
-}
 
 export type CaptureQualityIssue =
   | "noChannels"

@@ -3,7 +3,7 @@ import { describe, expect, test } from "bun:test";
 import {
   assessCaptureQuality,
   isUnprocessedInput,
-  measureCapture,
+  type CaptureMetrics,
   type RecordingDescriptor,
   resampledDescriptor,
   sampleIndexToSessionSeconds,
@@ -32,12 +32,17 @@ function descriptor(overrides: Partial<RecordingDescriptor> = {}): RecordingDesc
   };
 }
 
-/** Speech-like synthetic tone bursts: 0.3 s on, 0.1 s off. */
-function speechLike(seconds: number, sampleRate: number, amplitude = 0.3) {
-  return Array.from({ length: Math.round(seconds * sampleRate) }, (_, index) => {
-    const t = index / sampleRate;
-    return t % 0.4 < 0.3 ? amplitude * Math.sin(2 * Math.PI * 180 * t) : 0;
-  });
+/** Metrics of six seconds of clean single-speaker speech. */
+function metrics(overrides: Partial<CaptureMetrics> = {}): CaptureMetrics {
+  return {
+    durationSeconds: 6,
+    channelCount: 1,
+    clippedSampleRatio: 0,
+    silentSeconds: 0.5,
+    activeSeconds: 4.5,
+    longestSilenceSeconds: 0.3,
+    ...overrides,
+  };
 }
 
 describe("common session time base", () => {
@@ -62,14 +67,18 @@ describe("common session time base", () => {
     expect(resampled.length / 16_000).toBeCloseTo(samples.length / 48_000, 6);
   });
 
-  test("stream-relative transcript times and sample indices map to the same session clock", () => {
+  test("samples after a dropout map past the gap, consistently in both directions", () => {
     const source = descriptor({
       discontinuities: [{ startSeconds: 1.25, endSeconds: 1.5, reason: "dropout" }],
     });
 
-    expect(streamSecondsToSessionSeconds(source, 1)).toBeCloseTo(1.25, 9);
+    // Sample 48_000 is the first sample captured after the gap at 1.25 s.
+    expect(sampleIndexToSessionSeconds(source, 47_999)).toBeLessThan(1.25);
+    expect(sampleIndexToSessionSeconds(source, 48_000)).toBeCloseTo(1.5, 9);
+    expect(streamSecondsToSessionSeconds(source, 1.5)).toBeCloseTo(2, 9);
     expect(sessionSecondsToSampleIndex(source, 1.0, 96_000)).toBe(36_000);
     expect(sessionSecondsToSampleIndex(source, 1.3, 96_000)).toBeNull();
+    expect(sessionSecondsToSampleIndex(source, 2, 96_000)).toBe(72_000);
     expect(sessionSecondsToSampleIndex(source, 0.1, 96_000)).toBeNull();
     expect(sessionSecondsToSampleIndex(source, 99, 96_000)).toBeNull();
   });
@@ -91,81 +100,54 @@ describe("provenance", () => {
 });
 
 describe("assessCaptureQuality", () => {
-  const rate = 16_000;
-  const ok = descriptor({ sampleRate: rate });
+  const ok = descriptor({ sampleRate: 16_000 });
 
   test("clean single-speaker speech is usable", () => {
-    expect(assessCaptureQuality(ok, measureCapture(speechLike(6, rate), rate))).toEqual({
-      state: "usable",
-      issues: [],
-    });
+    expect(assessCaptureQuality(ok, metrics())).toEqual({ state: "usable", issues: [] });
   });
 
-  const fixtures: Array<[string, RecordingDescriptor, number[], number, string]> = [
-    ["silence", ok, Array.from({ length: rate * 6 }, () => 0), 1, "noInput"],
+  const fixtures: Array<[string, RecordingDescriptor, CaptureMetrics, string]> = [
     [
-      "clipping",
+      "silence",
       ok,
-      speechLike(6, rate, 1.5).map((v) => Math.max(-1, Math.min(1, v))),
-      1,
-      "clipping",
+      metrics({ silentSeconds: 6, activeSeconds: 0, longestSilenceSeconds: 6 }),
+      "noInput",
     ],
-    ["truncated recording", ok, speechLike(1, rate), 1, "tooShort"],
+    ["clipping", ok, metrics({ clippedSampleRatio: 0.02 }), "clipping"],
+    ["truncated recording", ok, metrics({ durationSeconds: 1, activeSeconds: 0.8 }), "tooShort"],
     [
       "missing channels",
-      descriptor({ sampleRate: rate, channelCount: 0 }),
-      speechLike(6, rate),
-      0,
+      descriptor({ channelCount: 0 }),
+      metrics({ channelCount: 0 }),
       "noChannels",
     ],
     [
       "background speech",
-      descriptor({ sampleRate: rate, speakerAssessment: "overlapDetected" }),
-      speechLike(6, rate),
-      1,
+      descriptor({ speakerAssessment: "overlapDetected" }),
+      metrics(),
       "speakerOverlap",
     ],
-    [
-      "unknown speaker",
-      descriptor({ sampleRate: rate, speakerAssessment: "unknown" }),
-      speechLike(6, rate),
-      1,
-      "speakerUnknown",
-    ],
+    ["unknown speaker", descriptor({ speakerAssessment: "unknown" }), metrics(), "speakerUnknown"],
     [
       "large dropout",
-      descriptor({
-        sampleRate: rate,
-        discontinuities: [{ startSeconds: 1, endSeconds: 2, reason: "dropout" }],
-      }),
-      speechLike(6, rate),
-      1,
+      descriptor({ discontinuities: [{ startSeconds: 1, endSeconds: 2, reason: "dropout" }] }),
+      metrics(),
       "discontinuous",
     ],
     [
       "near-silent hum",
       ok,
-      Array.from({ length: rate * 6 }, (_, i) => 0.002 * Math.sin(i)),
-      1,
+      metrics({ silentSeconds: 0, activeSeconds: 0.4 }),
       "insufficientSpeech",
     ],
   ];
 
-  for (const [name, desc, samples, channels, issue] of fixtures) {
+  for (const [name, desc, measured, issue] of fixtures) {
     test(`${name} is an unknown result with an explanation, not a score`, () => {
-      const quality = assessCaptureQuality(desc, measureCapture(samples, rate, channels));
+      const quality = assessCaptureQuality(desc, measured);
       expect(quality.state).toBe("unknown");
       expect(quality.issues).toContain(issue as never);
       expect(quality.state === "unknown" && quality.explanation).toMatch(/^Result unknown: /);
     });
   }
-
-  test("a sample-rate change is measured on the actual stream rate", () => {
-    const at48k = speechLike(6, 48_000);
-    const metrics = measureCapture(resampleSamples(at48k, 48_000, rate), rate);
-    expect(metrics.durationSeconds).toBeCloseTo(6, 3);
-    expect(assessCaptureQuality(resampledDescriptor(descriptor(), rate), metrics).state).toBe(
-      "usable",
-    );
-  });
 });
