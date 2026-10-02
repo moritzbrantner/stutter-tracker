@@ -1,3 +1,4 @@
+import type { ProcessingDestination } from "@stutter-tracker/compute-client";
 import { Mic, MicOff } from "lucide-react";
 import type { TranscriptionEngine, TranscriptionEngineId, TranscriptionSettings } from "../types";
 import { controlClass, cx, dangerButtonClass, eyebrowClass, primaryButtonClass } from "./styles";
@@ -10,7 +11,8 @@ type DashboardHeaderProps = {
   language: string;
   isNative: boolean;
   isRecording: boolean;
-  computeServerUrl: string;
+  processingDestination: ProcessingDestination;
+  onRemoteConsentChange: (granted: boolean) => void;
   onEngineChange: (engine: TranscriptionEngineId) => void;
   onModelChange: (model: string) => void;
   onLanguageChange: (language: string) => void;
@@ -25,7 +27,8 @@ export function DashboardHeader({
   language,
   isNative,
   isRecording,
-  computeServerUrl,
+  processingDestination,
+  onRemoteConsentChange,
   onEngineChange,
   onModelChange,
   onLanguageChange,
@@ -36,6 +39,11 @@ export function DashboardHeader({
       <div>
         <p className={eyebrowClass}>Stutter Tracker</p>
         <h1 className="m-0 text-5xl leading-none text-[#17201b] max-sm:text-4xl">Speech Log</h1>
+        <ProcessingDestinationNotice
+          destination={processingDestination}
+          disabled={isRecording}
+          onRemoteConsentChange={onRemoteConsentChange}
+        />
       </div>
       <div className="flex flex-wrap items-center gap-3 max-sm:flex-col max-sm:items-stretch">
         <select
@@ -49,7 +57,7 @@ export function DashboardHeader({
             <option
               key={engine.id}
               value={engine.id}
-              disabled={engine.nativeOnly && !isNative && !computeServerUrl}
+              disabled={engine.nativeOnly && !isNative && processingDestination.kind !== "server"}
             >
               {engine.label}
             </option>
@@ -90,5 +98,39 @@ export function DashboardHeader({
         </button>
       </div>
     </section>
+  );
+}
+
+function ProcessingDestinationNotice({
+  destination,
+  disabled,
+  onRemoteConsentChange,
+}: {
+  destination: ProcessingDestination;
+  disabled: boolean;
+  onRemoteConsentChange: (granted: boolean) => void;
+}) {
+  const remote =
+    (destination.kind === "server" && destination.mode === "remote") ||
+    (destination.kind === "blocked" && destination.needsRemoteConsent);
+  return (
+    <div className="mt-2 text-sm text-[#536158]" role="status" aria-label="Processing destination">
+      <p className="m-0">
+        Processing: <strong>{destination.label}</strong>
+      </p>
+      {destination.kind === "blocked" ? <p className="m-0">{destination.reason}</p> : null}
+      {remote ? (
+        <label className="mt-1 flex items-center gap-2">
+          <input
+            type="checkbox"
+            checked={destination.kind === "server"}
+            disabled={disabled}
+            onChange={(event) => onRemoteConsentChange(event.target.checked)}
+          />
+          Send recordings, transcripts and speaker profiles (voiceprints) to this remote server for
+          analysis and storage
+        </label>
+      ) : null}
+    </div>
   );
 }

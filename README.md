@@ -4,9 +4,9 @@ Cross-platform speech fluency tracker organized as a Bun monorepo.
 
 ## Workspaces
 
-- `apps/web`: Vite React web app. It calls the external compute server first and falls back to browser-local analysis with WebGPU probing when the server is unavailable.
+- `apps/web`: Vite React web app. It uses the configured compute server only under the processing policy below and falls back to browser-local analysis with WebGPU probing when that server is unavailable.
 - `apps/desktop`: Tauri 2 desktop app. It keeps the Rust-backed local hardware path for analysis, speaker matching, transcription, and model downloads.
-- `apps/mobile`: React Native app built with Expo. It talks to the external compute server through the shared client.
+- `apps/mobile`: React Native app built with Expo. It transcribes through a compute server selected under the processing policy below.
 - `apps/server`: Bun HTTP compute server with shared analysis, speaker persistence, secured CORS/auth, and native transcription worker delegation.
 - `packages/shared`: Shared domain types, model catalogs, fallback analysis, audio resampling, and speaker helpers.
 - `packages/compute-client`: Shared HTTP compute client used by web and mobile.
@@ -30,9 +30,19 @@ Cross-platform speech fluency tracker organized as a Bun monorepo.
 - E2E tests: `bun run test:e2e`
 - Rust tests: `bun run test:rust`
 
+## Processing Policy
+
+Speech content (audio, transcripts, voiceprints) is processed under one explicit policy from `packages/compute-client`:
+
+- **On this device** (`onDevice`, the client default): no server requests at all. Set `VITE_STUTTER_SERVER_URL=` (empty) for the web app or clear the server URL in the mobile app.
+- **Local companion** (`localCompanion`): a server on a loopback address (`localhost`, `127.x.x.x`, `::1`). This is the development default `http://127.0.0.1:8787`.
+- **Remote** (`remote`): any other server, including LAN addresses and the Android emulator alias. Nothing is sent until the user consents in the app for that exact URL; the consent covers recordings, transcripts and speaker profiles (voiceprints), which the server may store; changing the URL withdraws consent.
+
+The destination is shown in the app and fixed for a run. If a server fails, analysis falls back to on-device processing; it never switches to another server. The web app's Browser Speech engine uses the browser's speech recognition, which some browsers run in the cloud; it is outside this policy.
+
 ## Compute Setup
 
-The default external compute URL is `http://127.0.0.1:8787`.
+The default compute URL is the local companion `http://127.0.0.1:8787`.
 
 Known speaker profiles are persisted by the server when `DATABASE_URL` or `POSTGRES_URL` points at a Postgres database. The server creates the `known_speakers` table on first use. Without a database URL, the server writes a local JSON speaker store at `.stutter-tracker/server-speakers.json` by default. Override that path with `STUTTER_SPEAKER_STORE_PATH`.
 
@@ -84,7 +94,7 @@ STUTTER_NATIVE_WORKER=/absolute/path/to/compute-worker \
 bun run server
 ```
 
-Clients send the token as `Authorization: Bearer <token>`. The web app reads `VITE_STUTTER_API_TOKEN`; the mobile app has an API token field in the UI. Public-ready CORS uses the configured origin allowlist and never emits wildcard origins.
+Clients send the token as `Authorization: Bearer <token>`. The web app reads `VITE_STUTTER_API_TOKEN`; the mobile app has an API token field in the UI. A `VITE_*` value is bundled into the web app and visible to anyone who loads it, so it is not a secret and cannot secure a shared multi-user service; treat it as protection for a single trusted user only. Public-ready CORS uses the configured origin allowlist and never emits wildcard origins.
 
 Optional server settings:
 

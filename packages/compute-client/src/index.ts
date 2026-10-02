@@ -23,8 +23,94 @@ type NavigatorWithGpu = Navigator & {
   };
 };
 
+/**
+ * Where speech content (audio, transcripts, voiceprints) may be processed.
+ * - onDevice: never contacts a server.
+ * - localCompanion: a server on this device's loopback address only.
+ * - remote: any other server, and only with explicit consent for remote analysis.
+ * There is no automatic escalation between modes; server failures fall back to on-device.
+ */
+export type ProcessingPolicy =
+  | { mode: "onDevice" }
+  | { mode: "localCompanion"; serverUrl: string }
+  | { mode: "remote"; serverUrl: string; remoteAnalysisConsent: boolean };
+
+export type ProcessingDestination =
+  | { kind: "onDevice"; label: string }
+  | { kind: "server"; mode: "localCompanion" | "remote"; url: string; label: string }
+  | { kind: "blocked"; label: string; reason: string; needsRemoteConsent?: boolean };
+
+export const ON_DEVICE_POLICY: ProcessingPolicy = { mode: "onDevice" };
+
+export function resolveProcessingDestination(policy: ProcessingPolicy): ProcessingDestination {
+  if (policy.mode === "onDevice") {
+    return { kind: "onDevice", label: "On this device only" };
+  }
+  const url = normalizeBaseUrl(policy.serverUrl);
+  if (!url || !parseHttpUrl(url)) {
+    return {
+      kind: "blocked",
+      label: "No valid server",
+      reason: "The server URL is not a valid http(s) URL.",
+    };
+  }
+  if (policy.mode === "localCompanion") {
+    if (!isLoopbackUrl(url)) {
+      return {
+        kind: "blocked",
+        label: `Blocked: ${url} is not on this device`,
+        reason:
+          "A local companion must use a loopback address. Choose remote processing and consent to use another server.",
+      };
+    }
+    return { kind: "server", mode: "localCompanion", url, label: `Local companion at ${url}` };
+  }
+  if (!policy.remoteAnalysisConsent) {
+    return {
+      kind: "blocked",
+      label: `Remote server ${url} needs your consent`,
+      reason: "Recordings and transcripts are only sent to a remote server after you consent.",
+      needsRemoteConsent: true,
+    };
+  }
+  return { kind: "server", mode: "remote", url, label: `Remote server at ${url}` };
+}
+
+/** Proposes a policy for a user-entered URL: loopback is a local companion, anything else is remote. */
+export function processingPolicyForServerUrl(
+  serverUrl: string,
+  remoteAnalysisConsent: boolean,
+): ProcessingPolicy {
+  const url = normalizeBaseUrl(serverUrl);
+  if (!url) {
+    return ON_DEVICE_POLICY;
+  }
+  return isLoopbackUrl(url)
+    ? { mode: "localCompanion", serverUrl: url }
+    : { mode: "remote", serverUrl: url, remoteAnalysisConsent };
+}
+
+export function isLoopbackUrl(value: string) {
+  const url = parseHttpUrl(value);
+  if (!url) {
+    return false;
+  }
+  const host = url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return host === "localhost" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
+function parseHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:" ? url : null;
+  } catch {
+    return null;
+  }
+}
+
 export type ComputeClientOptions = {
-  serverUrl?: string;
+  /** Defaults to on-device processing. */
+  processingPolicy?: ProcessingPolicy;
   apiToken?: string;
   fetchImpl?: typeof fetch;
 };
@@ -41,6 +127,8 @@ export type TranscribeAudioFileRequest = {
 };
 
 export type ComputeClient = {
+  /** Fixed for the client's lifetime; a new destination requires a new client. */
+  readonly destination: ProcessingDestination;
   analyzeSpeechSession(request: AnalyzeSpeechRequest): Promise<AnalysisReport>;
   listSpeakerProfiles(): Promise<SpeakerProfile[]>;
   saveSpeakerProfiles(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
@@ -68,10 +156,18 @@ export type ComputeClient = {
 
 export function createComputeClient(options: ComputeClientOptions = {}): ComputeClient {
   const fetcher = options.fetchImpl ?? fetch;
-  const baseUrl = normalizeBaseUrl(options.serverUrl);
+  const destination = resolveProcessingDestination(options.processingPolicy ?? ON_DEVICE_POLICY);
+  const baseUrl = destination.kind === "server" ? destination.url : "";
   const headers = requestHeaders(options.apiToken);
+  const serverRequired = (what: string) =>
+    new Error(
+      destination.kind === "blocked"
+        ? `${what} needs a server: ${destination.reason}`
+        : `${what} needs a configured compute server; processing is set to this device only`,
+    );
 
   return {
+    destination,
     async analyzeSpeechSession(request) {
       if (baseUrl) {
         try {
@@ -163,13 +259,13 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
     },
     async transcribeAudio(request) {
       if (!baseUrl) {
-        throw new Error("external compute server is required for web and mobile transcription");
+        throw serverRequired("Transcription");
       }
       return post<TranscribeAudioResult>(fetcher, baseUrl, "/transcriptions", request, headers);
     },
     async transcribeAudioFile(request) {
       if (!baseUrl) {
-        throw new Error("external compute server is required for mobile transcription");
+        throw serverRequired("Transcription");
       }
       const formData = new FormData();
       const file =
@@ -192,7 +288,7 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
     },
     async downloadTranscriptionModel(provider, model) {
       if (!baseUrl) {
-        throw new Error("external compute server is required for model downloads");
+        throw serverRequired("Model download");
       }
       return post<TranscriptionModelStatus>(
         fetcher,
@@ -214,7 +310,7 @@ async function get<T>(
   path: string,
   headers: HeadersInit,
 ): Promise<T> {
-  const response = await fetcher(`${baseUrl}${path}`, { headers });
+  const response = await fetcher(`${baseUrl}${path}`, { headers, redirect: "error" });
   await assertOk(response, path);
   return (await response.json()) as T;
 }
@@ -226,7 +322,9 @@ async function post<T>(
   body: unknown,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
+    redirect: "error",
     method: "POST",
     headers: {
       ...extraHeaders,
@@ -245,7 +343,9 @@ async function postForm<T>(
   body: FormData,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
+    redirect: "error",
     method: "POST",
     headers: extraHeaders,
     body,
@@ -261,7 +361,9 @@ async function put<T>(
   body: unknown,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
+    redirect: "error",
     method: "PUT",
     headers: {
       ...extraHeaders,
