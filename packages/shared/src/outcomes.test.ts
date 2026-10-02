@@ -161,6 +161,57 @@ describe("summarizeOutcomes grouping", () => {
   });
 });
 
+describe("summarizeOutcomes validity", () => {
+  test("compares event counts as rates per minute of sample", () => {
+    const events = { min: 0, max: 100, betterDirection: "lower", unit: "events" } as const;
+    const report = summarizeOutcomes([
+      observation({
+        id: "a",
+        measure: "eventBurden",
+        scale: events,
+        value: 5,
+        sampleDurationSeconds: 60,
+      }),
+      observation({
+        id: "b",
+        recordedAt: "2026-10-02T09:00:00Z",
+        measure: "eventBurden",
+        scale: events,
+        value: 10,
+        sampleDurationSeconds: 600,
+      }),
+    ]);
+
+    expect(report.comparisons[0]).toMatchObject({ baseline: 5, latest: 1, change: "better" });
+  });
+
+  test("excludes observations with invalid timestamps", () => {
+    const report = summarizeOutcomes([
+      observation({ id: "bad", recordedAt: "", value: 1 }),
+      observation({ id: "a", value: 8 }),
+      observation({ id: "b", recordedAt: "2026-10-02T09:00:00Z", value: 2 }),
+    ]);
+
+    expect(report.excludedObservationIds).toEqual(["bad"]);
+    expect(report.comparisons[0]).toMatchObject({ baseline: 8, latest: 2, observationCount: 2 });
+  });
+
+  test("groups regional tags under the primary language", () => {
+    const report = summarizeOutcomes([
+      observation({ id: "a", value: 8, spokenLanguage: "en" }),
+      observation({
+        id: "b",
+        recordedAt: "2026-10-02T09:00:00Z",
+        value: 2,
+        spokenLanguage: "en-US",
+      }),
+    ]);
+
+    expect(report.comparisons).toHaveLength(1);
+    expect(report.comparisons[0].spokenLanguage).toBe("en");
+  });
+});
+
 describe("spoken language", () => {
   test("is English first, German and Spanish later, and nothing is validated", () => {
     expect(speechLanguageSupport("en")).toBe("first");
@@ -172,6 +223,10 @@ describe("spoken language", () => {
 
   test("interface language never fills in the recorded speech language", () => {
     expect(resolveSpokenLanguage({ interfaceLanguage: "de" })).toBe("unknown");
+    expect(
+      resolveSpokenLanguage({ declaredSpokenLanguage: "es-ES", interfaceLanguage: "en" }),
+    ).toBe("es");
+    expect(speechLanguageSupport("en-US")).toBe("first");
     expect(resolveSpokenLanguage({ declaredSpokenLanguage: "EN", interfaceLanguage: "de" })).toBe(
       "en",
     );

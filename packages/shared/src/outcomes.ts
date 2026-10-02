@@ -14,7 +14,8 @@ export const UNKNOWN_SPOKEN_LANGUAGE = "unknown";
 
 export type SpeechLanguageSupport = "first" | "later" | "unsupported" | "unknown";
 
-export function speechLanguageSupport(language: SpokenLanguage): SpeechLanguageSupport {
+export function speechLanguageSupport(tag: SpokenLanguage): SpeechLanguageSupport {
+  const language = canonicalSpokenLanguage(tag);
   if (language === UNKNOWN_SPOKEN_LANGUAGE) return "unknown";
   const entry = SPEECH_LANGUAGE_ROLLOUT.find((candidate) => candidate.code === language);
   return entry ? entry.stage : "unsupported";
@@ -28,8 +29,13 @@ export function resolveSpokenLanguage(input: {
   declaredSpokenLanguage?: string | null;
   interfaceLanguage?: string | null;
 }): SpokenLanguage {
-  const declared = input.declaredSpokenLanguage?.trim().toLowerCase();
-  return declared ? declared : UNKNOWN_SPOKEN_LANGUAGE;
+  return canonicalSpokenLanguage(input.declaredSpokenLanguage);
+}
+
+/** Lowercased primary BCP-47 subtag ("en-US" -> "en"); blank or malformed becomes "unknown". */
+export function canonicalSpokenLanguage(tag: string | null | undefined): SpokenLanguage {
+  const primary = tag?.trim().toLowerCase().split(/[-_]/)[0] ?? "";
+  return /^[a-z]{2,3}$/.test(primary) ? primary : UNKNOWN_SPOKEN_LANGUAGE;
 }
 
 export type BenefitHorizon = "duringAssistance" | "transfer" | "maintenance";
@@ -60,6 +66,7 @@ export type OutcomeScale = {
   max: number;
   /** "lower" for effort/discomfort, event burden and duration. */
   betterDirection: "higher" | "lower";
+  /** "events" means a count over the sample; it is compared as events per minute. */
   unit?: string;
   /** Validated instruments are only referenced by id after licensing review; never by text. */
   instrumentId?: string;
@@ -99,6 +106,8 @@ export type OutcomeComparison = {
 
 export type OutcomeReport = {
   comparisons: OutcomeComparison[];
+  /** Observations left out because their timestamp or sample duration is invalid. */
+  excludedObservationIds: string[];
   limitations: string[];
 };
 
@@ -130,7 +139,17 @@ export function summarizeOutcomes(
 ): OutcomeReport {
   const threshold = options.minimumChangeFraction ?? 0.1;
   const groups = new Map<string, OutcomeObservation[]>();
+  const excludedObservationIds: string[] = [];
   for (const observation of observations) {
+    const countBased = observation.scale.unit === "events";
+    if (
+      !Number.isFinite(Date.parse(observation.recordedAt)) ||
+      !Number.isFinite(observation.value) ||
+      (countBased && !(observation.sampleDurationSeconds > 0))
+    ) {
+      excludedObservationIds.push(observation.id);
+      continue;
+    }
     const { condition, scale, task } = observation;
     const key = JSON.stringify([
       observation.measure,
@@ -139,7 +158,7 @@ export function summarizeOutcomes(
       condition.kind,
       condition.kind === "assisted" ? condition.aidId : null,
       condition.kind === "assisted" ? sortedEntries(condition.settings) : null,
-      observation.spokenLanguage,
+      canonicalSpokenLanguage(observation.spokenLanguage),
       task.kind,
       task.trained,
       scale.min,
@@ -160,7 +179,7 @@ export function summarizeOutcomes(
       source: first.source,
       horizon: first.horizon,
       condition: first.condition,
-      spokenLanguage: first.spokenLanguage,
+      spokenLanguage: canonicalSpokenLanguage(first.spokenLanguage),
       task: first.task,
       scale: first.scale,
       observationCount: ordered.length,
@@ -168,7 +187,7 @@ export function summarizeOutcomes(
     const conditionLabel =
       first.condition.kind === "assisted" ? `assisted: ${first.condition.aidId}` : "unassisted";
     const taskLabel = `${first.task.trained ? "trained" : "untrained"} ${first.task.kind}`;
-    const label = `${MEASURE_LABELS[first.measure]} (${first.source}, ${conditionLabel}, ${taskLabel}, ${first.spokenLanguage})`;
+    const label = `${MEASURE_LABELS[first.measure]} (${first.source}, ${conditionLabel}, ${taskLabel}, ${base.spokenLanguage})`;
     if (ordered.length < 2) {
       return {
         ...base,
@@ -177,8 +196,21 @@ export function summarizeOutcomes(
         statement: `${label}: only one observation, no comparison yet.`,
       };
     }
-    const range = Math.max(first.scale.max - first.scale.min, Number.EPSILON);
-    const delta = last.value - first.value;
+    const countBased = first.scale.unit === "events";
+    const comparable = (observation: OutcomeObservation) =>
+      countBased
+        ? round2(observation.value / (observation.sampleDurationSeconds / 60))
+        : observation.value;
+    const baseline = comparable(first);
+    const latest = comparable(last);
+    // Rates have no fixed range, so a change is judged relative to the larger rate.
+    const range = Math.max(
+      countBased
+        ? Math.max(Math.abs(baseline), Math.abs(latest))
+        : first.scale.max - first.scale.min,
+      Number.EPSILON,
+    );
+    const delta = latest - baseline;
     const improvement = first.scale.betterDirection === "higher" ? delta : -delta;
     const change: OutcomeChange =
       Math.abs(delta) / range < threshold ? "noClearChange" : improvement > 0 ? "better" : "worse";
@@ -190,14 +222,18 @@ export function summarizeOutcomes(
     }[change];
     return {
       ...base,
-      baseline: first.value,
-      latest: last.value,
+      baseline,
+      latest,
       change,
-      statement: `${label}: ${last.value} is ${wording} the first observation ${first.value} across ${ordered.length} observations.`,
+      statement: `${label}: ${latest}${countBased ? " events/min" : ""} is ${wording} the first observation ${baseline} across ${ordered.length} observations.`,
     };
   });
 
-  return { comparisons, limitations: [...OUTCOME_REPORT_LIMITATIONS] };
+  return { comparisons, excludedObservationIds, limitations: [...OUTCOME_REPORT_LIMITATIONS] };
+}
+
+function round2(value: number) {
+  return Math.round(value * 100) / 100;
 }
 
 function sortedEntries(settings: Record<string, unknown> | undefined) {
