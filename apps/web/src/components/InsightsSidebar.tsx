@@ -1,4 +1,5 @@
 import { CheckCircle2, Cpu, Download, LoaderCircle, ShieldCheck } from "lucide-react";
+import { INTENDED_USE_NOTICE } from "@stutter-tracker/shared";
 import type { ReactNode } from "react";
 import type {
   AcousticStats,
@@ -249,9 +250,9 @@ export function InsightsSidebar({
       </PanelBlock>
 
       <PanelBlock title="Scope">
-        <p className={`m-0 ${mutedTextClass}`}>
-          This tracks speech patterns for review. It is not a medical diagnosis.
-        </p>
+        <p className={`m-0 ${mutedTextClass}`}>{INTENDED_USE_NOTICE.scope}</p>
+        <p className={`mt-2 mb-0 ${mutedTextClass}`}>{INTENDED_USE_NOTICE.signposting}</p>
+        <p className={`mt-2 mb-0 ${mutedTextClass}`}>{INTENDED_USE_NOTICE.stop}</p>
       </PanelBlock>
     </aside>
   );
