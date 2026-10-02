@@ -82,11 +82,36 @@ describe("common session time base", () => {
     expect(sessionSecondsToSampleIndex(source, 0.1, 96_000)).toBeNull();
     expect(sessionSecondsToSampleIndex(source, 99, 96_000)).toBeNull();
   });
+
+  test("overlapping gaps are counted once", () => {
+    const source = descriptor({
+      startOffsetSeconds: 0,
+      discontinuities: [
+        { startSeconds: 1, endSeconds: 3, reason: "paused" },
+        { startSeconds: 2, endSeconds: 4, reason: "routeChange" },
+      ],
+    });
+
+    expect(sampleIndexToSessionSeconds(source, 48_000)).toBeCloseTo(4, 9);
+    expect(sessionSecondsToSampleIndex(source, 4, 96_000)).toBe(48_000);
+  });
 });
 
 describe("provenance", () => {
   test("browser input with requested echo cancellation is not labelled unprocessed", () => {
     expect(isUnprocessedInput(descriptor())).toBe(false);
+    const unobserved = { requested: false };
+    expect(
+      isUnprocessedInput(
+        descriptor({
+          preprocessing: {
+            echoCancellation: unobserved,
+            noiseSuppression: unobserved,
+            autoGainControl: unobserved,
+          },
+        }),
+      ),
+    ).toBe(false);
   });
 
   test("input with all preprocessing reported off is unprocessed; intervention output never is", () => {

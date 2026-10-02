@@ -52,21 +52,31 @@ export type RecordingDescriptor = {
  */
 export function isUnprocessedInput(descriptor: RecordingDescriptor) {
   if (descriptor.role !== "appInput" || descriptor.origin === "import") return false;
-  return Object.values(descriptor.preprocessing).every(
-    (setting) => setting.applied === false || (setting.applied === undefined && !setting.requested),
-  );
+  return Object.values(descriptor.preprocessing).every((setting) => setting.applied === false);
 }
 
-function sortedGaps(descriptor: RecordingDescriptor) {
-  return [...descriptor.discontinuities]
+/** Sorted, merged gap intervals, so overlapping events are counted once. */
+export function mergedDiscontinuities(descriptor: RecordingDescriptor) {
+  const sorted = descriptor.discontinuities
     .filter((gap) => gap.endSeconds > gap.startSeconds)
+    .map((gap) => ({ startSeconds: gap.startSeconds, endSeconds: gap.endSeconds }))
     .sort((a, b) => a.startSeconds - b.startSeconds);
+  const merged: Array<{ startSeconds: number; endSeconds: number }> = [];
+  for (const gap of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && gap.startSeconds <= last.endSeconds) {
+      last.endSeconds = Math.max(last.endSeconds, gap.endSeconds);
+    } else {
+      merged.push(gap);
+    }
+  }
+  return merged;
 }
 
 /** Session-clock seconds of a sample index; skips the gaps that occurred before that sample. */
 export function sampleIndexToSessionSeconds(descriptor: RecordingDescriptor, sampleIndex: number) {
   let seconds = descriptor.startOffsetSeconds + sampleIndex / descriptor.sampleRate;
-  for (const gap of sortedGaps(descriptor)) {
+  for (const gap of mergedDiscontinuities(descriptor)) {
     if (gap.startSeconds <= seconds) seconds += gap.endSeconds - gap.startSeconds;
   }
   return seconds;
@@ -79,7 +89,7 @@ export function sessionSecondsToSampleIndex(
   sampleCount: number,
 ): number | null {
   let streamSeconds = sessionSeconds - descriptor.startOffsetSeconds;
-  for (const gap of sortedGaps(descriptor)) {
+  for (const gap of mergedDiscontinuities(descriptor)) {
     if (sessionSeconds >= gap.startSeconds && sessionSeconds < gap.endSeconds) return null;
     if (gap.endSeconds <= sessionSeconds) streamSeconds -= gap.endSeconds - gap.startSeconds;
   }
@@ -172,7 +182,7 @@ export function assessCaptureQuality(
     issues.push("insufficientSpeech");
   }
   if (metrics.clippedSampleRatio > limits.maximumClippedSampleRatio) issues.push("clipping");
-  const missingSeconds = descriptor.discontinuities.reduce(
+  const missingSeconds = mergedDiscontinuities(descriptor).reduce(
     (sum, gap) => sum + Math.max(0, gap.endSeconds - gap.startSeconds),
     0,
   );
