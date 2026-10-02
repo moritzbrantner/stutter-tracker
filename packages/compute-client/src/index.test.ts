@@ -234,6 +234,20 @@ describe("processing policy", () => {
     });
   });
 
+  it("refuses to follow redirects away from the selected destination", async () => {
+    const modes: Array<RequestRedirect | undefined> = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      modes.push(init?.redirect);
+      return json({ speakers: [], models: [], segments: [] });
+    }) as typeof fetch;
+    const client = createComputeClient({ processingPolicy: remoteWithConsent, fetchImpl });
+
+    await exerciseAllEntryPoints(client);
+
+    expect(modes.length).toBeGreaterThan(0);
+    expect(modes.every((mode) => mode === "error")).toBe(true);
+  });
+
   it("treats only loopback URLs as a local companion", () => {
     expect(isLoopbackUrl("http://127.0.0.1:8787")).toBe(true);
     expect(isLoopbackUrl("http://localhost:8787")).toBe(true);

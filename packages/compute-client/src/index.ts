@@ -310,7 +310,7 @@ async function get<T>(
   path: string,
   headers: HeadersInit,
 ): Promise<T> {
-  const response = await fetcher(`${baseUrl}${path}`, { headers });
+  const response = await fetcher(`${baseUrl}${path}`, { headers, redirect: "error" });
   await assertOk(response, path);
   return (await response.json()) as T;
 }
@@ -322,7 +322,9 @@ async function post<T>(
   body: unknown,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
+    redirect: "error",
     method: "POST",
     headers: {
       ...extraHeaders,
@@ -341,7 +343,9 @@ async function postForm<T>(
   body: FormData,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
+    redirect: "error",
     method: "POST",
     headers: extraHeaders,
     body,
@@ -357,7 +361,9 @@ async function put<T>(
   body: unknown,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
+    redirect: "error",
     method: "PUT",
     headers: {
       ...extraHeaders,

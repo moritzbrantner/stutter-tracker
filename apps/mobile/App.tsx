@@ -268,12 +268,22 @@ export default function App() {
           <TouchableOpacity
             style={recorderState.isRecording ? styles.stopButton : styles.primaryButton}
             onPress={recorderState.isRecording ? stopRecording : startRecording}
-            disabled={isUploading || permissionGranted === false}
+            disabled={
+              isUploading ||
+              permissionGranted === false ||
+              (!recorderState.isRecording && destination.kind !== "server")
+            }
           >
             <Text style={styles.primaryButtonText}>
               {recorderState.isRecording ? "Stop" : "Record"}
             </Text>
           </TouchableOpacity>
+          {destination.kind !== "server" && (
+            <Text style={styles.detail}>
+              Recording needs a transcription server: the mobile app has no on-device transcription
+              yet. Enter a local companion URL or consent to a remote server.
+            </Text>
+          )}
           {!!lastRecordingUri && <Text style={styles.detail}>{lastRecordingUri}</Text>}
           <Text style={styles.transcript}>{transcript || "Transcript will appear here."}</Text>
         </Panel>
