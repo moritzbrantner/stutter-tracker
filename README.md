@@ -1,6 +1,10 @@
-# Stutter Tracker
+# Speak
 
-Cross-platform speech fluency tracker organized as a Bun monorepo.
+Speak is the canonical cross-platform speech fluency and speaking-assistance product, organized as a Bun monorepo.
+
+The repository still uses the legacy `stutter-tracker` slug and `@stutter-tracker/*` package scope for compatibility. The old `speak` and `speaky` repositories were generic template experiments and are being retired rather than merged into this codebase.
+
+Generic capabilities remain owned by their existing repositories: `audio-analysis` for reusable audio/transcription processing, `nlp-stack` for reusable transcript/language processing, and `moenarch-foundation` for neutral shared contracts. Speak owns product-specific fluency interpretation, personalization, assistance policy, sessions, UX, and product evaluation.
 
 ## Workspaces
 
