@@ -76,6 +76,7 @@ describe("consent ledger", () => {
       { purpose: "remoteAnalysis", granted: false, at: "not a date", scope: server },
       { purpose: "remoteAnalysis", granted: false, at: "2026-10-02T00:00:00.000Z" },
       { purpose: "remoteAnalysis", granted: false, at: "2026-10-02T00:00:00.000Z", scope: "" },
+      { purpose: "clinicianSharing", granted: false, at: "2026-10-02T00:00:00.000Z", scope: "x" },
       {
         purpose: "remoteAnalysis",
         granted: false,
@@ -97,15 +98,11 @@ describe("consent ledger", () => {
       granted: true,
       scope: "https://a.example.com",
     });
-    ledger = recordConsent(ledger, {
-      purpose: "clinicianSharing",
-      granted: true,
-      scope: "https://a.example.com",
-    });
+    ledger = recordConsent(ledger, { purpose: "clinicianSharing", granted: true });
     const moved = withdrawOtherScopes(ledger, "remoteAnalysis", "https://b.example.com");
 
     expect(hasConsent(moved, "remoteAnalysis", "https://a.example.com")).toBe(false);
-    expect(hasConsent(moved, "clinicianSharing", "https://a.example.com")).toBe(true);
+    expect(hasConsent(moved, "clinicianSharing")).toBe(true);
     expect(withdrawOtherScopes(moved, "remoteAnalysis", "https://b.example.com")).toBe(moved);
   });
 
@@ -116,6 +113,9 @@ describe("consent ledger", () => {
     expect(() =>
       recordConsent(EMPTY_CONSENT_LEDGER, { purpose: "modelTraining", granted: false }),
     ).not.toThrow();
+    expect(() =>
+      recordConsent(EMPTY_CONSENT_LEDGER, { purpose: "modelTraining", granted: true, scope: "x" }),
+    ).toThrow("not scoped");
   });
 
   test("rejects recording an unknown purpose", () => {

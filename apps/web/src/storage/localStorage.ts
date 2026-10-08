@@ -107,15 +107,14 @@ export function saveRemoteConsent(
   try {
     storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
   } catch {
-    // Appending can fail when storage is full. A grant then simply does not persist; a withdrawal
-    // must still take effect, so the ledger is dropped (no grants at all), which needs no quota.
-    if (!granted) {
-      try {
-        storage.removeItem(CONSENT_LEDGER_KEY);
-        storage.removeItem(REMOTE_CONSENT_KEY);
-      } catch {
-        // Storage unavailable: reading it fails too, which also means no consent.
-      }
+    // Appending can fail when storage is full. Any decision that cannot be stored (a withdrawal,
+    // or a grant that also withdraws another server) falls back to dropping the ledger: no grants
+    // at all, which needs no quota.
+    try {
+      storage.removeItem(CONSENT_LEDGER_KEY);
+      storage.removeItem(REMOTE_CONSENT_KEY);
+    } catch {
+      // Storage unavailable: reading it fails too, which also means no consent.
     }
   }
 }

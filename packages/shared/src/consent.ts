@@ -45,7 +45,11 @@ export function recordConsent(
     throw new Error(`Unknown consent purpose ${String(decision.purpose)}.`);
   }
   if (!isValidScope(decision.purpose, decision.scope ?? "")) {
-    throw new Error(`Remote analysis consent needs an http(s) server URL as its scope.`);
+    throw new Error(
+      decision.purpose === "remoteAnalysis"
+        ? "Remote analysis consent needs an http(s) server URL as its scope."
+        : `${decision.purpose} consent is not scoped.`,
+    );
   }
   return [
     ...ledger,
@@ -133,10 +137,13 @@ function isConsentDecision(entry: unknown): entry is ConsentDecision {
   );
 }
 
-/** Remote analysis is always scoped to one http(s) server; a blank scope is corruption. */
+/**
+ * Remote analysis is always scoped to one http(s) server; the other purposes are unscoped, so a
+ * non-empty scope there is corruption that could otherwise hide a withdrawal.
+ */
 function isValidScope(purpose: ConsentPurpose, scope: string) {
   if (purpose !== "remoteAnalysis") {
-    return true;
+    return scope === "";
   }
   try {
     const url = new URL(scope);

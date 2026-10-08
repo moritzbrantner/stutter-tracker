@@ -97,8 +97,11 @@ describe("local storage helpers", () => {
 
     expect(() => saveRemoteConsent("https://a.example.com", false, full)).not.toThrow();
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+    // Switching to B while full must not leave A granted either.
+    saveRemoteConsent("https://a.example.com", true, storage);
     expect(() => saveRemoteConsent("https://b.example.com", true, full)).not.toThrow();
     expect(loadRemoteConsent("https://b.example.com", storage)).toBe(false);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
   });
 
   it("treats a corrupt ledger as no consent and keeps the corrupt copy", () => {
