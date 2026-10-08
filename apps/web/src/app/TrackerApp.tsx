@@ -1,7 +1,20 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createComputeClient, processingPolicyForServerUrl } from "@stutter-tracker/compute-client";
 import {
+  type AnalyzedSpeech,
+  createComputeClient,
+  ON_DEVICE_ANALYZER,
+  processingPolicyForServerUrl,
+} from "@stutter-tracker/compute-client";
+import {
+  type AnalysisRunIdentity,
+  type AnalyzerIdentity,
+  canonicalSpokenLanguage,
+  createSessionRecord,
+  reanalyzeSession,
   fallbackAnalyze as sharedFallbackAnalyze,
+  observationFingerprint,
+  UNKNOWN_INPUT_ID,
+  audioFingerprint,
   resampleSamples as sharedResampleSamples,
 } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -40,7 +53,11 @@ import type {
   TranscriptionSettings,
   Voiceprint,
 } from "../types";
-import { loadRemoteConsent, saveRemoteConsent } from "../storage/localStorage";
+import {
+  loadRemoteConsent,
+  loadSessionsFromStorage,
+  saveRemoteConsent,
+} from "../storage/localStorage";
 export { formatTime } from "../utils/formatting";
 
 const STORE_KEY = "stutter-tracker:sessions";
@@ -109,6 +126,8 @@ export function App() {
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [pauses, setPauses] = useState<PauseSpan[]>([]);
   const [report, setReport] = useState<AnalysisReport>(() => emptyReport());
+  // Identity of the analysis run that produced `report`; null when nothing has analyzed it.
+  const [reportRun, setReportRun] = useState<AnalysisRunIdentity | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
   const [corpusAnalysis, setCorpusAnalysis] = useState<SpeechCorpusAnalysis>(() =>
@@ -153,6 +172,11 @@ export function App() {
   const transcriptionRef = useRef(transcription);
   const recordingTranscriptionRef = useRef<TranscriptionSettings | null>(null);
   const recordingLanguageRef = useRef(language);
+  // Language of the session in the workspace, fixed when recording starts or a session loads; the
+  // selector can change before Save without relabelling the finished recording.
+  const sessionLanguageRef = useRef<string | null>(null);
+  // The saved record shown in the workspace, so saving it again keeps its analysis history.
+  const loadedSessionRef = useRef<SavedSession | null>(null);
   const nextChunkStartSampleRef = useRef(0);
   const chunkIndexRef = useRef(0);
   const chunkTranscriptionTailRef = useRef<Promise<void>>(Promise.resolve());
@@ -322,7 +346,15 @@ export function App() {
 
   useEffect(() => {
     if (analysisQuery.data) {
-      setReport(analysisQuery.data);
+      setReport(analysisQuery.data.report);
+      setReportRun({
+        id: analysisQuery.data.runId,
+        createdAt: analysisQuery.data.createdAt,
+        analyzer: analysisQuery.data.analyzer,
+        usedAudio: analysisQuery.data.usedAudio,
+        audioId: analysisQuery.data.audioId,
+        inputId: analysisQuery.data.inputId,
+      });
     }
   }, [analysisQuery.data]);
 
@@ -421,6 +453,8 @@ export function App() {
       samplesRef.current = [];
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
+      sessionLanguageRef.current = language;
+      loadedSessionRef.current = null;
       resetChunkTranscription();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
@@ -683,16 +717,41 @@ export function App() {
       setMessage("Nothing to save");
       return;
     }
-    const session: SavedSession = {
+    const loaded = loadedSessionRef.current;
+    if (
+      loaded &&
+      observationFingerprint(segments, pauses) ===
+        observationFingerprint(loaded.segments, loaded.pauses)
+    ) {
+      await saveLoadedSession(loaded);
+      return;
+    }
+    const session: SavedSession = createSessionRecord({
       id: crypto.randomUUID(),
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
       segments,
       pauses,
       report,
-    };
+      run: reportRun ?? {
+        id: crypto.randomUUID(),
+        createdAt: null,
+        analyzer: null,
+        usedAudio: null,
+        audioId: null,
+        // Saved before any analysis finished: the report was not computed from this observation.
+        inputId: UNKNOWN_INPUT_ID,
+      },
+      context: {
+        spokenLanguage: canonicalSpokenLanguage(sessionLanguageRef.current),
+        task: null,
+        condition: null,
+      },
+    });
     const next = [session, ...sessionsRef.current].slice(0, 50);
     persistSessions(next);
     activeSessionIdRef.current = session.id;
+    // Later saves of this workspace append runs to this record instead of creating copies.
+    loadedSessionRef.current = session;
     try {
       const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(session));
       setCorpusAnalysis(corpus);
@@ -701,6 +760,56 @@ export function App() {
       setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
       setMessage("Session saved locally");
     }
+  }
+
+  // Saving the session already on screen never creates a copy: either it is unchanged, or a new
+  // analysis run is appended to its history.
+  async function saveLoadedSession(loaded: SavedSession) {
+    const knownRuns = [loaded.analysis.id, ...loaded.priorAnalyses.map((run) => run.id)];
+    if (!reportRun || knownRuns.includes(reportRun.id)) {
+      setMessage("Session is already saved");
+      return;
+    }
+    const run = reportRun;
+    const savedReport = report;
+    // Runs after every queued mutation and rebuilds from the latest stored record, so a session
+    // deleted meanwhile is never written back and queued saves keep each other's runs.
+    const outcome = await serializeSessionMutation(async () => {
+      const latest = sessionsRef.current.find((candidate) => candidate.id === loaded.id);
+      if (!latest) {
+        return "deleted" as const;
+      }
+      if (
+        latest.analysis.id === run.id ||
+        latest.priorAnalyses.some((prior) => prior.id === run.id)
+      ) {
+        return "unchanged" as const;
+      }
+      const updated = reanalyzeSession(latest, run, savedReport);
+      // The user may have opened another session while this save waited in the queue.
+      if (loadedSessionRef.current?.id === updated.id) {
+        loadedSessionRef.current = updated;
+      }
+      persistSessions(
+        sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+      );
+      try {
+        setCorpusAnalysis(await saveSpeechCorpusSession(updated));
+        return "corpus" as const;
+      } catch {
+        setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+        return "local" as const;
+      }
+    });
+    setMessage(
+      outcome === "deleted"
+        ? "Session was deleted; nothing saved"
+        : outcome === "unchanged"
+          ? "Session is already saved"
+          : outcome === "corpus"
+            ? "New analysis saved to the session"
+            : "New analysis saved locally",
+    );
   }
 
   async function deleteSession(session: SavedSession) {
@@ -719,6 +828,9 @@ export function App() {
           setSegments([]);
           setPauses([]);
           setReport(emptyReport());
+          setReportRun(null);
+          sessionLanguageRef.current = null;
+          loadedSessionRef.current = null;
           setInterimText("");
           setSpeakerMatch(null);
           resetChunkTranscription();
@@ -1076,6 +1188,12 @@ export function App() {
           setSegments(session.segments);
           setPauses(session.pauses);
           setReport(session.report);
+          setReportRun(session.analysis);
+          sessionLanguageRef.current = session.context.spokenLanguage;
+          loadedSessionRef.current = session;
+          // Audio is not stored with sessions; keeping the last recording's PCM would analyze
+          // this session against someone else's audio.
+          samplesRef.current = [];
         }}
         onSessionDelete={(session) => void deleteSession(session)}
       />
@@ -1083,17 +1201,27 @@ export function App() {
   );
 }
 
+// The desktop command does not report an analyzer version yet.
+const DESKTOP_NATIVE_ANALYZER: AnalyzerIdentity = {
+  producer: "desktopNative",
+  algorithm: "analyze_speech_session",
+  version: null,
+};
+
 async function analyze(request: {
   segments: TranscriptSegment[];
   pauses: PauseSpan[];
   sessionStartedAt?: string;
   samples?: number[];
   sampleRate?: number;
-}): Promise<AnalysisReport> {
+}): Promise<AnalyzedSpeech> {
   if (!isDesktopApp()) {
-    return computeClient.analyzeSpeechSession(request);
+    return computeClient.analyzeSpeechSessionRun(request);
   }
-  return invoke<AnalysisReport>("analyze_speech_session", { request });
+  return {
+    report: await invoke<AnalysisReport>("analyze_speech_session", { request }),
+    analyzer: DESKTOP_NATIVE_ANALYZER,
+  };
 }
 
 async function analyzeWithFallback(request: {
@@ -1102,11 +1230,31 @@ async function analyzeWithFallback(request: {
   sessionStartedAt?: string;
   samples?: number[];
   sampleRate?: number;
-}): Promise<AnalysisReport> {
+}): Promise<
+  AnalyzedSpeech & {
+    usedAudio: boolean;
+    inputId: string;
+    audioId: string | null;
+    runId: string;
+    createdAt: string;
+  }
+> {
+  const usedAudio = Boolean(request.samples?.length && request.sampleRate);
+  // Minted here, where the analyzer actually runs, so a cached result keeps its identity.
+  const provenance = {
+    runId: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+    usedAudio,
+    audioId:
+      usedAudio && request.samples && request.sampleRate
+        ? audioFingerprint(request.samples, request.sampleRate)
+        : null,
+    inputId: observationFingerprint(request.segments, request.pauses),
+  };
   try {
-    return await analyze(request);
+    return { ...(await analyze(request)), ...provenance };
   } catch {
-    return fallbackAnalyze(request);
+    return { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER, ...provenance };
   }
 }
 
@@ -1932,7 +2080,7 @@ async function savePersistedSpeakerProfiles(speakers: SpeakerProfile[]): Promise
 
 function loadSessions(): SavedSession[] {
   try {
-    return JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    return loadSessionsFromStorage();
   } catch {
     return [];
   }

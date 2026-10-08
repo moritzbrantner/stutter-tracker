@@ -1,6 +1,21 @@
+import {
+  type LegacySessionRecord,
+  migrateSessionRecord,
+  SESSION_SCHEMA_VERSION,
+} from "@stutter-tracker/shared";
 import type { SavedSession } from "../types";
 
-export const SESSION_BACKUP_VERSION = 1;
+/** Version 1 held legacy session records; version 2 holds canonical session records. */
+export const SESSION_BACKUP_VERSION = 2;
+const SUPPORTED_BACKUP_VERSIONS = new Set([1, 2]);
+const SPEAKING_TASK_KINDS = new Set([
+  "reading",
+  "monologue",
+  "conversation",
+  "phoneCall",
+  "presentation",
+  "other",
+]);
 export const MAX_RESTORED_SESSIONS = 50;
 
 export type SessionBackup = {
@@ -24,7 +39,7 @@ export function parseSessionBackup(value: unknown): SavedSession[] {
   if (!isRecord(value) || !Array.isArray(value.sessions)) {
     throw new Error("Backup must contain a sessions array.");
   }
-  if (value.version != null && value.version !== SESSION_BACKUP_VERSION) {
+  if (value.version != null && !SUPPORTED_BACKUP_VERSIONS.has(value.version as number)) {
     throw new Error(`Unsupported backup version ${String(value.version)}.`);
   }
   if (value.exportedAt != null && !isValidDateString(value.exportedAt)) {
@@ -34,20 +49,167 @@ export function parseSessionBackup(value: unknown): SavedSession[] {
     throw new Error(`Backup contains more than ${MAX_RESTORED_SESSIONS} sessions.`);
   }
 
+  // Every session is validated before any is returned, so an import applies all or nothing.
   const ids = new Set<string>();
   return value.sessions.map((candidate, index) => {
-    if (!isSavedSession(candidate)) {
+    const session = parseStoredSession(candidate);
+    if (!session) {
       throw new Error(`Backup session ${index + 1} is invalid.`);
     }
-    if (ids.has(candidate.id)) {
-      throw new Error(`Backup contains duplicate session id ${candidate.id}.`);
+    if (ids.has(session.id)) {
+      throw new Error(`Backup contains duplicate session id ${session.id}.`);
     }
-    ids.add(candidate.id);
-    return candidate;
+    ids.add(session.id);
+    return session;
   });
 }
 
-function isSavedSession(value: unknown): value is SavedSession {
+/**
+ * Validates one stored or exported session and lifts legacy records into the canonical schema.
+ * Returns null for malformed records; throws for a schema version this build cannot read.
+ */
+export function parseStoredSession(value: unknown): SavedSession | null {
+  if (!isLegacySession(value)) {
+    return null;
+  }
+  if (!("schemaVersion" in value)) {
+    return migrateSessionRecord(value);
+  }
+  if (value.schemaVersion !== SESSION_SCHEMA_VERSION) {
+    throw new Error(`Unsupported session schema version ${String(value.schemaVersion)}.`);
+  }
+  return isSessionProvenance(value) ? (value as unknown as SavedSession) : null;
+}
+
+function isSessionProvenance(value: Record<string, unknown>) {
+  if (
+    !(
+      isSessionContext(value.context) &&
+      Array.isArray(value.recordings) &&
+      value.recordings.every(isRecordingDescriptor) &&
+      isAnalysisRunIdentity(value.analysis) &&
+      Array.isArray(value.priorAnalyses) &&
+      value.priorAnalyses.every(
+        (run) =>
+          isAnalysisRunIdentity(run) && isAnalysisReport((run as { report: unknown }).report),
+      )
+    )
+  ) {
+    return false;
+  }
+  // Capture descriptors belong to this session, and every analysis run is recorded once.
+  const runIds = [value.analysis, ...value.priorAnalyses].map((run) => (run as { id: string }).id);
+  return (
+    value.recordings.every((recording) => recording.sessionId === value.id) &&
+    new Set(runIds).size === runIds.length
+  );
+}
+
+function isSessionContext(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.spokenLanguage === "string" &&
+    (value.task === null ||
+      (isRecord(value.task) &&
+        SPEAKING_TASK_KINDS.has(value.task.kind as string) &&
+        typeof value.task.trained === "boolean" &&
+        (value.task.description === undefined || typeof value.task.description === "string"))) &&
+    (value.condition === null ||
+      (isRecord(value.condition) &&
+        (value.condition.kind === "unassisted" ||
+          (value.condition.kind === "assisted" &&
+            typeof value.condition.aidId === "string" &&
+            isAssistanceSettings(value.condition.settings)))))
+  );
+}
+
+function isAssistanceSettings(value: unknown) {
+  return (
+    value === undefined ||
+    (isRecord(value) &&
+      Object.values(value).every(
+        (setting) =>
+          typeof setting === "string" ||
+          typeof setting === "boolean" ||
+          (typeof setting === "number" && Number.isFinite(setting)),
+      ))
+  );
+}
+
+function isRecordingDescriptor(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.sessionId === "string" &&
+    typeof value.runId === "string" &&
+    (value.origin === "browser" ||
+      value.origin === "mobile" ||
+      value.origin === "desktop" ||
+      value.origin === "import") &&
+    (value.role === "appInput" || value.role === "interventionOutput") &&
+    isFiniteNumber(value.sampleRate) &&
+    value.sampleRate > 0 &&
+    Number.isInteger(value.channelCount) &&
+    (value.channelCount as number) > 0 &&
+    isOptionalString(value.deviceRoute) &&
+    isFiniteNumber(value.startOffsetSeconds) &&
+    isRecord(value.preprocessing) &&
+    isPreprocessingSetting(value.preprocessing.echoCancellation) &&
+    isPreprocessingSetting(value.preprocessing.noiseSuppression) &&
+    isPreprocessingSetting(value.preprocessing.autoGainControl) &&
+    Array.isArray(value.discontinuities) &&
+    value.discontinuities.every(isCaptureInterval) &&
+    (value.speakerAssessment === "singleSpeakerDeclared" ||
+      value.speakerAssessment === "unknown" ||
+      value.speakerAssessment === "overlapDetected")
+  );
+}
+
+function isPreprocessingSetting(value: unknown) {
+  return (
+    isRecord(value) &&
+    (value.requested === undefined || typeof value.requested === "boolean") &&
+    (value.applied === undefined || typeof value.applied === "boolean")
+  );
+}
+
+function isCaptureInterval(value: unknown) {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.startSeconds) &&
+    isFiniteNumber(value.endSeconds) &&
+    value.endSeconds >= value.startSeconds &&
+    (value.reason === "dropout" ||
+      value.reason === "interrupted" ||
+      value.reason === "routeChange" ||
+      value.reason === "paused")
+  );
+}
+
+function isAnalysisRunIdentity(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    (value.createdAt === null || isValidDateString(value.createdAt)) &&
+    (value.analyzer === null || isAnalyzerIdentity(value.analyzer)) &&
+    typeof value.inputId === "string" &&
+    (value.usedAudio === null || typeof value.usedAudio === "boolean") &&
+    (value.audioId === null || typeof value.audioId === "string")
+  );
+}
+
+function isAnalyzerIdentity(value: unknown) {
+  return (
+    isRecord(value) &&
+    (value.producer === "onDevice" ||
+      value.producer === "computeServer" ||
+      value.producer === "desktopNative") &&
+    typeof value.algorithm === "string" &&
+    (value.version === null || typeof value.version === "string")
+  );
+}
+
+function isLegacySession(value: unknown): value is LegacySessionRecord & Record<string, unknown> {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&

@@ -87,6 +87,7 @@ describe("App integration", () => {
     const { container } = renderApp();
     const sessionButton = container.querySelector<HTMLButtonElement>(".session-row");
     expect(sessionButton).not.toBeNull();
+    expect(within(sessionButton!).getByText("Analysis origin not recorded")).toBeInTheDocument();
 
     await userEvent.click(sessionButton!);
 
@@ -104,6 +105,50 @@ describe("App integration", () => {
       expect(screen.queryByText("Repeated word sequence")).not.toBeInTheDocument(),
     );
     expect(screen.getByText("Transcript will appear here.")).toBeInTheDocument();
+  });
+
+  it("saving a loaded session keeps one record and its analysis history", async () => {
+    const legacy = {
+      id: "session-1",
+      startedAt: "2026-05-19T10:00:00.000Z",
+      segments: [
+        {
+          text: "I I want to start",
+          startSeconds: 0,
+          endSeconds: 3,
+          confidence: 0.91,
+          isFinal: true,
+        },
+      ],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 3,
+        wordCount: 5,
+        stutterCount: 1,
+        stuttersPerMinute: 20,
+        severity: "high",
+        events: [],
+        byKind: {},
+      },
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify([legacy]));
+    const { container } = renderApp();
+
+    await userEvent.click(container.querySelector<HTMLButtonElement>(".session-row")!);
+    await screen.findAllByText("I I want to start");
+    await userEvent.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => {
+      const stored = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]") as {
+        id: string;
+        analysis: { id: string };
+        priorAnalyses: { id: string }[];
+      }[];
+      expect(stored).toHaveLength(1);
+      expect(stored[0].id).toBe("session-1");
+      const runIds = [...stored[0].priorAnalyses.map((run) => run.id), stored[0].analysis.id];
+      expect(runIds).toContain("session-1:legacy");
+    });
   });
 
   it("keeps external-server transcription settings in web mode", async () => {

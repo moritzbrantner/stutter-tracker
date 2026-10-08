@@ -1,3 +1,5 @@
+import { migrateSessionRecord, reanalyzeSession } from "@stutter-tracker/shared";
+import { analysisProvenanceLabel } from "./components/LowerDashboard";
 import { describe, expect, it } from "vitest";
 import {
   fallbackAnalyze,
@@ -162,7 +164,7 @@ describe("frontend helpers", () => {
         },
       ],
       sessions: [
-        {
+        migrateSessionRecord({
           id: "session-1",
           startedAt: "2026-05-19T10:00:00.000Z",
           segments: [
@@ -175,7 +177,7 @@ describe("frontend helpers", () => {
           ],
           pauses: [],
           report: fallbackAnalyze({ segments: [], pauses: [] }),
-        },
+        }),
       ],
       events: [
         {
@@ -247,3 +249,41 @@ function sineWave(frequency: number, sampleRate: number, seconds: number) {
     return Math.sin(phase) * 0.4;
   });
 }
+
+describe("analysis provenance label", () => {
+  const legacy = migrateSessionRecord({
+    id: "legacy",
+    startedAt: "2026-05-19T10:00:00.000Z",
+    segments: [],
+    pauses: [],
+    report: fallbackAnalyze({ segments: [], pauses: [] }),
+  });
+
+  it("shows unknown origin and unreported versions instead of hiding them", () => {
+    expect(analysisProvenanceLabel(legacy)).toBe("Analysis origin not recorded");
+    expect(
+      analysisProvenanceLabel({
+        ...legacy,
+        analysis: {
+          ...legacy.analysis,
+          analyzer: { producer: "computeServer", algorithm: "compute-server", version: null },
+        },
+      }),
+    ).toBe("Compute-server analysis (version not reported)");
+  });
+
+  it("names the version and counts analysis runs", () => {
+    const rerun = reanalyzeSession(
+      legacy,
+      {
+        id: "run-2",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        analyzer: { producer: "onDevice", algorithm: "shared-fallback", version: "1" },
+        usedAudio: false,
+        audioId: null,
+      },
+      legacy.report,
+    );
+    expect(analysisProvenanceLabel(rerun)).toBe("On-device analysis v1 · 2 analysis runs");
+  });
+});

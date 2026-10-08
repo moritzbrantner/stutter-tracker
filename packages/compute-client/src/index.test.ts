@@ -1,8 +1,11 @@
 import { describe, expect, it } from "bun:test";
+import { fallbackAnalyze } from "@stutter-tracker/shared";
 import {
+  COMPUTE_SERVER_ANALYZER,
   type ComputeClient,
   createComputeClient,
   isLoopbackUrl,
+  ON_DEVICE_ANALYZER,
   type ProcessingPolicy,
   processingPolicyForServerUrl,
 } from "./index";
@@ -211,6 +214,28 @@ describe("processing policy", () => {
 
     expect(report).toBeDefined();
     expect(calls).toEqual(["http://127.0.0.1:8787/analysis"]);
+  });
+
+  it("reports which analyzer produced the report", async () => {
+    const failing = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(() => {
+        throw new TypeError("network down");
+      }).fetchImpl,
+    });
+    expect((await failing.analyzeSpeechSessionRun(analysisRequest)).analyzer).toEqual(
+      ON_DEVICE_ANALYZER,
+    );
+
+    const serverReport = fallbackAnalyze(analysisRequest);
+    const serving = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(() => json(serverReport, 200)).fetchImpl,
+    });
+    expect(await serving.analyzeSpeechSessionRun(analysisRequest)).toEqual({
+      report: serverReport,
+      analyzer: COMPUTE_SERVER_ANALYZER,
+    });
   });
 
   it("keeps the destination fixed for the client's lifetime", async () => {

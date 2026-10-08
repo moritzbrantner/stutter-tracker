@@ -1,3 +1,4 @@
+import { fallbackAnalyze, migrateSessionRecord } from "@stutter-tracker/shared";
 import { describe, expect, it } from "vitest";
 import {
   CONSENT_LEDGER_KEY,
@@ -6,9 +7,23 @@ import {
   REMOTE_CONSENT_KEY,
   UNREADABLE_CONSENT_LEDGER_KEY,
   loadSessionsFromStorage,
+  replaceStoredSessions,
   normalizeSpeakerProfiles,
   saveRemoteConsent,
+  STORE_KEY,
+  UNREADABLE_SESSIONS_KEY,
 } from "./localStorage";
+
+const legacySession = {
+  id: "legacy-1",
+  startedAt: "2026-09-01T08:00:00.000Z",
+  segments: [{ text: "hello", startSeconds: 0, endSeconds: 0.5, isFinal: true }],
+  pauses: [],
+  report: fallbackAnalyze({
+    segments: [{ text: "hello", startSeconds: 0, endSeconds: 0.5, isFinal: true }],
+    pauses: [],
+  }),
+};
 
 describe("local storage helpers", () => {
   it("binds remote-analysis consent to one server URL and supports revocation", () => {
@@ -126,6 +141,68 @@ describe("local storage helpers", () => {
   it("falls back safely on invalid JSON", () => {
     const storage = memoryStorage({ "stutter-tracker:sessions": "{" });
     expect(loadSessionsFromStorage(storage)).toEqual([]);
+  });
+
+  it("recovers quarantined sessions even when the primary store is corrupt, keeping its raw value", () => {
+    const storage = memoryStorage({
+      [STORE_KEY]: "{",
+      [UNREADABLE_SESSIONS_KEY]: JSON.stringify([legacySession]),
+    });
+
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
+    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([
+      { unreadableStore: "{" },
+    ]);
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
+  });
+
+  it("migrates legacy stored sessions to the canonical schema", () => {
+    const storage = memoryStorage({ [STORE_KEY]: JSON.stringify([legacySession]) });
+
+    expect(loadSessionsFromStorage(storage)).toEqual([migrateSessionRecord(legacySession)]);
+    expect(storage.getItem(UNREADABLE_SESSIONS_KEY)).toBeNull();
+  });
+
+  it("keeps unreadable stored sessions aside instead of dropping them", () => {
+    const fromNewerBuild = { ...migrateSessionRecord(legacySession), id: "new", schemaVersion: 3 };
+    const malformed = { id: "broken" };
+    const storage = memoryStorage({
+      [STORE_KEY]: JSON.stringify([legacySession, fromNewerBuild, malformed]),
+    });
+
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
+    loadSessionsFromStorage(storage);
+    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([
+      fromNewerBuild,
+      malformed,
+    ]);
+  });
+
+  it("restores quarantined sessions once readable, drops readable duplicates, keeps the rest aside", () => {
+    const recoverable = { ...legacySession, id: "recoverable" };
+    const stillUnreadable = { id: "broken" };
+    const clash = { ...legacySession };
+    const storage = memoryStorage({
+      [STORE_KEY]: JSON.stringify([legacySession]),
+      [UNREADABLE_SESSIONS_KEY]: JSON.stringify([recoverable, stillUnreadable, clash]),
+    });
+
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual([
+      "legacy-1",
+      "recoverable",
+    ]);
+    expect(
+      (JSON.parse(storage.getItem(STORE_KEY) ?? "[]") as { id: string }[]).map((s) => s.id),
+    ).toEqual(["legacy-1", "recoverable"]);
+    // The readable duplicate is dropped so it cannot come back after the visible copy is deleted.
+    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([stillUnreadable]);
+  });
+
+  it("clears quarantined sessions when a restore replaces all sessions", () => {
+    const storage = memoryStorage({ [UNREADABLE_SESSIONS_KEY]: JSON.stringify([{ id: "old" }]) });
+    replaceStoredSessions([migrateSessionRecord(legacySession)], storage);
+    expect(storage.getItem(UNREADABLE_SESSIONS_KEY)).toBeNull();
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
   });
 
   it("filters invalid speaker profile records", () => {

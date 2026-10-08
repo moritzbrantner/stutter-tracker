@@ -168,13 +168,8 @@ export type TranscriptionProgressEvent = {
   progress?: number;
 };
 
-export type SavedSession = {
-  id: string;
-  startedAt: string;
-  segments: TranscriptSegment[];
-  pauses: PauseSpan[];
-  report: AnalysisReport;
-};
+/** Saved sessions use the canonical record; `LegacySessionRecord` is only a migration input. */
+export type SavedSession = import("./sessions").SessionRecord;
 
 export type TranscribeAudioRequest = {
   samples: number[];
@@ -1105,4 +1100,5 @@ function longestRun(value: string) {
 }
 export * from "./capture";
 export * from "./outcomes";
+export * from "./sessions";
 export * from "./consent";
