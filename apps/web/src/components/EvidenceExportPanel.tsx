@@ -1,10 +1,17 @@
 import {
   buildEvidenceExport,
+  hasConsent,
+  requireConsent,
   renderEvidenceReport,
   transcriptSpeakersOf,
 } from "@stutter-tracker/shared";
 import { FileDown } from "lucide-react";
 import { useMemo, useState } from "react";
+import {
+  CONSENT_LEDGER_KEY,
+  loadConsentLedger,
+  recordConsentDecision,
+} from "../storage/localStorage";
 import type { SavedSession } from "../types";
 import { buttonClass, mutedTextClass, panelClass } from "./styles";
 
@@ -13,6 +20,14 @@ import { buttonClass, mutedTextClass, panelClass } from "./styles";
  * will be exported, then download. Nothing is sent anywhere; the file is built in memory.
  */
 export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) {
+  const [sharingAllowed, setSharingAllowed] = useState(() => {
+    try {
+      return hasConsent(loadConsentLedger(), "clinicianSharing");
+    } catch {
+      return false;
+    }
+  });
+  const [consentMessage, setConsentMessage] = useState("");
   const [open, setOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [includeTranscripts, setIncludeTranscripts] = useState(false);
@@ -48,8 +63,23 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
   const report = useMemo(() => (preview ? renderEvidenceReport(preview) : ""), [preview]);
   const data = useMemo(() => (preview ? JSON.stringify(preview, null, 2) : ""), [preview]);
   const hasSessions = (preview?.sessions.length ?? 0) > 0;
-  const buildForDownload = () =>
-    buildEvidenceExport(sessions, { ...exportOptions, exportedAt: new Date() });
+  const download = (format: "report" | "data") => {
+    try {
+      if (!sharingAllowed) return;
+      requireConsent(loadConsentLedger(), "clinicianSharing");
+      const evidence = buildEvidenceExport(sessions, { ...exportOptions, exportedAt: new Date() });
+      downloadFile(
+        format === "report" ? "speaking-evidence.txt" : "speaking-evidence.json",
+        format === "report" ? renderEvidenceReport(evidence) : JSON.stringify(evidence, null, 2),
+        format === "report" ? "text/plain" : "application/json",
+      );
+    } catch {
+      setSharingAllowed(false);
+      setConsentMessage(
+        "Sharing consent could not be confirmed. Grant consent before downloading.",
+      );
+    }
+  };
 
   const toggle = (list: string[], id: string) =>
     list.includes(id) ? list.filter((item) => item !== id) : [...list, id];
@@ -133,18 +163,33 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
             <p className={`m-0 text-sm ${mutedTextClass}`}>
               Never included: audio, voiceprints, device details and the app's severity label.
             </p>
+            <label className="flex items-center gap-2 py-1">
+              <input
+                type="checkbox"
+                checked={sharingAllowed}
+                onChange={(event) => {
+                  const granted = event.target.checked;
+                  try {
+                    recordConsentDecision({ purpose: "clinicianSharing", granted });
+                    setSharingAllowed(granted);
+                    setConsentMessage("");
+                  } catch {
+                    setSharingAllowed(false);
+                    setConsentMessage(
+                      "Sharing consent could not be saved. Download is unavailable.",
+                    );
+                  }
+                }}
+              />
+              I consent to sharing selected evidence with a clinician
+            </label>
+            {consentMessage && <p role="alert">{consentMessage}</p>}
             <div className="flex flex-wrap gap-2">
               <button
                 type="button"
                 className={buttonClass}
-                disabled={!hasSessions}
-                onClick={() =>
-                  downloadFile(
-                    "speaking-evidence.txt",
-                    renderEvidenceReport(buildForDownload()),
-                    "text/plain",
-                  )
-                }
+                disabled={!hasSessions || !sharingAllowed}
+                onClick={() => download("report")}
               >
                 <FileDown size={16} />
                 Download report
@@ -152,14 +197,8 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
               <button
                 type="button"
                 className={buttonClass}
-                disabled={!hasSessions}
-                onClick={() =>
-                  downloadFile(
-                    "speaking-evidence.json",
-                    JSON.stringify(buildForDownload(), null, 2),
-                    "application/json",
-                  )
-                }
+                disabled={!hasSessions || !sharingAllowed}
+                onClick={() => download("data")}
               >
                 <FileDown size={16} />
                 Download data

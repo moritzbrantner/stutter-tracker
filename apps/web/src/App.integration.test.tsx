@@ -386,6 +386,7 @@ describe("App integration", () => {
     expect(preview).toHaveTextContent("Shared sentence here");
     expect(preview).not.toHaveTextContent("Private sentence elsewhere");
     expect(preview).toHaveTextContent("Automated estimate (model, not a judgment)");
+    await userEvent.click(within(panel).getByRole("checkbox", { name: /I consent to sharing/ }));
     expect(within(panel).getByRole("button", { name: /Download report/ })).toBeEnabled();
 
     await userEvent.click(within(panel).getByRole("button", { name: "Data (JSON)" }));
@@ -503,4 +504,37 @@ it("reuses the data preview across parent recording renders", async () => {
   } finally {
     stringify.mockRestore();
   }
+});
+
+it("requires saved clinician-sharing consent and rechecks withdrawal before download", async () => {
+  const { EvidenceExportPanel } = await import("./components/EvidenceExportPanel");
+  const { CONSENT_LEDGER_KEY, recordConsentDecision } = await import("./storage/localStorage");
+  const { createSessionRecord } = await import("@stutter-tracker/shared");
+  localStorage.removeItem(CONSENT_LEDGER_KEY);
+  const segments = [{ text: "evidence", startSeconds: 0, endSeconds: 1, isFinal: true }];
+  const saved = createSessionRecord({
+    id: "consent-test",
+    startedAt: "2026-10-01T09:00:00Z",
+    segments,
+    pauses: [],
+    report: fallbackAnalyze({ segments, pauses: [] }),
+    run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+  });
+  render(<EvidenceExportPanel sessions={[saved]} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Choose sessions" }));
+  await user.click(screen.getAllByRole("checkbox")[0]!);
+  const button = screen.getByRole("button", { name: "Download report" });
+  expect(button).toBeDisabled();
+  await user.click(screen.getByRole("checkbox", { name: /I consent to sharing/ }));
+  expect(JSON.parse(localStorage.getItem(CONSENT_LEDGER_KEY)!)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ purpose: "clinicianSharing", granted: true }),
+    ]),
+  );
+  expect(button).toBeEnabled();
+  recordConsentDecision({ purpose: "clinicianSharing", granted: false });
+  await user.click(button);
+  expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
+  expect(button).toBeDisabled();
 });

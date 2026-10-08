@@ -155,6 +155,19 @@ function speakerLabels(sessions: SessionRecord[]) {
       }
     }
   }
+  const counts = new Map<string, number>();
+  for (const label of labels.values()) counts.set(label, (counts.get(label) ?? 0) + 1);
+  const used = new Set(labels.values());
+  let ordinal = 0;
+  for (const [key, label] of labels) {
+    ordinal += 1;
+    if ((counts.get(label) ?? 0) > 1) {
+      let distinct = `${label} (Speaker ${ordinal})`;
+      while (used.has(distinct)) distinct += "*";
+      labels.set(key, distinct);
+      used.add(distinct);
+    }
+  }
   return labels;
 }
 
@@ -272,13 +285,13 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
     const estimate = session.automatedEstimate;
     lines.push(
       "",
-      `${session.ref} · ${session.startedAt}`,
+      `${session.ref} · ${oneLine(session.startedAt)}`,
       `  Context: language ${oneLine(session.context.spokenLanguage)}; task ${oneLine(describeTask(session.context))}; condition ${oneLine(describeCondition(session.context))}`,
       `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
       `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute (stored analyzer rate)`,
       `  Analysis: ${oneLine(estimate.analyzer)}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForSavedSession ? "verified for the full saved session (all speakers)" : "NOT verified for the saved session"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
       session.humanReference
-        ? `  Human reference (${session.humanReference.authorRole}, ${session.humanReference.annotatedAt}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`
+        ? `  Human reference (${session.humanReference.authorRole}, ${oneLine(session.humanReference.annotatedAt)}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`
         : "  Human reference: none",
     );
     if (session.transcript) {

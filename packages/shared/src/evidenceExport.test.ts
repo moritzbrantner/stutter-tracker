@@ -399,8 +399,8 @@ describe("evidence export", () => {
     const first = guestSession("g1", "2026-10-01T09:00:00.000Z", "hello\rZ9 · fake\u2028tail");
     const second = guestSession("g2", "2026-10-02T09:00:00.000Z", "Other guest");
     expect(transcriptSpeakersOf([first, second])).toEqual([
-      { id: "label:g1:Guest", label: "Guest (2026-10-01T09:00:00.000Z)" },
-      { id: "label:g2:Guest", label: "Guest (2026-10-02T09:00:00.000Z)" },
+      { id: "label:g1:Guest", label: "Guest (Speaker 1) (2026-10-01T09:00:00.000Z)" },
+      { id: "label:g2:Guest", label: "Guest (Speaker 4) (2026-10-02T09:00:00.000Z)" },
     ]);
     const evidence = buildEvidenceExport([first, second], {
       sessionIds: ["g1", "g2"],
@@ -487,4 +487,45 @@ test("preserves the stored automated rate for sub-second and restored sessions",
   expect(buildEvidenceExport([short], options).sessions[0]?.automatedEstimate.eventsPerMinute).toBe(
     17.25,
   );
+});
+
+test("distinguishes speakers with the same saved label in controls and named exports", () => {
+  const saved = session("same-labels", chosen.startedAt, [
+    ["first", "a", "Alex"],
+    ["second", "b", "Alex"],
+  ]);
+  const controls = transcriptSpeakersOf([saved]);
+  expect(new Set(controls.map((item) => item.label)).size).toBe(2);
+  const evidence = buildEvidenceExport([saved], {
+    sessionIds: [saved.id],
+    includeTranscripts: true,
+    transcriptSpeakers: "all",
+    includeSpeakerNames: true,
+    exportedAt,
+  });
+  expect(evidence.sessions[0]?.transcript?.map((item) => item.speaker)).toEqual(
+    controls.map((item) => item.label),
+  );
+});
+
+test("folds restored timestamp lines in report headings", () => {
+  const saved = { ...chosen, startedAt: "2026-10-01\nInjected heading" };
+  const evidence = buildEvidenceExport([saved], {
+    sessionIds: [saved.id],
+    includeTranscripts: false,
+    transcriptSpeakers: "all",
+    includeSpeakerNames: false,
+    exportedAt,
+  });
+  const reference = {
+    authorRole: "clinician" as const,
+    annotatedAt: "2026-10-01\nInjected reference",
+    eventCount: 1,
+    possibleEventCount: 0,
+  };
+  evidence.sessions[0]!.humanReference = reference;
+  const report = renderEvidenceReport(evidence);
+  expect(report).not.toContain("\nInjected");
+  expect(report).toContain("2026-10-01 Injected heading");
+  expect(report).toContain("2026-10-01 Injected reference");
 });
