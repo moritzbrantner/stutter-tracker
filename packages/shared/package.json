@@ -17,6 +17,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "bun run test:unit",
     "test:unit": "bun test src",
+    "bench:audio-fingerprint": "bun scripts/bench-audio-fingerprint.ts",
     "format": "oxfmt --write \"src/**/*.{ts,tsx}\"",
     "format:check": "oxfmt --check \"src/**/*.{ts,tsx}\""
   },

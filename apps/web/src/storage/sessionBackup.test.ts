@@ -176,6 +176,14 @@ describe("session backup", () => {
     expect(() => parseSessionBackup({ sessions: [withTask("interview")] })).toThrow(
       "Backup session 1 is invalid.",
     );
+    const described = (description: unknown) => ({
+      ...session,
+      context: { ...session.context, task: { kind: "reading", trained: false, description } },
+    });
+    expect(parseSessionBackup({ sessions: [described("Rainbow passage")] })).toHaveLength(1);
+    expect(() => parseSessionBackup({ sessions: [described([])] })).toThrow(
+      "Backup session 1 is invalid.",
+    );
   });
 
   test("validates assisted-condition settings", () => {

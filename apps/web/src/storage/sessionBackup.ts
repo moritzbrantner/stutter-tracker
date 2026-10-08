@@ -112,7 +112,8 @@ function isSessionContext(value: unknown) {
     (value.task === null ||
       (isRecord(value.task) &&
         SPEAKING_TASK_KINDS.has(value.task.kind as string) &&
-        typeof value.task.trained === "boolean")) &&
+        typeof value.task.trained === "boolean" &&
+        (value.task.description === undefined || typeof value.task.description === "string"))) &&
     (value.condition === null ||
       (isRecord(value.condition) &&
         (value.condition.kind === "unassisted" ||

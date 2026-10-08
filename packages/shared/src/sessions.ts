@@ -194,7 +194,9 @@ export function observationFingerprint(segments: TranscriptSegment[], pauses: Pa
 
 /** Deterministic identity of analyzed PCM: sample rate plus the exact float32 sample bits. */
 export function audioFingerprint(samples: ArrayLike<number>, sampleRate: number) {
-  const bits = new Uint32Array(Float32Array.from(samples).buffer);
+  // Reuse float32 input directly; anything else is converted once.
+  const floats = samples instanceof Float32Array ? samples : Float32Array.from(samples);
+  const bits = new Uint32Array(floats.buffer, floats.byteOffset, floats.length);
   let low = Math.imul(0x811c9dc5 ^ sampleRate, 0x01000193) >>> 0;
   let high = Math.imul(0x050c5d1f ^ bits.length, 0x01000193) >>> 0;
   for (let index = 0; index < bits.length; index += 1) {

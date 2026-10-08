@@ -770,19 +770,32 @@ export function App() {
       setMessage("Session is already saved");
       return;
     }
-    const updated = reanalyzeSession(loaded, reportRun, report);
-    loadedSessionRef.current = updated;
-    persistSessions(
-      sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+    const run = reportRun;
+    const updated = reanalyzeSession(loaded, run, report);
+    // Runs after any queued deletion, so a session deleted meanwhile is never written back.
+    const outcome = await serializeSessionMutation(async () => {
+      if (!sessionsRef.current.some((candidate) => candidate.id === updated.id)) {
+        return "deleted" as const;
+      }
+      loadedSessionRef.current = updated;
+      persistSessions(
+        sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+      );
+      try {
+        setCorpusAnalysis(await saveSpeechCorpusSession(updated));
+        return "corpus" as const;
+      } catch {
+        setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+        return "local" as const;
+      }
+    });
+    setMessage(
+      outcome === "deleted"
+        ? "Session was deleted; nothing saved"
+        : outcome === "corpus"
+          ? "New analysis saved to the session"
+          : "New analysis saved locally",
     );
-    try {
-      const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(updated));
-      setCorpusAnalysis(corpus);
-      setMessage("New analysis saved to the session");
-    } catch {
-      setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
-      setMessage("New analysis saved locally");
-    }
   }
 
   async function deleteSession(session: SavedSession) {
