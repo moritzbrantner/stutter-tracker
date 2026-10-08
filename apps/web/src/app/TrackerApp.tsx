@@ -351,7 +351,12 @@ export function App() {
     // A stalled server must not block local removal forever; the load then cannot apply or
     // re-upload its snapshot once a removal has happened.
     const readyTimer = setTimeout(() => setSpeakersReady(true), SPEAKER_LOAD_GRACE_MS);
-    loadPersistedSpeakerProfiles(isStale)
+    loadPersistedSpeakerProfiles(isStale, (profiles) =>
+      queueSpeakerMutation(async () => {
+        if (isStale()) return [];
+        return savePersistedSpeakerProfiles(profiles);
+      }),
+    )
       .then((persistedSpeakers) => {
         if (!isStale()) {
           setSpeakers(persistedSpeakers);
@@ -2451,6 +2456,7 @@ function removeLocalSpeakerCopy(id: string) {
 /** `isStale` turns true after a removal, so the snapshot taken at start is not re-uploaded. */
 async function loadPersistedSpeakerProfiles(
   isStale: () => boolean = () => false,
+  migrate: (profiles: SpeakerProfile[]) => Promise<SpeakerProfile[]> = savePersistedSpeakerProfiles,
 ): Promise<SpeakerProfile[]> {
   const localSpeakers = loadSpeakerProfiles();
   if (isDesktopApp()) {
@@ -2460,7 +2466,7 @@ async function loadPersistedSpeakerProfiles(
         return normalizeSpeakerProfiles(speakers);
       }
       if (localSpeakers.length && !isStale()) {
-        return savePersistedSpeakerProfiles(localSpeakers);
+        return migrate(localSpeakers);
       }
       return [];
     } catch {
@@ -2474,7 +2480,7 @@ async function loadPersistedSpeakerProfiles(
       return normalizeSpeakerProfiles(speakers);
     }
     if (localSpeakers.length && !isStale()) {
-      return savePersistedSpeakerProfiles(localSpeakers);
+      return migrate(localSpeakers);
     }
     return [];
   } catch {

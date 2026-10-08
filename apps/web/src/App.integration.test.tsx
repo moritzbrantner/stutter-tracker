@@ -18,6 +18,8 @@ type CreateSpeaker =
 let createSpeakerHook: CreateSpeaker | null = null;
 type ListSpeakers = import("@stutter-tracker/compute-client").ComputeClient["listSpeakerProfiles"];
 let listSpeakersHook: ListSpeakers | null = null;
+type SaveSpeakers = import("@stutter-tracker/compute-client").ComputeClient["saveSpeakerProfiles"];
+let saveSpeakersHook: SaveSpeakers | null = null;
 type IdentifySpeaker = import("@stutter-tracker/compute-client").ComputeClient["identifySpeaker"];
 let identifySpeakerHook: IdentifySpeaker | null = null;
 
@@ -29,6 +31,18 @@ vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
       const client = actual.createComputeClient(...args);
       return {
         ...client,
+        get destination() {
+          return saveSpeakersHook
+            ? {
+                kind: "server" as const,
+                mode: "localCompanion" as const,
+                url: "http://localhost:4321",
+                label: "Test companion",
+              }
+            : client.destination;
+        },
+        saveSpeakerProfiles: (profiles: Parameters<SaveSpeakers>[0]) =>
+          saveSpeakersHook ? saveSpeakersHook(profiles) : client.saveSpeakerProfiles(profiles),
         analyzeSpeechSessionRun: (request: Parameters<AnalyzeRun>[0]) =>
           analysisHook ? analysisHook(request) : client.analyzeSpeechSessionRun(request),
         identifySpeaker: (request: Parameters<IdentifySpeaker>[0]) =>
@@ -69,6 +83,7 @@ afterEach(() => {
   deleteSpeakerHook = null;
   createSpeakerHook = null;
   listSpeakersHook = null;
+  saveSpeakersHook = null;
   identifySpeakerHook = null;
   localStorage.clear();
   vi.restoreAllMocks();
@@ -675,3 +690,47 @@ it("clears a match accepted immediately before queued profile removal", async ()
   ).toBeInTheDocument();
   expect(screen.queryByText(/Alex 100%/)).not.toBeInTheDocument();
 });
+
+it("finishes startup migration before deleting its voiceprint", async () => {
+  const profile = {
+    id: "migration-alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+    updatedAt: "2026-10-01T00:00:00Z",
+  };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([profile]));
+  let finishMigration: (() => void) | undefined;
+  const serverIds = new Set<string>();
+  listSpeakersHook = async () => [];
+  saveSpeakersHook = (profiles) =>
+    new Promise((resolve) => {
+      finishMigration = () => {
+        for (const saved of profiles) serverIds.add(saved.id);
+        resolve(profiles);
+      };
+    });
+  const deleted = vi.fn(async (id: string) => {
+    serverIds.delete(id);
+    return "deleted" as const;
+  });
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  await waitFor(() => expect(finishMigration).toBeDefined());
+  const remove = await screen.findByRole(
+    "button",
+    { name: "Remove speaker Alex" },
+    { timeout: 6500 },
+  );
+  fireEvent.click(remove);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(deleted).not.toHaveBeenCalled();
+  await act(async () => finishMigration?.());
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith(profile.id));
+  expect(serverIds.has(profile.id)).toBe(false);
+}, 15000);
