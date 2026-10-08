@@ -8,6 +8,14 @@ import type { SavedSession } from "../types";
 /** Version 1 held legacy session records; version 2 holds canonical session records. */
 export const SESSION_BACKUP_VERSION = 2;
 const SUPPORTED_BACKUP_VERSIONS = new Set([1, 2]);
+const SPEAKING_TASK_KINDS = new Set([
+  "reading",
+  "monologue",
+  "conversation",
+  "phoneCall",
+  "presentation",
+  "other",
+]);
 export const MAX_RESTORED_SESSIONS = 50;
 
 export type SessionBackup = {
@@ -103,7 +111,7 @@ function isSessionContext(value: unknown) {
     typeof value.spokenLanguage === "string" &&
     (value.task === null ||
       (isRecord(value.task) &&
-        typeof value.task.kind === "string" &&
+        SPEAKING_TASK_KINDS.has(value.task.kind as string) &&
         typeof value.task.trained === "boolean")) &&
     (value.condition === null ||
       (isRecord(value.condition) &&

@@ -160,6 +160,17 @@ describe("session backup", () => {
     ).toThrow("Backup session 1 is invalid.");
   });
 
+  test("accepts only declared speaking-task kinds", () => {
+    const withTask = (kind: string) => ({
+      ...session,
+      context: { ...session.context, task: { kind, trained: false } },
+    });
+    expect(parseSessionBackup({ sessions: [withTask("phoneCall")] })).toHaveLength(1);
+    expect(() => parseSessionBackup({ sessions: [withTask("interview")] })).toThrow(
+      "Backup session 1 is invalid.",
+    );
+  });
+
   test("imports nothing when any session is unreadable", () => {
     expect(() =>
       parseSessionBackup({

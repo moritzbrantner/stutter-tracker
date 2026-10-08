@@ -36,50 +36,68 @@ export function saveRemoteConsent(
   }
 }
 
-/** Loads saved sessions, migrating legacy records to the canonical schema. */
+/**
+ * Loads saved sessions, migrating legacy records to the canonical schema. Entries this build
+ * cannot read are kept under UNREADABLE_SESSIONS_KEY and retried on every load, so a later build
+ * that can read them restores them.
+ */
 export function loadSessionsFromStorage(storage: Storage = localStorage): SavedSession[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(storage.getItem(STORE_KEY) ?? "[]");
-  } catch {
-    return [];
-  }
-  if (!Array.isArray(parsed)) {
+  const stored = readJsonArray(storage, STORE_KEY);
+  const quarantined = readJsonArray(storage, UNREADABLE_SESSIONS_KEY);
+  if (!stored) {
     return [];
   }
   const sessions: SavedSession[] = [];
+  const ids = new Set<string>();
   const unreadable: unknown[] = [];
-  for (const candidate of parsed) {
+  let recovered = false;
+  for (const [candidate, fromQuarantine] of [
+    ...stored.map((entry) => [entry, false] as const),
+    ...(quarantined ?? []).map((entry) => [entry, true] as const),
+  ]) {
     let session: SavedSession | null;
     try {
       session = parseStoredSession(candidate);
     } catch {
       session = null;
     }
-    if (session) {
+    // A recovered entry whose id is already present stays quarantined rather than replacing it.
+    if (session && !ids.has(session.id)) {
+      ids.add(session.id);
       sessions.push(session);
+      recovered ||= fromQuarantine;
     } else {
       unreadable.push(candidate);
     }
   }
-  if (unreadable.length) {
-    preserveUnreadableSessions(unreadable, storage);
+  if (unreadable.length || recovered) {
+    try {
+      if (recovered) {
+        storage.setItem(STORE_KEY, JSON.stringify(sessions));
+      }
+      storage.setItem(UNREADABLE_SESSIONS_KEY, JSON.stringify(dedupe(unreadable)));
+    } catch {
+      // Storage full or unavailable: entries stay where they are until the next load.
+    }
   }
   return sessions;
 }
 
-function preserveUnreadableSessions(entries: unknown[], storage: Storage) {
+function readJsonArray(storage: Storage, key: string): unknown[] | null {
   try {
-    const existing = JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]") as unknown;
-    const kept = Array.isArray(existing) ? existing : [];
-    const seen = new Set(kept.map((entry) => JSON.stringify(entry)));
-    const added = entries.filter((entry) => !seen.has(JSON.stringify(entry)));
-    if (added.length) {
-      storage.setItem(UNREADABLE_SESSIONS_KEY, JSON.stringify([...kept, ...added]));
-    }
+    const parsed = JSON.parse(storage.getItem(key) ?? "[]") as unknown;
+    return Array.isArray(parsed) ? parsed : null;
   } catch {
-    // Storage full or unavailable: the entries stay in STORE_KEY until the next save.
+    return null;
   }
+}
+
+function dedupe(entries: unknown[]) {
+  const seen = new Set<string>();
+  return entries.filter((entry) => {
+    const key = JSON.stringify(entry);
+    return !seen.has(key) && Boolean(seen.add(key));
+  });
 }
 
 export function saveSessionsToStorage(sessions: SavedSession[], storage: Storage = localStorage) {

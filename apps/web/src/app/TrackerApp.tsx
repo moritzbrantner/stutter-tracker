@@ -12,6 +12,7 @@ import {
   createSessionRecord,
   fallbackAnalyze as sharedFallbackAnalyze,
   observationFingerprint,
+  UNKNOWN_INPUT_ID,
   audioFingerprint,
   resampleSamples as sharedResampleSamples,
 } from "@stutter-tracker/shared";
@@ -724,6 +725,8 @@ export function App() {
         analyzer: null,
         usedAudio: null,
         audioId: null,
+        // Saved before any analysis finished: the report was not computed from this observation.
+        inputId: UNKNOWN_INPUT_ID,
       },
       context: {
         spokenLanguage: canonicalSpokenLanguage(sessionLanguageRef.current),

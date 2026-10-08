@@ -58,6 +58,28 @@ describe("local storage helpers", () => {
     ]);
   });
 
+  it("restores quarantined sessions once they can be read, keeping the rest aside", () => {
+    const recoverable = { ...legacySession, id: "recoverable" };
+    const stillUnreadable = { id: "broken" };
+    const clash = { ...legacySession };
+    const storage = memoryStorage({
+      [STORE_KEY]: JSON.stringify([legacySession]),
+      [UNREADABLE_SESSIONS_KEY]: JSON.stringify([recoverable, stillUnreadable, clash]),
+    });
+
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual([
+      "legacy-1",
+      "recoverable",
+    ]);
+    expect(
+      (JSON.parse(storage.getItem(STORE_KEY) ?? "[]") as { id: string }[]).map((s) => s.id),
+    ).toEqual(["legacy-1", "recoverable"]);
+    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([
+      stillUnreadable,
+      clash,
+    ]);
+  });
+
   it("filters invalid speaker profile records", () => {
     expect(
       normalizeSpeakerProfiles([

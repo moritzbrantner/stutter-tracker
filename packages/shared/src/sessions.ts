@@ -73,6 +73,9 @@ export type LegacySessionRecord = {
   report: AnalysisReport;
 };
 
+/** `inputId` of a run whose analyzed input is not known (e.g. saved before analysis finished). */
+export const UNKNOWN_INPUT_ID = "unknown";
+
 export const UNKNOWN_SESSION_CONTEXT: SessionContext = {
   spokenLanguage: UNKNOWN_SPOKEN_LANGUAGE,
   task: null,
