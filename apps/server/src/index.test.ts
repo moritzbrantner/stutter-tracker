@@ -271,6 +271,26 @@ describe("worker route timeouts", () => {
 });
 
 describe("speaker deletion", () => {
+  it("deletes using the original ID after PUT canonicalizes it", async () => {
+    const dir = await tempDir();
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: createSpeakerStore({ filePath: join(dir, "speakers.json") }),
+      nativeWorker: fakeWorker(),
+    });
+    for (const originalId of ["  original  ", "a".repeat(130)]) {
+      await putSpeakers(handler, [speaker(originalId, "Alex")]);
+      const response = await handler(
+        new Request(`http://server/speakers?id=${encodeURIComponent(originalId)}`, {
+          method: "DELETE",
+        }),
+      );
+      expect(response.status).toBe(200);
+      const listed = await handler(new Request("http://server/speakers"));
+      expect((await responseJson<{ speakers: SpeakerProfile[] }>(listed)).speakers).toEqual([]);
+    }
+  });
+
   it("erases a malformed file store through delete-all", async () => {
     const dir = await tempDir();
     const filePath = join(dir, "speakers.json");

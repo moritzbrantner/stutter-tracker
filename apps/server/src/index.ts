@@ -25,6 +25,7 @@ import {
 import { createNativeWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 import {
+  normalizeSpeakerProfileId,
   validateAnalyzeSpeechRequest,
   validateCreateSpeakerProfileRequest,
   validateDownloadModelRequest,
@@ -100,8 +101,10 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
       // The id travels as a query parameter: as a path segment, ids such as "." or ".." would be
       // normalized away by URL parsing. Deleting everything needs an explicit all=1.
       if (request.method === "DELETE" && url.pathname === "/speakers") {
-        const id = url.searchParams.get("id");
-        if (id !== null && id !== "") {
+        const originalId = url.searchParams.get("id");
+        if (originalId !== null && originalId !== "") {
+          const id = normalizeSpeakerProfileId(originalId);
+          if (!id) throw new HttpError("invalid_request", "speaker id must not be blank", 400);
           if (!(await deps.speakerStore.delete(id))) {
             // A specific code, so clients can tell a missing profile from a missing route.
             return errorResponse("speaker_not_found", "speaker profile not found", 404, cors);
