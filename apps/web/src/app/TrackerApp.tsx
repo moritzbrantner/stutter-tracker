@@ -22,6 +22,7 @@ import {
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
+import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
 import { InsightsSidebar } from "../components/InsightsSidebar";
 import { LowerDashboard } from "../components/LowerDashboard";
 import { RecordingWorkspace } from "../components/RecordingWorkspace";
@@ -1576,6 +1577,7 @@ export function App() {
         onSessionReanalyze={(session) => void reanalyzeSavedSession(session)}
         reanalyzingSessionIds={reanalyzingSessionIds}
       />
+      <EvidenceExportPanel sessions={sessions} />
     </main>
   );
 }
