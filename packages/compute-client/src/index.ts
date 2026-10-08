@@ -218,6 +218,7 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
         redirect: "error",
         method: "DELETE",
         headers,
+        signal: AbortSignal.timeout(10_000),
       });
       if (response.status === 404) {
         // Only the endpoint's own answer means "already gone"; an older server without the route

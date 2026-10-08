@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
 import {
   COMPUTE_SERVER_ANALYZER,
@@ -174,6 +174,35 @@ function countingFetch(respond: () => Response | Promise<Response> = () => json(
 }
 
 describe("processing policy", () => {
+  it("cancels a speaker deletion when the server never responds", async () => {
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) =>
+      originalTimeout(Math.min(milliseconds, 5)),
+    );
+    const stalledFetch = Object.assign(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) {
+            reject(new Error("Request has no cancellation signal"));
+            return;
+          }
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      { preconnect: fetch.preconnect },
+    );
+    const request = spyOn(globalThis, "fetch").mockImplementation(stalledFetch);
+    try {
+      const client = createComputeClient({
+        processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      });
+      await expect(client.deleteSpeakerProfile("a")).rejects.toHaveProperty("name", "TimeoutError");
+    } finally {
+      request.mockRestore();
+      timeout.mockRestore();
+    }
+  });
+
   const blockedPolicies: Array<[string, ProcessingPolicy | undefined]> = [
     ["default (no policy)", undefined],
     ["on-device", { mode: "onDevice" }],

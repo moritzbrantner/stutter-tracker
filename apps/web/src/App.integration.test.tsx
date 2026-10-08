@@ -1107,8 +1107,16 @@ it("keeps a re-enrolled native ID visible after another removal refresh", async 
   const blair = { ...alex, id: "blair", label: "Blair" };
   let native = [alex, blair];
   let saves = 0;
+  let loads = 0;
+  let finishRefresh: ((profiles: typeof native) => void) | undefined;
   const invoke = vi.spyOn(tauriCore, "invoke").mockImplementation(async (command) => {
-    if (command === "load_speaker_profiles") return native;
+    if (command === "load_speaker_profiles") {
+      if (++loads === 2)
+        return new Promise((resolve) => {
+          finishRefresh = resolve;
+        });
+      return native;
+    }
     if (command === "create_speaker_profile") return alex;
     if (command === "save_speaker_profiles") {
       native = ++saves === 1 ? [blair] : saves === 2 ? [blair, alex] : [alex];
@@ -1126,6 +1134,7 @@ it("keeps a re-enrolled native ID visible after another removal refresh", async 
   renderApp();
   fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
   await waitFor(() => expect(saves).toBe(1));
+  await waitFor(() => expect(finishRefresh).toBeDefined());
   await userEvent.click(screen.getByRole("button", { name: /record/i }));
   act(() => {
     capture!.onSamples(new Float32Array(16000));
@@ -1134,6 +1143,10 @@ it("keeps a re-enrolled native ID visible after another removal refresh", async 
   await userEvent.click(screen.getAllByRole("button", { name: "Enroll" }).at(-1)!);
   expect(await screen.findByText("Alex enrolled")).toBeInTheDocument();
   expect(invoke).toHaveBeenCalledWith("save_speaker_profiles", { speakers: [blair, alex] });
+  await act(async () => {
+    finishRefresh?.([blair]);
+  });
+  expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: "Remove speaker Blair" }));
   await waitFor(() => expect(saves).toBe(3));
   await act(async () => {

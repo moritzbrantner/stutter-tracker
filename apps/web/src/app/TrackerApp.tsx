@@ -146,6 +146,7 @@ export function App() {
   const [speakersReady, setSpeakersReady] = useState(false);
   // Counts removals, so a slow startup load can tell its snapshot is stale.
   const speakerRemovalsRef = useRef(0);
+  const speakerEnrollmentsRef = useRef(0);
   const removedSpeakerIdsRef = useRef(new Set<string>());
   const reloadSpeakersRef = useRef<(() => void) | null>(null);
   const speakerMutationTailRef = useRef<Promise<unknown>>(Promise.resolve());
@@ -358,8 +359,12 @@ export function App() {
     const hydrate = (fallbackToLocal = false) => {
       const request = ++latestRequest;
       const removalsAtStart = speakerRemovalsRef.current;
+      const enrollmentsAtStart = speakerEnrollmentsRef.current;
       const isStale = () =>
-        cancelled || request !== latestRequest || speakerRemovalsRef.current !== removalsAtStart;
+        cancelled ||
+        request !== latestRequest ||
+        speakerRemovalsRef.current !== removalsAtStart ||
+        speakerEnrollmentsRef.current !== enrollmentsAtStart;
       loadPersistedSpeakerProfiles(
         isStale,
         (profiles) =>
@@ -855,6 +860,7 @@ export function App() {
               )
             : [...latest, result];
         const saved = await savePersistedSpeakerProfiles(next);
+        speakerEnrollmentsRef.current += 1;
         if (saved.some((speaker) => speaker.id === result.id)) {
           removedSpeakerIdsRef.current.delete(result.id);
         }
