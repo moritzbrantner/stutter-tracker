@@ -37,4 +37,36 @@ bun run benchmark:stutter
 
 The hosted `Stutter benchmark contract` only checks formatting, ownership, and the benchmark entry point because the Rust application intentionally depends on the local-only capability graph. `coding-tooling pr integrate 3` remains the authoritative source-aware merge gate.
 
+## Corpus evaluation
+
+`bun run benchmark:stutter` runs the fast contract tests, including a synthetic end-to-end corpus fixture. Real evaluation is a separate command that reads corpus files you already have locally:
+
+```bash
+bash scripts/source-deps activate
+bun run benchmark:stutter:corpus -- \
+  --labels /path/to/SEP-28k_labels.csv \
+  --clips /path/to/clips \
+  [--speakers /path/to/verified-speakers.csv] \
+  [--vote-threshold 2] [--limit N] [--out report.json]
+```
+
+- `--clips` uses the layout written by the dataset's download script: `<clips>/<Show>/<EpId>/<Show>_<EpId>_<ClipId>.wav`.
+- `--speakers` is a verified mapping with the columns `clipId,speakerId`, where clip ids are `Show:EpId:ClipId` (for example from SEP-28k-E). The held-out metrics are speaker-exclusive only when every scored clip has a verified speaker; otherwise the report says why they are not.
+- The report records the label-file and mapping SHA-256, the detector configuration, row and exclusion counts, missing and unreadable clips, per-kind prevalence, metrics over all scored clips and the held-out partition, and its limitations. Duplicate clip ids or mapping entries fail the run.
+- The detector receives clip audio only. SEP-28k has no transcripts, so transcript-based detections cannot fire in this configuration; a transcript-assisted configuration is a separate experiment.
+- Nothing is downloaded. Corpus audio and reports derived from it are never committed.
+
+## Dataset card: SEP-28k
+
+| Field | Value |
+| --- | --- |
+| Source | [apple/ml-stuttering-events-dataset](https://github.com/apple/ml-stuttering-events-dataset) ([paper](https://arxiv.org/abs/2102.12394)) |
+| Annotation license | CC BY-NC 4.0 (per the dataset owner) |
+| Audio rights | Podcast audio copyright stays with its owners; access to clips is not a licence for redistribution, commercial use or every training use |
+| Permitted use here | Personal, non-commercial research evaluation of this project's detector. Any commercial, redistribution or training use needs its own rights review first |
+| Labels | Clip-level (3 s) votes by three trained non-clinician annotators; a research annotation, not a clinician-adjudicated reference |
+| Language and context | English podcast speech |
+| Speaker identity | Not reliable in the original table; use a verified mapping such as SEP-28k-E for speaker-exclusive results ([speaker partitioning study](https://arxiv.org/abs/2206.03400)) |
+| Limitations | No event timing; noisy and ambiguous clips are excluded by flag and counted in the report |
+
 Runtime profiling is separate. `runtime-profiler` owns process/runtime evidence; this benchmark owns correctness semantics.
