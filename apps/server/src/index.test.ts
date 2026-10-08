@@ -1,11 +1,11 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, mock } from "bun:test";
 import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { SpeakerProfile, TranscribeAudioRequest } from "@stutter-tracker/shared";
 import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
-import { createComputeRequestHandler } from "./index";
+import { createComputeRequestHandler, withWorkerRouteTimeouts } from "./index";
 import { createNativeWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 
@@ -142,6 +142,70 @@ describe("request gates", () => {
     expect((await responseJson<{ error: { code: string } }>(response)).error.code).toBe(
       "request_too_large",
     );
+  });
+});
+
+describe("streamed body limits", () => {
+  it("stops reading an endless chunked JSON body once it exceeds the limit", async () => {
+    const handler = createComputeRequestHandler({
+      config: localConfig({ maxBodyBytes: 1024 }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: fakeWorker(),
+    });
+    const response = await handler(
+      new Request("http://server/analysis", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chunkedBody(Number.POSITIVE_INFINITY, 512),
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    expect(response.status).toBe(413);
+  });
+
+  it("bounds the whole multipart body, not just the audio part", async () => {
+    const handler = createComputeRequestHandler({
+      config: localConfig({ maxAudioBytes: 1024 }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: fakeWorker(),
+    });
+    const form = new FormData();
+    form.append("audio", new File(["audio"], "input.wav", { type: "audio/wav" }));
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    form.append("padding", "x".repeat(256 * 1024));
+    const multipart = new Response(form);
+    const response = await handler(
+      new Request("http://server/transcriptions/file", {
+        method: "POST",
+        headers: { "content-type": multipart.headers.get("content-type") ?? "" },
+        body: multipart.body,
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    expect(response.status).toBe(413);
+  });
+});
+
+describe("worker route timeouts", () => {
+  it("disables the listener idle timeout only for worker routes", async () => {
+    const timeout = mock((_request: Request, _seconds: number) => undefined);
+    const fetch = withWorkerRouteTimeouts(async () => new Response("ok"));
+
+    await fetch(new Request("http://server/transcriptions/file", { method: "POST" }), { timeout });
+    await fetch(new Request("http://server/transcriptions/models/download", { method: "POST" }), {
+      timeout,
+    });
+    await fetch(new Request("http://server/analysis", { method: "POST" }), { timeout });
+    await fetch(new Request("http://server/health"), { timeout });
+
+    expect(timeout.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual([
+      "/transcriptions/file",
+      "/transcriptions/models/download",
+    ]);
+    expect(timeout.mock.calls.every(([, seconds]) => seconds === 0)).toBe(true);
   });
 });
 
@@ -427,6 +491,22 @@ describe("native worker process", () => {
     expect(await readdir(dir)).not.toContain("finished");
   });
 
+  it("holds a cancelled job until a worker that ignores SIGTERM has been killed", async () => {
+    const dir = await tempDir();
+    const worker = createNativeWorker(
+      localConfig({
+        nativeWorker: await workerScript(dir, `trap '' TERM; while :; do sleep 0.1; done`),
+      }),
+    );
+    const controller = new AbortController();
+    const pending = worker.transcriptionModels("whisperCpp", controller.signal);
+    setTimeout(() => controller.abort(), 50);
+
+    const started = Date.now();
+    await expect(pending).rejects.toMatchObject({ code: "request_cancelled" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
+  });
+
   it("does not echo worker stderr to public-ready clients", async () => {
     const dir = await tempDir();
     const script = await workerScript(
@@ -444,6 +524,20 @@ describe("native worker process", () => {
     ).rejects.toMatchObject({ message: "native transcription worker failed" });
   });
 });
+
+function chunkedBody(chunks: number, size: number) {
+  let sent = 0;
+  return new ReadableStream<Uint8Array>({
+    pull(controller) {
+      if (sent === chunks) {
+        controller.close();
+        return;
+      }
+      sent += 1;
+      controller.enqueue(new TextEncoder().encode(" ".repeat(size)));
+    },
+  });
+}
 
 async function workerScript(dir: string, body: string) {
   const path = join(dir, "worker.sh");

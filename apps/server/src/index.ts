@@ -8,6 +8,7 @@ import {
   fallbackEmbedding,
   staticModelStatuses,
 } from "@stutter-tracker/shared";
+import type { Server } from "bun";
 import { timingSafeEqual } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
@@ -32,8 +33,6 @@ import {
   validateTranscribeAudioFileForm,
   validateTranscriptionModelsRequest,
 } from "./validation";
-
-const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
 
 export type ComputeServerDeps = {
   config: ServerConfig;
@@ -175,6 +174,27 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
   };
 }
 
+const WORKER_ROUTES = new Set([
+  "/transcriptions",
+  "/transcriptions/file",
+  "/transcriptions/models",
+  "/transcriptions/models/download",
+]);
+
+/**
+ * Bun closes a connection that sends no response bytes for `idleTimeout` (10 s by default) and
+ * aborts `request.signal`. Worker routes run for minutes and are bounded by the worker's own
+ * timeouts, so they opt out; a real client disconnect still aborts the signal.
+ */
+export function withWorkerRouteTimeouts(handler: (request: Request) => Promise<Response>) {
+  return (request: Request, server: Pick<Server<unknown>, "timeout">) => {
+    if (request.method === "POST" && WORKER_ROUTES.has(new URL(request.url).pathname)) {
+      server.timeout(request, 0);
+    }
+    return handler(request);
+  };
+}
+
 // Every route that spawns a native worker shares one bound, so a client cannot queue
 // unbounded processes; excess requests fail fast instead of waiting.
 function createJobLimiter(maxConcurrentJobs: number) {
@@ -212,10 +232,9 @@ export function startComputeServer(config = parseServerConfig()) {
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
-    // Reject oversized bodies while streaming, before the handler buffers them.
-    maxRequestBodySize:
-      Math.max(config.maxBodyBytes, config.maxAudioBytes) + MULTIPART_OVERHEAD_BYTES,
-    fetch: createComputeRequestHandler({ config, speakerStore, nativeWorker }),
+    fetch: withWorkerRouteTimeouts(
+      createComputeRequestHandler({ config, speakerStore, nativeWorker }),
+    ),
   });
   console.log(`stutter-tracker compute server listening on http://${config.host}:${server.port}`);
   if (!config.databaseUrl) {

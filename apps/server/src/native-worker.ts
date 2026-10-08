@@ -59,6 +59,8 @@ type WorkerCommand =
       request: TranscribeAudioFileRequest;
     };
 
+const WORKER_KILL_GRACE_MS = 2_000;
+
 const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export function createNativeWorker(config: ServerConfig): NativeWorker {
@@ -107,26 +109,35 @@ async function runWorker<T>(
       : command.command === "download-transcription-model"
         ? 60 * 60 * 1000
         : 10 * 1000;
-  const timeout = new Promise<never>((_, reject) => {
-    const timer = setTimeout(() => {
-      process.kill();
-      reject(
-        new HttpError("native_worker_unavailable", "native transcription worker timed out", 503),
-      );
-    }, timeoutMs);
-    process.exited.finally(() => clearTimeout(timer));
-  });
-  const cancelled = new Promise<never>((_, reject) => {
-    if (!signal) {
+  // A terminated job settles only once the process has exited, so the caller's job slot stays
+  // held until then; SIGKILL follows if the worker ignores SIGTERM.
+  let terminationError: HttpError | null = null;
+  const terminate = (error: HttpError) => {
+    if (terminationError) {
       return;
     }
-    const onAbort = () => {
-      process.kill();
-      reject(cancelledError());
-    };
-    signal.addEventListener("abort", onAbort, { once: true });
-    process.exited.finally(() => signal.removeEventListener("abort", onAbort));
+    terminationError = error;
+    process.kill();
+    const forceKill = setTimeout(() => process.kill("SIGKILL"), WORKER_KILL_GRACE_MS);
+    void process.exited.finally(() => clearTimeout(forceKill));
+  };
+  const timer = setTimeout(
+    () =>
+      terminate(
+        new HttpError("native_worker_unavailable", "native transcription worker timed out", 503),
+      ),
+    timeoutMs,
+  );
+  const onAbort = () => terminate(cancelledError());
+  signal?.addEventListener("abort", onAbort, { once: true });
+  void process.exited.finally(() => {
+    clearTimeout(timer);
+    signal?.removeEventListener("abort", onAbort);
   });
+  // Output pipes can outlive a killed worker (grandchildren), so termination settles on exit.
+  const terminated = process.exited.then(() =>
+    terminationError ? Promise.reject(terminationError) : new Promise<never>(() => undefined),
+  );
 
   const result = await Promise.race([
     Promise.all([
@@ -134,9 +145,11 @@ async function runWorker<T>(
       new Response(process.stderr).text(),
       process.exited,
     ]),
-    timeout,
-    cancelled,
+    terminated,
   ]);
+  if (terminationError) {
+    throw terminationError;
+  }
   const [stdout, stderr, exitCode] = result;
   if (exitCode !== 0) {
     const isTranscription =
