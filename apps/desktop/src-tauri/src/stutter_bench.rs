@@ -44,6 +44,8 @@ pub(crate) enum BenchmarkError {
     DuplicateClip(String),
     #[error("speaker mapping lists clip `{0}` more than once")]
     DuplicateSpeakerMapping(String),
+    #[error("labels contain no clip rows")]
+    EmptyManifest,
     #[error("labels are missing required SEP-28k column `{0}`")]
     MissingColumn(&'static str),
     #[error("clip `{clip_id}` has invalid {column} value `{value}` (expected 0-3)")]
@@ -547,12 +549,19 @@ pub(crate) fn run_sep28k_corpus(
     let mut missing = Vec::new();
     let mut unreadable = Vec::new();
     let mut clips = Vec::new();
-    if let Some(header) = rows.first() {
-        for column in SEP28K_REQUIRED_COLUMNS {
-            if !header.contains_key(column) {
-                return Err(BenchmarkError::MissingColumn(column));
-            }
+    // The header is checked on its own so an empty or header-only manifest cannot pass.
+    let header = labels
+        .lines()
+        .find(|line| !line.trim().is_empty())
+        .map(|line| line.split(',').map(str::trim).collect::<HashSet<_>>())
+        .unwrap_or_default();
+    for column in SEP28K_REQUIRED_COLUMNS {
+        if !header.contains(column) {
+            return Err(BenchmarkError::MissingColumn(column));
         }
+    }
+    if rows.is_empty() {
+        return Err(BenchmarkError::EmptyManifest);
     }
     for row in rows.iter().take(options.limit.unwrap_or(usize::MAX)) {
         counts.processed_rows += 1;
@@ -1344,6 +1353,21 @@ mod tests {
         assert!(matches!(
             run_sep28k_corpus(&corpus.options(short, None)),
             Err(BenchmarkError::Csv { .. })
+        ));
+    }
+
+    #[test]
+    fn corpus_runner_rejects_empty_and_header_only_manifests() {
+        let corpus = FixtureCorpus::new("empty-manifest");
+        let empty = corpus.root.join("empty.csv");
+        std::fs::write(&empty, "").unwrap();
+        assert!(matches!(
+            run_sep28k_corpus(&corpus.options(empty, None)),
+            Err(BenchmarkError::MissingColumn("Show"))
+        ));
+        assert!(matches!(
+            run_sep28k_corpus(&corpus.options(corpus.labels(&[]), None)),
+            Err(BenchmarkError::EmptyManifest)
         ));
     }
 
