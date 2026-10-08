@@ -46,6 +46,8 @@ pub(crate) enum BenchmarkError {
     DuplicateSpeakerMapping(String),
     #[error("labels contain no clip rows")]
     EmptyManifest,
+    #[error("the row limit must be at least 1")]
+    ZeroLimit,
     #[error("labels are missing required SEP-28k column `{0}`")]
     MissingColumn(&'static str),
     #[error("clip `{clip_id}` has invalid {column} value `{value}` (expected 0-3)")]
@@ -529,6 +531,9 @@ enum PartitionSummary {
 pub(crate) fn run_sep28k_corpus(
     options: &CorpusRunOptions,
 ) -> Result<CorpusRunReport, BenchmarkError> {
+    if options.limit == Some(0) {
+        return Err(BenchmarkError::ZeroLimit);
+    }
     let labels = read_file(&options.labels_csv)?;
     let rows = parse_csv(&labels, &options.labels_csv)?;
     let speaker_file = options
@@ -1389,6 +1394,11 @@ mod tests {
         assert_eq!(report.counts.rows, 5);
         assert_eq!(report.counts.processed_rows, 2);
         assert_eq!(report.counts.scored, 2);
+        options.limit = Some(0);
+        assert!(matches!(
+            run_sep28k_corpus(&options),
+            Err(BenchmarkError::ZeroLimit)
+        ));
     }
 
     #[test]

@@ -57,8 +57,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
             "--limit" => {
                 limit = Some(
                     value()?
-                        .parse()
-                        .map_err(|_| "--limit must be a positive integer".to_owned())?,
+                        .parse::<usize>()
+                        .ok()
+                        .filter(|limit| *limit > 0)
+                        .ok_or_else(|| "--limit must be a positive integer".to_owned())?,
                 )
             }
             "--out" => out = Some(PathBuf::from(value()?)),
