@@ -36,6 +36,8 @@ export type EvidenceSession = {
     task: string;
     /** Whether the task was practised; untrained tasks measure transfer. Null when not recorded. */
     trainedTask: boolean | null;
+    /** The recorded task description, if any (e.g. what "other" means). */
+    taskDescription: string | null;
     /** "unassisted", "assisted", or "not recorded". */
     condition: string;
     aid: string | null;
@@ -119,9 +121,21 @@ export function buildEvidenceExport(
   const selected = sessions
     .filter((session) => options.sessionIds.includes(session.id))
     .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
+  // One display name per speaker, resolved before mapping, so a speaker whose label appears on
+  // only some segments is not split into two.
+  const labels = new Map<string, string>();
+  for (const session of selected) {
+    for (const segment of session.segments) {
+      const key = speakerKey(segment);
+      if (segment.speakerLabel && !labels.has(key)) {
+        labels.set(key, segment.speakerLabel);
+      }
+    }
+  }
   const pseudonyms = new Map<string, string>();
-  const speakerName = (id: string, label: string | undefined) => {
+  const speakerName = (id: string) => {
     // A missing label still needs a distinct name, or separate speakers would merge.
+    const label = labels.get(id);
     if (options.includeSpeakerNames && label) {
       return label;
     }
@@ -156,6 +170,7 @@ export function buildEvidenceExport(
           spokenLanguage: session.context.spokenLanguage,
           task: session.context.task?.kind ?? "not recorded",
           trainedTask: session.context.task?.trained ?? null,
+          taskDescription: session.context.task?.description ?? null,
           condition: condition?.kind ?? "not recorded",
           aid: condition?.kind === "assisted" ? condition.aidId : null,
           aidSettings: condition?.kind === "assisted" ? { ...(condition.settings ?? {}) } : null,
@@ -189,7 +204,7 @@ export function buildEvidenceExport(
               options.transcriptSpeakers.includes(speakerKey(segment)),
           )
           .map((segment) => ({
-            speaker: speakerName(speakerKey(segment), segment.speakerLabel),
+            speaker: speakerName(speakerKey(segment)),
             startSeconds: segment.startSeconds,
             endSeconds: segment.endSeconds,
             text: segment.text.trim(),
@@ -247,10 +262,11 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
 }
 
 function describeTask(context: EvidenceSession["context"]) {
-  if (context.trainedTask === null) {
-    return context.task;
-  }
-  return `${context.task} (${context.trainedTask ? "practised" : "not practised"})`;
+  const details = [
+    context.taskDescription ? `"${oneLine(context.taskDescription)}"` : null,
+    context.trainedTask === null ? null : context.trainedTask ? "practised" : "not practised",
+  ].filter(Boolean);
+  return details.length ? `${context.task} (${details.join(", ")})` : context.task;
 }
 
 function describeCondition(context: EvidenceSession["context"]) {

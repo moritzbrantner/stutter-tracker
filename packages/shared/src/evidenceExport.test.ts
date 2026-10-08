@@ -290,4 +290,45 @@ describe("evidence export", () => {
     expect(report).toContain("    [2.0s] Robin: hello\n      S2 · fake metric");
     expect(report.split("\n").some((line) => line.startsWith("S2 ·"))).toBe(false);
   });
+
+  test("keeps one name per speaker when labels are sparse and exports task descriptions", () => {
+    const sparse = createSessionRecord({
+      id: "sp",
+      startedAt: "2026-10-01T09:00:00.000Z",
+      segments: [
+        { text: "One", startSeconds: 0, endSeconds: 1, isFinal: true, speakerId: "me" },
+        {
+          text: "Two",
+          startSeconds: 1,
+          endSeconds: 2,
+          isFinal: true,
+          speakerId: "me",
+          speakerLabel: "Robin",
+        },
+      ],
+      pauses: [],
+      report: fallbackAnalyze({ segments: [], pauses: [] }),
+      run: { id: "r", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+      context: {
+        spokenLanguage: "en",
+        task: { kind: "other", trained: false, description: "Ordering at a cafe" },
+        condition: null,
+      },
+    });
+    const evidence = buildEvidenceExport([sparse], {
+      sessionIds: ["sp"],
+      includeTranscripts: true,
+      transcriptSpeakers: "all",
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    expect(evidence.sessions[0].transcript?.map((line) => line.speaker)).toEqual([
+      "Robin",
+      "Robin",
+    ]);
+    expect(evidence.sessions[0].context.taskDescription).toBe("Ordering at a cafe");
+    expect(renderEvidenceReport(evidence)).toContain(
+      'task other ("Ordering at a cafe", not practised)',
+    );
+  });
 });
