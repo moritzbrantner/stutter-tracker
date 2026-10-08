@@ -145,6 +145,9 @@ export function App() {
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
   const [isFinishingCapture, setIsFinishingCapture] = useState(false);
+  // Bumped when a capture finishes, so the final audio (which can grow after the last transcript
+  // update) gets its own analysis before the session can be saved.
+  const [captureRevision, setCaptureRevision] = useState(0);
   const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isEnrolling, setIsEnrolling] = useState(false);
@@ -206,7 +209,9 @@ export function App() {
       sessionStartedAt: startedAtRef.current?.toISOString(),
       ...audio,
     };
-  }, [segments, pauses]);
+    // captureRevision is a deliberate trigger: samplesRef is a ref and not a dependency itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments, pauses, captureRevision]);
 
   const analysisQuery = useQuery({
     queryKey: ["analysis", analysisRequest],
@@ -643,6 +648,7 @@ export function App() {
       await finishCapture();
     } finally {
       setIsFinishingCapture(false);
+      setCaptureRevision((revision) => revision + 1);
     }
   }
 
@@ -788,7 +794,9 @@ export function App() {
     if (
       !viewedSessionRef.current &&
       (isAnalyzing ||
-        (reportRun !== null && reportRun.inputId !== observationFingerprint(segments, pauses)))
+        (reportRun !== null &&
+          (reportRun.inputId !== observationFingerprint(segments, pauses) ||
+            reportRun.audioId !== currentAudioId())))
     ) {
       setMessage("Analysis is still updating; save again in a moment");
       return;
@@ -842,6 +850,14 @@ export function App() {
       setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
       setMessage("Session saved locally");
     }
+  }
+
+  // Fingerprint of the audio an analysis of the workspace would use now (null without audio).
+  function currentAudioId() {
+    const audio = analysisAudioPayload(samplesRef.current, sampleRateRef.current);
+    return audio.samples && audio.sampleRate
+      ? audioFingerprint(audio.samples, audio.sampleRate)
+      : null;
   }
 
   // Saving the session already on screen never creates a copy: either it is unchanged, or a new
