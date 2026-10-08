@@ -61,13 +61,16 @@ export function loadSessionsFromStorage(storage: Storage = localStorage): SavedS
     } catch {
       session = null;
     }
-    // A recovered entry whose id is already present stays quarantined rather than replacing it.
-    if (session && !ids.has(session.id)) {
+    if (!session) {
+      unreadable.push(candidate);
+    } else if (!ids.has(session.id)) {
       ids.add(session.id);
       sessions.push(session);
       recovered ||= fromQuarantine;
     } else {
-      unreadable.push(candidate);
+      // A readable duplicate of a visible session is dropped; kept, it would reappear after that
+      // session is deleted.
+      recovered = true;
     }
   }
   if (unreadable.length || recovered) {

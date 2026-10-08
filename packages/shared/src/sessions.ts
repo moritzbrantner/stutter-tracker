@@ -137,7 +137,8 @@ export function migrateSessionRecord(record: LegacySessionRecord | SessionRecord
       id: `${record.id}:legacy`,
       createdAt: null,
       analyzer: null,
-      inputId: observationFingerprint(record.segments, record.pauses),
+      // Legacy records never stored which observation produced their report.
+      inputId: UNKNOWN_INPUT_ID,
       usedAudio: null,
       audioId: null,
     },

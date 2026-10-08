@@ -136,6 +136,13 @@ describe("session backup", () => {
         sessions: [{ ...session, recordings: [{ ...recording, sessionId: "other-session" }] }],
       }),
     ).toThrow("Backup session 1 is invalid.");
+    for (const broken of [{ sampleRate: 0 }, { channelCount: 0 }, { channelCount: 1.5 }]) {
+      expect(() =>
+        parseSessionBackup({
+          sessions: [{ ...session, recordings: [{ ...recording, ...broken }] }],
+        }),
+      ).toThrow("Backup session 1 is invalid.");
+    }
     const { discontinuities: _dropped, ...partial } = recording;
     expect(() => parseSessionBackup({ sessions: [{ ...session, recordings: [partial] }] })).toThrow(
       "Backup session 1 is invalid.",

@@ -130,8 +130,10 @@ function isRecordingDescriptor(value: unknown) {
       value.origin === "desktop" ||
       value.origin === "import") &&
     (value.role === "appInput" || value.role === "interventionOutput") &&
-    isNonNegativeNumber(value.sampleRate) &&
-    isNonNegativeNumber(value.channelCount) &&
+    isFiniteNumber(value.sampleRate) &&
+    value.sampleRate > 0 &&
+    Number.isInteger(value.channelCount) &&
+    (value.channelCount as number) > 0 &&
     isOptionalString(value.deviceRoute) &&
     isFiniteNumber(value.startOffsetSeconds) &&
     isRecord(value.preprocessing) &&

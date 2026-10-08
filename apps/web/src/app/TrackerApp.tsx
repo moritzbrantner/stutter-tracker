@@ -10,6 +10,7 @@ import {
   type AnalyzerIdentity,
   canonicalSpokenLanguage,
   createSessionRecord,
+  reanalyzeSession,
   fallbackAnalyze as sharedFallbackAnalyze,
   observationFingerprint,
   UNKNOWN_INPUT_ID,
@@ -174,6 +175,8 @@ export function App() {
   // Language of the session in the workspace, fixed when recording starts or a session loads; the
   // selector can change before Save without relabelling the finished recording.
   const sessionLanguageRef = useRef<string | null>(null);
+  // The saved record shown in the workspace, so saving it again keeps its analysis history.
+  const loadedSessionRef = useRef<SavedSession | null>(null);
   const nextChunkStartSampleRef = useRef(0);
   const chunkIndexRef = useRef(0);
   const chunkTranscriptionTailRef = useRef<Promise<void>>(Promise.resolve());
@@ -345,8 +348,8 @@ export function App() {
     if (analysisQuery.data) {
       setReport(analysisQuery.data.report);
       setReportRun({
-        id: crypto.randomUUID(),
-        createdAt: new Date().toISOString(),
+        id: analysisQuery.data.runId,
+        createdAt: analysisQuery.data.createdAt,
         analyzer: analysisQuery.data.analyzer,
         usedAudio: analysisQuery.data.usedAudio,
         audioId: analysisQuery.data.audioId,
@@ -451,6 +454,7 @@ export function App() {
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
+      loadedSessionRef.current = null;
       resetChunkTranscription();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
@@ -713,6 +717,15 @@ export function App() {
       setMessage("Nothing to save");
       return;
     }
+    const loaded = loadedSessionRef.current;
+    if (
+      loaded &&
+      observationFingerprint(segments, pauses) ===
+        observationFingerprint(loaded.segments, loaded.pauses)
+    ) {
+      await saveLoadedSession(loaded);
+      return;
+    }
     const session: SavedSession = createSessionRecord({
       id: crypto.randomUUID(),
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
@@ -747,6 +760,29 @@ export function App() {
     }
   }
 
+  // Saving the session already on screen never creates a copy: either it is unchanged, or a new
+  // analysis run is appended to its history.
+  async function saveLoadedSession(loaded: SavedSession) {
+    const knownRuns = [loaded.analysis.id, ...loaded.priorAnalyses.map((run) => run.id)];
+    if (!reportRun || knownRuns.includes(reportRun.id)) {
+      setMessage("Session is already saved");
+      return;
+    }
+    const updated = reanalyzeSession(loaded, reportRun, report);
+    loadedSessionRef.current = updated;
+    persistSessions(
+      sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
+    );
+    try {
+      const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(updated));
+      setCorpusAnalysis(corpus);
+      setMessage("New analysis saved to the session");
+    } catch {
+      setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+      setMessage("New analysis saved locally");
+    }
+  }
+
   async function deleteSession(session: SavedSession) {
     setDeletingSessionId(session.id);
     try {
@@ -765,6 +801,7 @@ export function App() {
           setReport(emptyReport());
           setReportRun(null);
           sessionLanguageRef.current = null;
+          loadedSessionRef.current = null;
           setInterimText("");
           setSpeakerMatch(null);
           resetChunkTranscription();
@@ -1124,6 +1161,7 @@ export function App() {
           setReport(session.report);
           setReportRun(session.analysis);
           sessionLanguageRef.current = session.context.spokenLanguage;
+          loadedSessionRef.current = session;
         }}
         onSessionDelete={(session) => void deleteSession(session)}
       />
@@ -1160,9 +1198,20 @@ async function analyzeWithFallback(request: {
   sessionStartedAt?: string;
   samples?: number[];
   sampleRate?: number;
-}): Promise<AnalyzedSpeech & { usedAudio: boolean; inputId: string; audioId: string | null }> {
+}): Promise<
+  AnalyzedSpeech & {
+    usedAudio: boolean;
+    inputId: string;
+    audioId: string | null;
+    runId: string;
+    createdAt: string;
+  }
+> {
   const usedAudio = Boolean(request.samples?.length && request.sampleRate);
+  // Minted here, where the analyzer actually runs, so a cached result keeps its identity.
   const provenance = {
+    runId: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
     usedAudio,
     audioId:
       usedAudio && request.samples && request.sampleRate

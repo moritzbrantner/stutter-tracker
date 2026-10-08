@@ -10,6 +10,7 @@ import {
   reanalyzeSession,
   SESSION_SCHEMA_VERSION,
   SHARED_ANALYSIS_VERSION,
+  UNKNOWN_INPUT_ID,
   sessionAnalysisRuns,
 } from "./sessions";
 
@@ -44,7 +45,7 @@ describe("session records", () => {
         id: "session-1:legacy",
         createdAt: null,
         analyzer: null,
-        inputId: observationFingerprint(segments, pauses),
+        inputId: UNKNOWN_INPUT_ID,
         usedAudio: null,
         audioId: null,
       },
@@ -121,7 +122,8 @@ describe("session records", () => {
     expect(rerun.pauses).toBe(original.pauses);
     expect(rerun.report).toBe(nextReport);
     expect(rerun.analysis.id).toBe("run-2");
-    expect(rerun.analysis.inputId).toBe(original.analysis.inputId);
+    expect(original.analysis.inputId).toBe(UNKNOWN_INPUT_ID);
+    expect(rerun.analysis.inputId).toBe(observationFingerprint(segments, pauses));
     expect(sessionAnalysisRuns(rerun).map((run) => [run.id, run.report])).toEqual([
       ["session-1:legacy", report],
       ["run-2", nextReport],

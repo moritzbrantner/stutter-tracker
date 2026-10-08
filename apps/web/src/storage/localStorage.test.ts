@@ -58,7 +58,7 @@ describe("local storage helpers", () => {
     ]);
   });
 
-  it("restores quarantined sessions once they can be read, keeping the rest aside", () => {
+  it("restores quarantined sessions once readable, drops readable duplicates, keeps the rest aside", () => {
     const recoverable = { ...legacySession, id: "recoverable" };
     const stillUnreadable = { id: "broken" };
     const clash = { ...legacySession };
@@ -74,10 +74,8 @@ describe("local storage helpers", () => {
     expect(
       (JSON.parse(storage.getItem(STORE_KEY) ?? "[]") as { id: string }[]).map((s) => s.id),
     ).toEqual(["legacy-1", "recoverable"]);
-    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([
-      stillUnreadable,
-      clash,
-    ]);
+    // The readable duplicate is dropped so it cannot come back after the visible copy is deleted.
+    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([stillUnreadable]);
   });
 
   it("filters invalid speaker profile records", () => {
