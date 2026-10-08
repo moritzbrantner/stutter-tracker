@@ -44,6 +44,8 @@ Speech content (audio, transcripts, voiceprints) is processed under one explicit
 
 The destination is shown in the app and fixed for a run. If a server fails, analysis falls back to on-device processing; it never switches to another server. The web app's Browser Speech engine uses the browser's speech recognition, which some browsers run in the cloud; it is outside this policy.
 
+Consent: pressing Record is consent to record on this device; on-device recording needs nothing else. Data leaving the device is gated by a consent ledger in which every purpose is denied until the user grants it: remote analysis (per exact server URL), clinician sharing, research contribution and model training. The last three have no feature yet and stay denied. Each grant, denial and withdrawal is appended with a timestamp. Withdrawing stops future use only: it cannot recall copies a server or person has already received. The web app keeps the ledger in local storage. The mobile app keeps it for the app session, and editing the server URL withdraws consent for the previous URL.
+
 ## Compute Setup
 
 The default compute URL is the local companion `http://127.0.0.1:8787`.

@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
+  CONSENT_LEDGER_KEY,
+  loadConsentLedger,
   loadRemoteConsent,
+  REMOTE_CONSENT_KEY,
   loadSessionsFromStorage,
   normalizeSpeakerProfiles,
   saveRemoteConsent,
@@ -14,6 +17,33 @@ describe("local storage helpers", () => {
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(true);
     expect(loadRemoteConsent("https://b.example.com", storage)).toBe(false);
     saveRemoteConsent("https://a.example.com", false, storage);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+  });
+
+  it("keeps an append-only ledger of remote-analysis decisions", () => {
+    const storage = memoryStorage({});
+    saveRemoteConsent("https://a.example.com", true, storage);
+    saveRemoteConsent("https://a.example.com", false, storage);
+
+    expect(loadConsentLedger(storage).map((entry) => [entry.scope, entry.granted])).toEqual([
+      ["https://a.example.com", true],
+      ["https://a.example.com", false],
+    ]);
+  });
+
+  it("migrates a legacy remote-analysis grant into the ledger once", () => {
+    const storage = memoryStorage({ [REMOTE_CONSENT_KEY]: "https://a.example.com" });
+
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(true);
+    expect(storage.getItem(REMOTE_CONSENT_KEY)).toBeNull();
+    expect(loadConsentLedger(storage)).toHaveLength(1);
+
+    saveRemoteConsent("https://a.example.com", false, storage);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+  });
+
+  it("treats a corrupt ledger as no consent", () => {
+    const storage = memoryStorage({ [CONSENT_LEDGER_KEY]: "{" });
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
   });
 

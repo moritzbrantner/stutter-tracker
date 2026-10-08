@@ -1,3 +1,11 @@
+import {
+  type ConsentLedger,
+  currentConsent,
+  EMPTY_CONSENT_LEDGER,
+  hasConsent,
+  parseConsentLedger,
+  recordConsent,
+} from "@stutter-tracker/shared";
 import type {
   SavedSession,
   SpeakerProfile,
@@ -10,12 +18,52 @@ export const STORE_KEY = "stutter-tracker:sessions";
 export const VOICE_KEY = "stutter-tracker:voiceprint";
 export const SPEAKERS_KEY = "stutter-tracker:speakers";
 export const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
+/** Pre-ledger storage: the one server URL that had remote-analysis consent. Migrated on read. */
 export const REMOTE_CONSENT_KEY = "stutter-tracker:remote-analysis-consent";
+export const CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger";
+
+/** Loads the consent ledger, folding in a legacy remote-analysis grant once. */
+export function loadConsentLedger(storage: Storage = localStorage): ConsentLedger {
+  let ledger: ConsentLedger;
+  try {
+    ledger = parseConsentLedger(JSON.parse(storage.getItem(CONSENT_LEDGER_KEY) ?? "[]"));
+  } catch {
+    ledger = EMPTY_CONSENT_LEDGER;
+  }
+  try {
+    const legacyUrl = storage.getItem(REMOTE_CONSENT_KEY);
+    if (legacyUrl) {
+      if (!currentConsent(ledger, "remoteAnalysis", legacyUrl)) {
+        ledger = recordConsent(ledger, {
+          purpose: "remoteAnalysis",
+          granted: true,
+          scope: legacyUrl,
+        });
+        storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
+      }
+      storage.removeItem(REMOTE_CONSENT_KEY);
+    }
+  } catch {
+    // Storage unavailable: the legacy grant stays where it was and is retried next load.
+  }
+  return ledger;
+}
+
+export function recordConsentDecision(
+  decision: Parameters<typeof recordConsent>[1],
+  storage: Storage = localStorage,
+) {
+  const ledger = recordConsent(loadConsentLedger(storage), decision);
+  storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
+  return ledger;
+}
 
 /** Remote-analysis consent is bound to one server URL; another URL needs consent again. */
 export function loadRemoteConsent(serverUrl: string, storage: Storage = localStorage) {
   try {
-    return Boolean(serverUrl) && storage.getItem(REMOTE_CONSENT_KEY) === serverUrl;
+    return (
+      Boolean(serverUrl) && hasConsent(loadConsentLedger(storage), "remoteAnalysis", serverUrl)
+    );
   } catch {
     return false;
   }
@@ -26,11 +74,7 @@ export function saveRemoteConsent(
   granted: boolean,
   storage: Storage = localStorage,
 ) {
-  if (granted) {
-    storage.setItem(REMOTE_CONSENT_KEY, serverUrl);
-  } else {
-    storage.removeItem(REMOTE_CONSENT_KEY);
-  }
+  recordConsentDecision({ purpose: "remoteAnalysis", granted, scope: serverUrl }, storage);
 }
 
 export function loadSessionsFromStorage(storage: Storage = localStorage): SavedSession[] {
