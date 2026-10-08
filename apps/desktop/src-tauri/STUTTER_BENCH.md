@@ -58,6 +58,24 @@ bun run benchmark:stutter:corpus \
 - The detector receives clip audio only. SEP-28k has no transcripts, so transcript-based detections cannot fire in this configuration; a transcript-assisted configuration is a separate experiment.
 - Nothing is downloaded. Corpus audio and reports derived from it are never committed.
 
+### Uncertainty, error review and robustness
+
+- `allScoredIntervals` and `heldOutIntervals` are 95% percentile bootstrap intervals (1000 resamples, fixed seed `sep28k-bootstrap-v1`) for micro F1, macro F1, the fluent false-positive rate and per-kind F1. Speakers are resampled with replacement when every clip has a verified speaker (`resamplingUnit: "speaker"`), otherwise clips (`"clip"`). Draws in which a rate is undefined (no fluent clip, or no reference positive for a kind) are skipped for that metric, which is null if no draw defined it. With fewer than two resampling units (e.g. a held-out set of one speaker) no interval is reported. The cost grows with resamples × scored clips, which is acceptable for this explicit benchmark tier.
+- `errorReview` lists up to 10 false-positive and 10 false-negative clip ids per kind, chosen by a seeded hash. With a held-out partition it samples training clips only (`errorReviewScope: "train"`), so held-out errors are never reviewed during development. It holds ids only, never media, for manual listening against your own local copy.
+- `challenge` (audio hashed separately in `challengeAudioSha256`) scores the robustness challenge set: clips excluded only for `poorAudioQuality`, `difficultToUnderstand` or `music`. It is reported apart from the main results and never used to choose between candidates.
+
+### Candidate promotion criteria
+
+Fixed before any candidate is compared with the existing detector:
+
+1. **Protected held-out set.** Promotion decisions use only the speaker-exclusive held-out partition (seed `sep28k-partition-v1`, 20% of verified speakers). Candidates are developed and tuned on the training partition only; the held-out results of a candidate version are looked at once, recorded with its `detectorRevision`, and not used to tune that version further.
+2. **Improvement must exceed uncertainty.** A candidate replaces the baseline only if its held-out macro F1 is higher and the paired bootstrap 95% interval of the difference (same resamples for both detectors) excludes zero.
+3. **No hidden regressions.** No per-kind F1 and no fluent false-positive rate may get worse by more than the paired interval allows, and the challenge-set results are reported next to the main ones.
+4. **Comparable inputs.** Both runs use identical label, mapping and scored-audio hashes and the same vote threshold.
+5. **Calibration and abstention.** For candidates that output probabilities, the Brier rule above applies. For candidates that can abstain, coverage is reported, and abstained clips count as misses when comparing F1.
+
+The paired-difference computation (criteria 2–3) and abstention coverage (5) are added together with the first candidate (#76).
+
 ## Dataset card: SEP-28k
 
 | Field | Value |
