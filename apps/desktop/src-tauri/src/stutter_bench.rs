@@ -204,6 +204,11 @@ fn should_evaluate_sep28k(entry: &Sep28kManifestEntry) -> bool {
 }
 
 fn evaluate_clips(clips: &[BenchmarkClip]) -> Result<BenchmarkReport, BenchmarkError> {
+    evaluate_clip_refs(&clips.iter().collect::<Vec<_>>())
+}
+
+/// Same as `evaluate_clips`, over borrowed clips (bootstrap resamples repeat clips).
+fn evaluate_clip_refs(clips: &[&BenchmarkClip]) -> Result<BenchmarkReport, BenchmarkError> {
     let mut by_kind = BENCHMARK_KINDS
         .into_iter()
         .map(|kind| (kind, KindMetrics::default()))
@@ -445,6 +450,11 @@ fn f1(precision: f64, recall: f64) -> f64 {
 // ---------------------------------------------------------------------------------------------
 
 const DEFAULT_EVALUATION_FRACTION: f64 = 0.2;
+const BOOTSTRAP_RESAMPLES: usize = 1_000;
+const BOOTSTRAP_SEED: &str = "sep28k-bootstrap-v1";
+const ERROR_SAMPLE_SEED: &str = "sep28k-error-review-v1";
+const ERROR_SAMPLE_PER_KIND: usize = 10;
+const CHALLENGE_REASONS: [&str; 3] = ["poorAudioQuality", "difficultToUnderstand", "music"];
 /// SEP-28k `Start`/`Stop` are sample offsets into the 16 kHz episode audio.
 const SEP28K_SAMPLE_RATE: u32 = 16_000;
 /// Allowed relative difference between decoded and labelled clip duration.
@@ -502,9 +512,43 @@ pub(crate) struct CorpusRunReport {
     all_scored: Option<BenchmarkReport>,
     /// Metrics over the speaker-exclusive held-out partition, when a verified mapping exists.
     held_out: Option<BenchmarkReport>,
+    /// Bootstrap 95% intervals for `all_scored` and `held_out`.
+    all_scored_intervals: Option<MetricIntervals>,
+    held_out_intervals: Option<MetricIntervals>,
+    /// Robustness challenge set: clips excluded only for poor audio, difficult speech or music.
+    /// Reported apart from the main results and never used to choose between candidates.
+    challenge: Option<BenchmarkReport>,
+    /// Deterministic sample of misclassified clip ids per kind, for manual review (no media).
+    error_review: BTreeMap<String, ErrorSample>,
     missing_clip_ids: Vec<String>,
     unreadable_clip_ids: Vec<String>,
     limitations: Vec<&'static str>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MetricIntervals {
+    /// "speaker" when every clip has a verified speaker (cluster bootstrap), otherwise "clip".
+    resampling_unit: &'static str,
+    resamples: usize,
+    seed: &'static str,
+    micro_f1: Interval,
+    macro_f1: Interval,
+    false_positive_clip_rate: Interval,
+    f1_by_kind: BTreeMap<String, Interval>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+struct Interval {
+    lower: f64,
+    upper: f64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ErrorSample {
+    false_positives: Vec<String>,
+    false_negatives: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -544,6 +588,11 @@ struct CorpusCounts {
     unreadable_audio: usize,
     scored: usize,
     fluent_scored: usize,
+    /// Excluded rows flagged only for audio or understandability (the robustness challenge set).
+    challenge_rows: usize,
+    /// Challenge rows whose audio was missing or unreadable.
+    challenge_unavailable: usize,
+    challenge_scored: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
@@ -604,6 +653,7 @@ pub(crate) fn run_sep28k_corpus(
     let mut unreadable = Vec::new();
     let mut clips = Vec::new();
     let mut audio_digests = Vec::new();
+    let mut challenge_clips = Vec::new();
     // The header is checked on its own so an empty or header-only manifest cannot pass.
     let header = labels
         .lines()
@@ -638,76 +688,39 @@ pub(crate) fn run_sep28k_corpus(
         let reasons = exclusion_reasons(&entry);
         if !reasons.is_empty() {
             counts.excluded_rows += 1;
-            for reason in reasons {
+            for reason in &reasons {
                 *counts.excluded.entry(reason).or_default() += 1;
             }
-            continue;
-        }
-        let path = sep28k_clip_path(&options.clips_dir, &entry);
-        if !path.is_file() {
-            counts.missing_audio += 1;
-            missing.push(entry.id);
-            continue;
-        }
-        // Clips must cover the labelled interval; a truncated extraction would be scored against
-        // labels for audio it does not contain.
-        let expected_seconds = (stop - start) as f64 / f64::from(SEP28K_SAMPLE_RATE);
-        let Ok((samples, sample_rate)) = read_mono_wav(&path) else {
-            counts.unreadable_audio += 1;
-            unreadable.push(entry.id);
-            continue;
-        };
-        if samples.is_empty() {
-            counts.unreadable_audio += 1;
-            unreadable.push(entry.id);
-            continue;
-        }
-        let duration_seconds = samples.len() as f64 / f64::from(sample_rate);
-        if (duration_seconds - expected_seconds).abs() > expected_seconds * DURATION_TOLERANCE {
-            counts.unreadable_audio += 1;
-            unreadable.push(entry.id);
-            continue;
-        }
-        let report = match analyze_speech_session_impl(AnalyzeSpeechRequest {
-            segments: Vec::new(),
-            pauses: Vec::new(),
-            session_started_at: None,
-            samples: Some(samples),
-            sample_rate: Some(sample_rate),
-        }) {
-            Ok(report) => report,
-            // Input validation (too short, non-finite samples): this clip is unusable, not the run.
-            Err(SpeechAnalysisError::Invalid(_)) => {
-                counts.unreadable_audio += 1;
-                unreadable.push(entry.id);
-                continue;
+            // Clips excluded only for audio/understandability flags form the robustness
+            // challenge set, scored apart from the main results.
+            if reasons
+                .iter()
+                .all(|reason| CHALLENGE_REASONS.contains(reason))
+            {
+                counts.challenge_rows += 1;
+                match score_clip(&options.clips_dir, entry, stop - start)? {
+                    ClipOutcome::Scored(clip, _) => challenge_clips.push(*clip),
+                    ClipOutcome::Missing(_) | ClipOutcome::Unreadable(_) => {
+                        counts.challenge_unavailable += 1
+                    }
+                }
             }
-            Err(error) => return Err(BenchmarkError::Detector(error.to_string())),
-        };
-        let observed = report
-            .events
-            .iter()
-            .map(|event| event.kind)
-            .collect::<HashSet<_>>();
-        audio_digests.push(format!(
-            "{}\t{}",
-            entry.id,
-            sha256_hex(&std::fs::read(&path).map_err(|error| BenchmarkError::Io {
-                path: path.display().to_string(),
-                message: error.to_string(),
-            })?)
-        ));
-        clips.push(BenchmarkClip {
-            id: entry.id,
-            speaker_id: entry.speaker_id,
-            duration_seconds,
-            reference_kinds: entry.reference_kinds,
-            predicted_kinds: BENCHMARK_KINDS
-                .into_iter()
-                .filter(|kind| observed.contains(kind))
-                .collect(),
-            predicted_probabilities: None,
-        });
+            continue;
+        }
+        match score_clip(&options.clips_dir, entry, stop - start)? {
+            ClipOutcome::Scored(clip, digest) => {
+                audio_digests.push(digest);
+                clips.push(*clip);
+            }
+            ClipOutcome::Missing(id) => {
+                counts.missing_audio += 1;
+                missing.push(id);
+            }
+            ClipOutcome::Unreadable(id) => {
+                counts.unreadable_audio += 1;
+                unreadable.push(id);
+            }
+        }
     }
 
     counts.scored = clips.len();
@@ -777,6 +790,17 @@ pub(crate) fn run_sep28k_corpus(
         }
     };
 
+    counts.challenge_scored = challenge_clips.len();
+    let held_out_clips = match &partition {
+        PartitionSummary::SpeakerExclusive { .. } => {
+            held_out_speaker_split(&clips, DEFAULT_EVALUATION_FRACTION, PARTITION_SEED).1
+        }
+        PartitionSummary::NotSpeakerExclusive { .. } => Vec::new(),
+    };
+    let all_scored_intervals = bootstrap_intervals(&clips)?;
+    let held_out_intervals = bootstrap_intervals(&held_out_clips)?;
+    let error_review = error_review_sample(&clips);
+
     missing.sort();
     unreadable.sort();
     Ok(CorpusRunReport {
@@ -807,6 +831,12 @@ pub(crate) fn run_sep28k_corpus(
             .then(|| evaluate_clips(&clips))
             .transpose()?,
         held_out,
+        all_scored_intervals,
+        held_out_intervals,
+        challenge: (!challenge_clips.is_empty())
+            .then(|| evaluate_clips(&challenge_clips))
+            .transpose()?,
+        error_review,
         missing_clip_ids: missing.into_iter().take(LISTED_ID_LIMIT).collect(),
         unreadable_clip_ids: unreadable.into_iter().take(LISTED_ID_LIMIT).collect(),
         limitations: vec![
@@ -814,9 +844,201 @@ pub(crate) fn run_sep28k_corpus(
             "Clip classification only; no event timing is evaluated.",
             "The detector receives clip audio without a transcript, so transcript-based detections cannot fire.",
             "Precision, recall and F1 are 0 when their denominator is 0; check prevalence before reading them.",
-            "No confidence intervals yet.",
+            "Intervals are percentile bootstrap intervals over speakers (or clips without a complete verified mapping); they do not cover label noise.",
         ],
     })
+}
+
+/// Percentile bootstrap (95%) of the main metrics. Resamples speakers with replacement when
+/// every clip has a verified speaker (clips of one speaker are not independent), otherwise clips.
+fn bootstrap_intervals(clips: &[BenchmarkClip]) -> Result<Option<MetricIntervals>, BenchmarkError> {
+    if clips.is_empty() {
+        return Ok(None);
+    }
+    let by_speaker = clips.iter().all(|clip| clip.speaker_id.is_some());
+    let mut groups: BTreeMap<&str, Vec<&BenchmarkClip>> = BTreeMap::new();
+    for clip in clips {
+        let key = if by_speaker {
+            clip.speaker_id.as_deref().unwrap_or_default()
+        } else {
+            clip.id.as_str()
+        };
+        groups.entry(key).or_default().push(clip);
+    }
+    let groups = groups.into_values().collect::<Vec<_>>();
+    let mut rng = SplitMix64::new(u64::from(stable_hash(BOOTSTRAP_SEED)));
+    let mut micro = Vec::with_capacity(BOOTSTRAP_RESAMPLES);
+    let mut macro_f1 = Vec::with_capacity(BOOTSTRAP_RESAMPLES);
+    let mut fluent = Vec::with_capacity(BOOTSTRAP_RESAMPLES);
+    let mut per_kind: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    let mut sample = Vec::with_capacity(clips.len());
+    for _ in 0..BOOTSTRAP_RESAMPLES {
+        sample.clear();
+        for _ in 0..groups.len() {
+            sample.extend(groups[rng.below(groups.len())].iter().copied());
+        }
+        let report = evaluate_clip_refs(&sample)?;
+        micro.push(report.micro_f1);
+        macro_f1.push(report.macro_f1);
+        fluent.push(report.false_positive_clip_rate);
+        for kind in BENCHMARK_KINDS {
+            per_kind
+                .entry(kind_name(kind).to_owned())
+                .or_default()
+                .push(report.by_kind[&kind].f1);
+        }
+    }
+    Ok(Some(MetricIntervals {
+        resampling_unit: if by_speaker { "speaker" } else { "clip" },
+        resamples: BOOTSTRAP_RESAMPLES,
+        seed: BOOTSTRAP_SEED,
+        micro_f1: percentile_interval(micro),
+        macro_f1: percentile_interval(macro_f1),
+        false_positive_clip_rate: percentile_interval(fluent),
+        f1_by_kind: per_kind
+            .into_iter()
+            .map(|(kind, values)| (kind, percentile_interval(values)))
+            .collect(),
+    }))
+}
+
+fn percentile_interval(mut values: Vec<f64>) -> Interval {
+    values.sort_by(f64::total_cmp);
+    let at = |quantile: f64| values[((values.len() - 1) as f64 * quantile).round() as usize];
+    Interval {
+        lower: at(0.025),
+        upper: at(0.975),
+    }
+}
+
+/// Up to `ERROR_SAMPLE_PER_KIND` false-positive and false-negative clip ids per kind, chosen by a
+/// seeded hash so the sample is stable and not biased towards file order.
+fn error_review_sample(clips: &[BenchmarkClip]) -> BTreeMap<String, ErrorSample> {
+    BENCHMARK_KINDS
+        .into_iter()
+        .map(|kind| {
+            let pick = |predicate: &dyn Fn(&BenchmarkClip) -> bool| {
+                let mut ids = clips
+                    .iter()
+                    .filter(|clip| predicate(clip))
+                    .map(|clip| clip.id.clone())
+                    .collect::<Vec<_>>();
+                ids.sort_by_key(|id| {
+                    (
+                        stable_hash(&format!("{ERROR_SAMPLE_SEED}:{id}")),
+                        id.clone(),
+                    )
+                });
+                ids.truncate(ERROR_SAMPLE_PER_KIND);
+                ids
+            };
+            (
+                kind_name(kind).to_owned(),
+                ErrorSample {
+                    false_positives: pick(&|clip| {
+                        clip.predicted_kinds.contains(&kind)
+                            && !clip.reference_kinds.contains(&kind)
+                    }),
+                    false_negatives: pick(&|clip| {
+                        clip.reference_kinds.contains(&kind)
+                            && !clip.predicted_kinds.contains(&kind)
+                    }),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Small deterministic PRNG for resampling (no external dependency).
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut value = self.0;
+        value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        value ^ (value >> 31)
+    }
+
+    fn below(&mut self, bound: usize) -> usize {
+        (self.next() % bound as u64) as usize
+    }
+}
+
+enum ClipOutcome {
+    /// The scored clip and its `clipId\tsha256(wav)` digest line.
+    Scored(Box<BenchmarkClip>, String),
+    Missing(String),
+    Unreadable(String),
+}
+
+/// Reads one clip, checks it covers its labelled interval and runs the detector on it.
+fn score_clip(
+    clips_dir: &Path,
+    entry: Sep28kManifestEntry,
+    labelled_samples: u64,
+) -> Result<ClipOutcome, BenchmarkError> {
+    let path = sep28k_clip_path(clips_dir, &entry);
+    if !path.is_file() {
+        return Ok(ClipOutcome::Missing(entry.id));
+    }
+    // Clips must cover the labelled interval; a truncated extraction would be scored against
+    // labels for audio it does not contain.
+    let expected_seconds = labelled_samples as f64 / f64::from(SEP28K_SAMPLE_RATE);
+    let Ok((samples, sample_rate)) = read_mono_wav(&path) else {
+        return Ok(ClipOutcome::Unreadable(entry.id));
+    };
+    if samples.is_empty() {
+        return Ok(ClipOutcome::Unreadable(entry.id));
+    }
+    let duration_seconds = samples.len() as f64 / f64::from(sample_rate);
+    if (duration_seconds - expected_seconds).abs() > expected_seconds * DURATION_TOLERANCE {
+        return Ok(ClipOutcome::Unreadable(entry.id));
+    }
+    let report = match analyze_speech_session_impl(AnalyzeSpeechRequest {
+        segments: Vec::new(),
+        pauses: Vec::new(),
+        session_started_at: None,
+        samples: Some(samples),
+        sample_rate: Some(sample_rate),
+    }) {
+        Ok(report) => report,
+        // Input validation (too short, non-finite samples): this clip is unusable, not the run.
+        Err(SpeechAnalysisError::Invalid(_)) => return Ok(ClipOutcome::Unreadable(entry.id)),
+        Err(error) => return Err(BenchmarkError::Detector(error.to_string())),
+    };
+    let observed = report
+        .events
+        .iter()
+        .map(|event| event.kind)
+        .collect::<HashSet<_>>();
+    let digest = format!(
+        "{}\t{}",
+        entry.id,
+        sha256_hex(&std::fs::read(&path).map_err(|error| BenchmarkError::Io {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?)
+    );
+    Ok(ClipOutcome::Scored(
+        Box::new(BenchmarkClip {
+            id: entry.id,
+            speaker_id: entry.speaker_id,
+            duration_seconds,
+            reference_kinds: entry.reference_kinds,
+            predicted_kinds: BENCHMARK_KINDS
+                .into_iter()
+                .filter(|kind| observed.contains(kind))
+                .collect(),
+            predicted_probabilities: None,
+        }),
+        digest,
+    ))
 }
 
 /// Every applicable reason. Quality flags are multi-label; a clip with no stuttering kind at the
@@ -1751,5 +1973,95 @@ mod tests {
             run_sep28k_corpus(&corpus.options(no_bounds, None)),
             Err(BenchmarkError::MissingColumn("Start"))
         ));
+    }
+
+    #[test]
+    fn corpus_runner_reports_deterministic_bootstrap_intervals() {
+        let (corpus, labels) = standard_fixture("bootstrap");
+        let options = corpus.options(labels, None);
+        let first = run_sep28k_corpus(&options).unwrap();
+        let second = run_sep28k_corpus(&options).unwrap();
+
+        let intervals = first.all_scored_intervals.clone().unwrap();
+        assert_eq!(intervals.resampling_unit, "clip");
+        assert_eq!(intervals.resamples, BOOTSTRAP_RESAMPLES);
+        assert!(intervals.macro_f1.lower <= intervals.macro_f1.upper);
+        assert_eq!(intervals.f1_by_kind.len(), BENCHMARK_KINDS.len());
+        assert_eq!(first.all_scored_intervals, second.all_scored_intervals);
+        assert!(first.held_out_intervals.is_none());
+    }
+
+    #[test]
+    fn bootstrap_resamples_speakers_when_every_clip_has_one() {
+        let clips = (0..12)
+            .map(|index| {
+                clip(
+                    &format!("clip-{index}"),
+                    Some(&format!("speaker-{}", index / 3)),
+                    if index % 2 == 0 {
+                        vec![StutterKind::Block]
+                    } else {
+                        vec![]
+                    },
+                    vec![StutterKind::Block],
+                )
+            })
+            .collect::<Vec<_>>();
+        let intervals = bootstrap_intervals(&clips).unwrap().unwrap();
+        assert_eq!(intervals.resampling_unit, "speaker");
+        assert!(
+            intervals.false_positive_clip_rate.lower <= intervals.false_positive_clip_rate.upper
+        );
+        assert!(bootstrap_intervals(&[]).unwrap().is_none());
+    }
+
+    #[test]
+    fn percentile_interval_takes_the_central_95_percent() {
+        let interval = percentile_interval((0..=1000).map(f64::from).rev().collect());
+        assert_eq!(interval.lower, 25.0);
+        assert_eq!(interval.upper, 975.0);
+    }
+
+    #[test]
+    fn error_review_sample_lists_misclassified_clip_ids_deterministically() {
+        let clips = vec![
+            clip("fp", None, vec![], vec![StutterKind::Filler]),
+            clip("fn", None, vec![StutterKind::Filler], vec![]),
+            clip(
+                "tp",
+                None,
+                vec![StutterKind::Filler],
+                vec![StutterKind::Filler],
+            ),
+        ];
+        let sample = error_review_sample(&clips);
+        assert_eq!(sample["filler"].false_positives, vec!["fp".to_owned()]);
+        assert_eq!(sample["filler"].false_negatives, vec!["fn".to_owned()]);
+        assert!(sample["block"].false_positives.is_empty());
+        assert_eq!(error_review_sample(&clips), sample);
+    }
+
+    #[test]
+    fn corpus_runner_scores_the_challenge_set_apart_from_main_results() {
+        let corpus = FixtureCorpus::new("challenge");
+        corpus.wav("show", "1", "1", None);
+        corpus.wav("show", "1", "8", Some(220.0));
+        let labels = corpus.labels(&[
+            FLUENT,
+            // Music-flagged but otherwise labelled: a challenge clip.
+            "show,1,8,0,48000,0,0,3,0,0,0,0,0,0,0,2,0",
+            // Unsure is not a robustness flag: excluded, not a challenge clip.
+            "show,1,9,0,48000,2,0,3,0,0,0,0,0,0,0,0,0",
+            // Music-flagged with missing audio.
+            "show,1,10,0,48000,0,0,3,0,0,0,0,0,0,0,2,0",
+        ]);
+        let report = run_sep28k_corpus(&corpus.options(labels, None)).unwrap();
+
+        assert_eq!(report.counts.scored, 1);
+        assert_eq!(report.counts.challenge_rows, 2);
+        assert_eq!(report.counts.challenge_scored, 1);
+        assert_eq!(report.counts.challenge_unavailable, 1);
+        assert_eq!(report.challenge.as_ref().unwrap().clip_count, 1);
+        assert!(report.missing_clip_ids.is_empty());
     }
 }
