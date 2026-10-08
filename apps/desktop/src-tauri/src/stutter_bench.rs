@@ -518,6 +518,9 @@ pub(crate) struct CorpusRunReport {
     /// Robustness challenge set: clips excluded only for poor audio, difficult speech or music.
     /// Reported apart from the main results and never used to choose between candidates.
     challenge: Option<BenchmarkReport>,
+    /// Which clips `error_review` samples: "train" when a held-out partition exists, otherwise
+    /// "allScored" (and then no result is a protected held-out estimate).
+    error_review_scope: &'static str,
     /// Deterministic sample of misclassified clip ids per kind, for manual review (no media).
     error_review: BTreeMap<String, ErrorSample>,
     missing_clip_ids: Vec<String>,
@@ -560,6 +563,8 @@ struct CorpusIdentity {
     speaker_mapping_sha256: Option<String>,
     /// SHA-256 over the sorted (clip id, WAV file SHA-256) pairs of every scored clip.
     scored_audio_sha256: Option<String>,
+    /// The same over the scored robustness challenge clips.
+    challenge_audio_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -654,6 +659,7 @@ pub(crate) fn run_sep28k_corpus(
     let mut clips = Vec::new();
     let mut audio_digests = Vec::new();
     let mut challenge_clips = Vec::new();
+    let mut challenge_digests = Vec::new();
     // The header is checked on its own so an empty or header-only manifest cannot pass.
     let header = labels
         .lines()
@@ -699,7 +705,10 @@ pub(crate) fn run_sep28k_corpus(
             {
                 counts.challenge_rows += 1;
                 match score_clip(&options.clips_dir, entry, stop - start)? {
-                    ClipOutcome::Scored(clip, _) => challenge_clips.push(*clip),
+                    ClipOutcome::Scored(clip, digest) => {
+                        challenge_digests.push(digest);
+                        challenge_clips.push(*clip);
+                    }
                     ClipOutcome::Missing(_) | ClipOutcome::Unreadable(_) => {
                         counts.challenge_unavailable += 1
                     }
@@ -791,15 +800,21 @@ pub(crate) fn run_sep28k_corpus(
     };
 
     counts.challenge_scored = challenge_clips.len();
-    let held_out_clips = match &partition {
+    let (train_clips, held_out_clips) = match &partition {
         PartitionSummary::SpeakerExclusive { .. } => {
-            held_out_speaker_split(&clips, DEFAULT_EVALUATION_FRACTION, PARTITION_SEED).1
+            held_out_speaker_split(&clips, DEFAULT_EVALUATION_FRACTION, PARTITION_SEED)
         }
-        PartitionSummary::NotSpeakerExclusive { .. } => Vec::new(),
+        PartitionSummary::NotSpeakerExclusive { .. } => (Vec::new(), Vec::new()),
     };
     let all_scored_intervals = bootstrap_intervals(&clips)?;
     let held_out_intervals = bootstrap_intervals(&held_out_clips)?;
-    let error_review = error_review_sample(&clips);
+    // With a protected held-out partition, review only training errors: listening to held-out
+    // errors during development would leak the test set.
+    let (error_review_scope, error_review) = if held_out_clips.is_empty() {
+        ("allScored", error_review_sample(&clips))
+    } else {
+        ("train", error_review_sample(&train_clips))
+    };
 
     missing.sort();
     unreadable.sort();
@@ -812,10 +827,8 @@ pub(crate) fn run_sep28k_corpus(
             speaker_mapping_sha256: speaker_file
                 .as_ref()
                 .map(|(_, text)| sha256_hex(text.as_bytes())),
-            scored_audio_sha256: (!audio_digests.is_empty()).then(|| {
-                audio_digests.sort();
-                sha256_hex(audio_digests.join("\n").as_bytes())
-            }),
+            scored_audio_sha256: digest_of(&mut audio_digests),
+            challenge_audio_sha256: digest_of(&mut challenge_digests),
         },
         configuration: RunConfiguration {
             detector: "existing-detector",
@@ -836,6 +849,7 @@ pub(crate) fn run_sep28k_corpus(
         challenge: (!challenge_clips.is_empty())
             .then(|| evaluate_clips(&challenge_clips))
             .transpose()?,
+        error_review_scope,
         error_review,
         missing_clip_ids: missing.into_iter().take(LISTED_ID_LIMIT).collect(),
         unreadable_clip_ids: unreadable.into_iter().take(LISTED_ID_LIMIT).collect(),
@@ -866,6 +880,10 @@ fn bootstrap_intervals(clips: &[BenchmarkClip]) -> Result<Option<MetricIntervals
         groups.entry(key).or_default().push(clip);
     }
     let groups = groups.into_values().collect::<Vec<_>>();
+    // One resampling unit gives a zero-width interval that only looks certain.
+    if groups.len() < 2 {
+        return Ok(None);
+    }
     let mut rng = SplitMix64::new(u64::from(stable_hash(BOOTSTRAP_SEED)));
     let mut micro = Vec::with_capacity(BOOTSTRAP_RESAMPLES);
     let mut macro_f1 = Vec::with_capacity(BOOTSTRAP_RESAMPLES);
@@ -1258,6 +1276,13 @@ fn kind_name(kind: StutterKind) -> &'static str {
         StutterKind::Block => "block",
         StutterKind::Filler => "filler",
     }
+}
+
+fn digest_of(lines: &mut [String]) -> Option<String> {
+    (!lines.is_empty()).then(|| {
+        lines.sort();
+        sha256_hex(lines.join("\n").as_bytes())
+    })
 }
 
 /// Kind order is fixed so identical runs serialize identically.
@@ -2013,6 +2038,12 @@ mod tests {
             intervals.false_positive_clip_rate.lower <= intervals.false_positive_clip_rate.upper
         );
         assert!(bootstrap_intervals(&[]).unwrap().is_none());
+        let one_speaker = clips
+            .iter()
+            .filter(|clip| clip.speaker_id.as_deref() == Some("speaker-0"))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(bootstrap_intervals(&one_speaker).unwrap().is_none());
     }
 
     #[test]
@@ -2063,5 +2094,65 @@ mod tests {
         assert_eq!(report.counts.challenge_unavailable, 1);
         assert_eq!(report.challenge.as_ref().unwrap().clip_count, 1);
         assert!(report.missing_clip_ids.is_empty());
+    }
+
+    #[test]
+    fn corpus_runner_hashes_challenge_audio_and_reviews_only_training_errors() {
+        let corpus = FixtureCorpus::new("review-scope");
+        let mut rows = Vec::new();
+        let mut mapping = Vec::new();
+        for clip in 0..10 {
+            corpus.wav("show", "1", &clip.to_string(), Some(220.0));
+            rows.push(format!("show,1,{clip},0,48000,0,0,0,0,0,0,0,0,3,0,0,0"));
+            mapping.push((format!("show:1:{clip}"), format!("speaker-{clip}")));
+        }
+        corpus.wav("show", "1", "20", Some(220.0));
+        rows.push("show,1,20,0,48000,0,0,3,0,0,0,0,0,0,0,2,0".to_owned());
+        mapping.push(("show:1:20".to_owned(), "speaker-20".to_owned()));
+        let rows = rows.iter().map(String::as_str).collect::<Vec<_>>();
+        let pairs = mapping
+            .iter()
+            .map(|(clip, speaker)| (clip.as_str(), speaker.as_str()))
+            .collect::<Vec<_>>();
+        let options = corpus.options(corpus.labels(&rows), Some(corpus.speakers(&pairs)));
+        let report = run_sep28k_corpus(&options).unwrap();
+
+        assert!(report.corpus.challenge_audio_sha256.is_some());
+        assert_eq!(report.error_review_scope, "train");
+        let (_, held_out) = held_out_speaker_split(
+            &(0..10)
+                .map(|clip| {
+                    clip_with_speaker(&format!("show:1:{clip}"), &format!("speaker-{clip}"))
+                })
+                .collect::<Vec<_>>(),
+            DEFAULT_EVALUATION_FRACTION,
+            PARTITION_SEED,
+        );
+        let held_out_ids = held_out
+            .iter()
+            .map(|clip| clip.id.clone())
+            .collect::<HashSet<_>>();
+        for sample in report.error_review.values() {
+            assert!(sample
+                .false_positives
+                .iter()
+                .chain(&sample.false_negatives)
+                .all(|id| !held_out_ids.contains(id)));
+        }
+
+        corpus.wav("show", "1", "20", Some(440.0));
+        let changed = run_sep28k_corpus(&options).unwrap();
+        assert_ne!(
+            changed.corpus.challenge_audio_sha256,
+            report.corpus.challenge_audio_sha256
+        );
+        assert_eq!(
+            changed.corpus.scored_audio_sha256,
+            report.corpus.scored_audio_sha256
+        );
+    }
+
+    fn clip_with_speaker(id: &str, speaker: &str) -> BenchmarkClip {
+        clip(id, Some(speaker), vec![], vec![])
     }
 }
