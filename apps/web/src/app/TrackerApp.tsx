@@ -451,7 +451,8 @@ export function App() {
   }, [sessions]);
 
   async function startRecording() {
-    if (isRecording) {
+    // A new capture would reset the refs the previous one is still finishing with.
+    if (isRecording || isFinishingCapture) {
       return;
     }
     try {
@@ -1166,6 +1167,7 @@ export function App() {
   return (
     <main className="mx-auto min-h-screen max-w-[1420px] bg-[#f5f7f5] p-5 text-[#17201b] max-sm:p-3">
       <DashboardHeader
+        isFinishingCapture={isFinishingCapture}
         engines={TRANSCRIPTION_ENGINES}
         languages={LANGUAGES}
         transcription={transcription}

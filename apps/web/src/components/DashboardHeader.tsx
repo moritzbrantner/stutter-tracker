@@ -11,6 +11,8 @@ type DashboardHeaderProps = {
   language: string;
   isNative: boolean;
   isRecording: boolean;
+  /** Stop was pressed and the previous capture is still shutting down. */
+  isFinishingCapture?: boolean;
   processingDestination: ProcessingDestination;
   onRemoteConsentChange: (granted: boolean) => void;
   onEngineChange: (engine: TranscriptionEngineId) => void;
@@ -27,6 +29,7 @@ export function DashboardHeader({
   language,
   isNative,
   isRecording,
+  isFinishingCapture = false,
   processingDestination,
   onRemoteConsentChange,
   onEngineChange,
@@ -92,6 +95,8 @@ export function DashboardHeader({
         <button
           className={cx(isRecording ? dangerButtonClass : primaryButtonClass)}
           onClick={onRecordingToggle}
+          disabled={isFinishingCapture}
+          title={isFinishingCapture ? "Finishing the previous recording" : undefined}
         >
           {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
           {isRecording ? "Stop" : "Record"}
