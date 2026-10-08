@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
@@ -16,6 +16,10 @@ let deleteSpeakerHook: DeleteSpeaker | null = null;
 type CreateSpeaker =
   import("@stutter-tracker/compute-client").ComputeClient["createSpeakerProfile"];
 let createSpeakerHook: CreateSpeaker | null = null;
+type ListSpeakers = import("@stutter-tracker/compute-client").ComputeClient["listSpeakerProfiles"];
+let listSpeakersHook: ListSpeakers | null = null;
+type IdentifySpeaker = import("@stutter-tracker/compute-client").ComputeClient["identifySpeaker"];
+let identifySpeakerHook: IdentifySpeaker | null = null;
 
 vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@stutter-tracker/compute-client")>();
@@ -27,6 +31,10 @@ vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
         ...client,
         analyzeSpeechSessionRun: (request: Parameters<AnalyzeRun>[0]) =>
           analysisHook ? analysisHook(request) : client.analyzeSpeechSessionRun(request),
+        identifySpeaker: (request: Parameters<IdentifySpeaker>[0]) =>
+          identifySpeakerHook ? identifySpeakerHook(request) : client.identifySpeaker(request),
+        listSpeakerProfiles: () =>
+          listSpeakersHook ? listSpeakersHook() : client.listSpeakerProfiles(),
         createSpeakerProfile: (request: Parameters<CreateSpeaker>[0]) =>
           createSpeakerHook ? createSpeakerHook(request) : client.createSpeakerProfile(request),
         deleteSpeakerProfile: (id: string) =>
@@ -60,6 +68,8 @@ afterEach(() => {
   analysisHook = null;
   deleteSpeakerHook = null;
   createSpeakerHook = null;
+  listSpeakersHook = null;
+  identifySpeakerHook = null;
   localStorage.clear();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "mediaDevices", {
@@ -566,4 +576,102 @@ it("does not restore a removed voiceprint from a pending re-enrollment", async (
   await act(async () => {
     finishDeletion!();
   });
+});
+
+it.each(["malformed", "absent"])(
+  "removes server-only profiles with %s local data",
+  async (kind) => {
+    if (kind === "malformed") {
+      localStorage.setItem("stutter-tracker:speakers", "{broken");
+    }
+    listSpeakersHook = async () => [
+      {
+        id: "server-speaker",
+        label: "Server Alex",
+        embeddings: [[1, 0]],
+        sampleRate: 16000,
+        sampleCount: 16000,
+      },
+    ];
+    const deleted: string[] = [];
+    deleteSpeakerHook = async (id) => {
+      deleted.push(id);
+      return "deleted";
+    };
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+    const remove = await screen.findByRole("button", { name: "Remove speaker Server Alex" });
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === "stutter-tracker:speakers") {
+        throw new DOMException("blocked", "SecurityError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    await userEvent.click(remove);
+    expect(
+      await screen.findByText("Removed Server Alex here and from the compute server"),
+    ).toBeInTheDocument();
+    expect(deleted).toEqual(["server-speaker"]);
+    expect(
+      screen.queryByRole("button", { name: "Remove speaker Server Alex" }),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it("clears a match accepted immediately before queued profile removal", async () => {
+  localStorage.setItem(
+    "stutter-tracker:speakers",
+    JSON.stringify([
+      {
+        id: "speaker-a",
+        label: "Alex",
+        embeddings: [[1, 0]],
+        sampleRate: 16000,
+        sampleCount: 16000,
+      },
+      {
+        id: "speaker-b",
+        label: "Blair",
+        embeddings: [[0, 1]],
+        sampleRate: 16000,
+        sampleCount: 16000,
+      },
+    ]),
+  );
+  let capture: recorderModule.BrowserRecorderOptions | undefined;
+  vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+    capture = options;
+    return { sampleRate: 16000, stop: async () => {} };
+  });
+  let finishMatch: ((value: Awaited<ReturnType<IdentifySpeaker>>) => void) | undefined;
+  identifySpeakerHook = () =>
+    new Promise((resolve) => {
+      finishMatch = resolve;
+    });
+  deleteSpeakerHook = async () => "deleted";
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  const remove = await screen.findByRole("button", { name: "Remove speaker Alex" });
+  await userEvent.click(screen.getByRole("button", { name: /record/i }));
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2000);
+  act(() => {
+    capture!.onSamples(new Float32Array(32000).fill(0.1));
+    capture!.onLevel(0.1);
+  });
+  now.mockRestore();
+  await waitFor(() => expect(finishMatch).toBeDefined());
+  await act(async () => {
+    const match = { speakerId: "speaker-a", label: "Alex", score: 1 };
+    finishMatch!({ bestMatch: match, matches: [match], isMatch: true });
+    // Accept the asynchronous match within the same React batch as the removal gesture.
+    for (let microtask = 0; microtask < 5; microtask++) {
+      await Promise.resolve();
+    }
+    fireEvent.click(remove);
+  });
+  expect(
+    await screen.findByText("Removed Alex here and from the compute server"),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Alex 100%/)).not.toBeInTheDocument();
 });

@@ -685,15 +685,16 @@ export function App() {
         speakerMatchInFlightRef.current = true;
         setIsMatchingVoice(true);
         identifySpeaker(recent, sampleRateRef.current, speakerProfiles)
-          .then((result) =>
+          .then((result) => {
             // A speaker removed while identification ran must not come back as a match.
-            setSpeakerMatch(
+            const match =
               result.bestMatch &&
-                speakersRef.current.some((speaker) => speaker.id === result.bestMatch?.speakerId)
+              speakersRef.current.some((speaker) => speaker.id === result.bestMatch?.speakerId)
                 ? result.bestMatch
-                : null,
-            ),
-          )
+                : null;
+            speakerMatchRef.current = match;
+            setSpeakerMatch(match);
+          })
           .catch(() => undefined)
           .finally(() => {
             speakerMatchInFlightRef.current = false;
@@ -2416,13 +2417,33 @@ function emptyChunkStats(): TranscriptionChunkStats {
 }
 
 function removeLocalSpeakerCopy(id: string) {
-  const stored = JSON.parse(localStorage.getItem(SPEAKERS_KEY) ?? "[]") as unknown;
-  const kept = Array.isArray(stored)
-    ? (stored as SpeakerProfile[]).filter((candidate) => candidate.id !== id)
-    : [];
-  localStorage.setItem(SPEAKERS_KEY, JSON.stringify(kept));
-  // The pre-profile voiceprint key is shown as "legacy-speaker"; clear it only for that profile.
-  if (id === "legacy-speaker") {
+  const raw = localStorage.getItem(SPEAKERS_KEY);
+  let stored: unknown;
+  try {
+    stored = JSON.parse(raw ?? "[]");
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    // Corrupt payloads contain no usable local profiles; do not block server deletion.
+    stored = [];
+  }
+  if (Array.isArray(stored)) {
+    const kept = stored.filter(
+      (candidate: unknown) =>
+        !(
+          typeof candidate === "object" &&
+          candidate !== null &&
+          "id" in candidate &&
+          candidate.id === id
+        ),
+    );
+    if (kept.length !== stored.length) {
+      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(kept));
+    }
+  }
+  // The pre-profile key belongs only to this profile. Absent copies need no write.
+  if (id === "legacy-speaker" && localStorage.getItem(VOICE_KEY) !== null) {
     localStorage.removeItem(VOICE_KEY);
   }
 }
