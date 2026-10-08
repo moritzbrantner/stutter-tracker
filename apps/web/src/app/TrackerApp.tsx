@@ -1115,6 +1115,7 @@ export function App() {
         return;
       }
       removedSpeakerIdsRef.current.add(speaker.id);
+      reloadSpeakersRef.current?.();
       // Remote deletion remains outside the queue so a stalled server does not block local changes.
       return deleteSpeakerRemotely(speaker);
     });

@@ -138,7 +138,8 @@ export type ComputeClient = {
   saveSpeakerProfiles(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
   /**
    * Deletes a voiceprint on the server. Resolves "deleted", "notFound" (already gone), or
-   * "noServer" when no server is permitted (nothing was ever sent there).
+   * "noServer" when no server is currently permitted. A server used under earlier
+   * consent may still hold a copy; this result makes no claim about past uploads.
    */
   deleteSpeakerProfile(id: string): Promise<"deleted" | "notFound" | "noServer">;
   createSpeakerProfile(request: {

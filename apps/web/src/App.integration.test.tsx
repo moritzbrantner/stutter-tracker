@@ -979,3 +979,34 @@ it("requires saved clinician-sharing consent and rechecks withdrawal before down
   await user.click(screen.getByRole("checkbox", { name: /Session 1/ }));
   expect(screen.getByRole("button", { name: "Download report" })).toBeDisabled();
 });
+
+it("hydrates server-only profiles after a successful removal during startup", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([alex]));
+  let finishStartup: ((profiles: (typeof alex)[]) => void) | undefined;
+  let requests = 0;
+  listSpeakersHook = () =>
+    ++requests === 1
+      ? new Promise((resolve) => {
+          finishStartup = resolve;
+        })
+      : Promise.resolve([alex, blair]);
+  deleteSpeakerHook = async () => "deleted";
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Remove speaker Alex" }, { timeout: 6500 }),
+  );
+  await act(async () => {
+    finishStartup?.([alex, blair]);
+  });
+  expect(await screen.findByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
+}, 15000);
