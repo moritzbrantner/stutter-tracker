@@ -252,11 +252,14 @@ export function acceptedAnnotation(record: SessionRecord): AnnotationRevision | 
 
 export type AnalysisSource = "automated" | "humanReference";
 
-/** Identifies the analyzer behind the current report; "unknown" when it was never recorded. */
+/**
+ * Identifies the analyzer behind the current report; "unknown" when it or its version was never
+ * recorded (an unreported version could hide an upgrade, so it is not one shared version).
+ */
 export function analyzerKey(record: SessionRecord): string {
   const analyzer = record.analysis.analyzer;
-  return analyzer
-    ? `${analyzer.producer}:${analyzer.algorithm}:${analyzer.version ?? "unversioned"}`
+  return analyzer && analyzer.version !== null
+    ? `${analyzer.producer}:${analyzer.algorithm}:${analyzer.version}`
     : "unknown";
 }
 

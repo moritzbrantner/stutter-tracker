@@ -45,7 +45,7 @@ describe("buildSessionHistory", () => {
         wordsPerMinute: null,
         analyzerKey: "unknown",
         verified: false,
-        source: "automated",
+        usedAudio: null,
       },
     ]);
   });
@@ -83,14 +83,33 @@ describe("buildSessionHistory", () => {
     });
     const mixed = progressComparability(buildSessionHistory([first, second, newer]));
     expect(mixed.comparable).toBe(false);
-    expect(mixed.reasons).toEqual(["analyzed by 2 different analyzer versions"]);
+    expect(mixed.reasons).toEqual(["2 different analyzer versions produced these results"]);
 
     const legacy = progressComparability(
       buildSessionHistory([savedSession("d", "2026-09-04T12:00:00.000Z", 90, 2, 120)]),
     );
     expect(legacy.reasons).toEqual([
-      "the analyzer of these sessions was not recorded",
+      "the analyzer version was not recorded for these sessions",
       "1 session's analysis is not verified for the saved transcript",
+    ]);
+
+    const withAudio = { ...first, analysis: { ...first.analysis, usedAudio: true } };
+    expect(progressComparability(buildSessionHistory([withAudio, second])).reasons).toEqual([
+      "some were analyzed with audio and some without",
+    ]);
+    const unversioned = {
+      ...second,
+      analysis: {
+        ...second.analysis,
+        analyzer: {
+          producer: "computeServer" as const,
+          algorithm: "compute-server",
+          version: null,
+        },
+      },
+    };
+    expect(progressComparability(buildSessionHistory([first, unversioned])).reasons).toEqual([
+      "the analyzer version was not recorded for 1 of them",
     ]);
   });
 });

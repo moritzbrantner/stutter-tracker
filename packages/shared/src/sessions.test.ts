@@ -269,6 +269,11 @@ describe("analysis comparability", () => {
     );
     expect(analyzerKey(rerun)).toBe(`onDevice:shared-fallback:${SHARED_ANALYSIS_VERSION}`);
     expect(isAnalysisVerified(rerun)).toBe(true);
+    const unversioned = {
+      ...rerun,
+      analysis: { ...rerun.analysis, analyzer: { ...onDevice, version: null } },
+    };
+    expect(analyzerKey(unversioned)).toBe("unknown");
 
     const reviewed = annotateSession(rerun, {
       id: "a-1",

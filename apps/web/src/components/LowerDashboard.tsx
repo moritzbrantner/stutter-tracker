@@ -44,6 +44,8 @@ type LowerDashboardProps = {
   onSessionDelete: (session: SavedSession) => void;
   /** Appends a fresh analysis run of the saved transcript; earlier runs stay in the history. */
   onSessionReanalyze?: (session: SavedSession) => void;
+  /** Sessions with a reanalysis in flight; their action is disabled until it lands. */
+  reanalyzingSessionIds?: string[];
   deletingSessionId: string | null;
 };
 
@@ -58,6 +60,7 @@ export function LowerDashboard({
   sessionLoadDisabled = false,
   onSessionDelete,
   onSessionReanalyze,
+  reanalyzingSessionIds = [],
   deletingSessionId,
 }: LowerDashboardProps) {
   return (
@@ -73,6 +76,7 @@ export function LowerDashboard({
         sessionLoadDisabled={sessionLoadDisabled}
         onSessionDelete={onSessionDelete}
         onSessionReanalyze={onSessionReanalyze}
+        reanalyzingSessionIds={reanalyzingSessionIds}
         deletingSessionId={deletingSessionId}
       />
     </section>
@@ -290,8 +294,8 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
                 role="note"
                 className="m-0 border-b border-[#f0e2c4] bg-[#fdf8ec] px-4 py-3 text-sm text-[#6b5520]"
               >
-                Not directly comparable: these sessions were {comparability.reasons.join("; ")}.
-                Reanalyze older sessions to compare them on equal terms.
+                Not directly comparable: {comparability.reasons.join("; ")}. Reanalyze older
+                sessions to compare them on equal terms.
               </p>
             )}
             <TrendMetric
@@ -392,6 +396,7 @@ function SessionsPanel({
   sessionLoadDisabled = false,
   onSessionDelete,
   onSessionReanalyze,
+  reanalyzingSessionIds = [],
   deletingSessionId,
 }: {
   sessions: SavedSession[];
@@ -400,6 +405,8 @@ function SessionsPanel({
   onSessionDelete: (session: SavedSession) => void;
   /** Appends a fresh analysis run of the saved transcript; earlier runs stay in the history. */
   onSessionReanalyze?: (session: SavedSession) => void;
+  /** Sessions with a reanalysis in flight; their action is disabled until it lands. */
+  reanalyzingSessionIds?: string[];
   deletingSessionId: string | null;
 }) {
   const historyById = new Map(
@@ -460,7 +467,11 @@ function SessionsPanel({
                     className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#355e47] hover:bg-[#f2f7f4] disabled:cursor-not-allowed disabled:opacity-50"
                     aria-label={`Reanalyze saved session from ${new Date(session.startedAt).toLocaleString()}`}
                     title="Reanalyze: add a new analysis run; earlier runs stay in the history"
-                    disabled={sessionLoadDisabled || deletingSessionId === session.id}
+                    disabled={
+                      sessionLoadDisabled ||
+                      deletingSessionId === session.id ||
+                      reanalyzingSessionIds.includes(session.id)
+                    }
                     onClick={() => onSessionReanalyze(session)}
                   >
                     <RefreshCw size={16} />

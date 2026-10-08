@@ -188,6 +188,8 @@ export function App() {
   // analysis: live analysis does not run, and a late result never replaces it. The ref is set
   // synchronously so a result that lands before React applies the load is still ignored.
   const [viewedSession, setViewedSessionState] = useState<SavedSession | null>(null);
+  const reanalyzingRef = useRef(new Set<string>());
+  const [reanalyzingSessionIds, setReanalyzingSessionIds] = useState<string[]>([]);
   const viewedSessionRef = useRef<SavedSession | null>(null);
   const setViewedSession = (session: SavedSession | null) => {
     viewedSessionRef.current = session;
@@ -444,6 +446,13 @@ export function App() {
       unlisten?.();
     };
   }, [isNative]);
+
+  // The unverified-analysis note is added at display time so it covers both the local corpus and
+  // the desktop corpus, whose summary comes from Rust.
+  const displayedCorpus = useMemo(
+    () => withUnverifiedNote(corpusAnalysis, sessions),
+    [corpusAnalysis, sessions],
+  );
 
   const todayStats = useMemo(() => {
     const now = new Date().toDateString();
@@ -927,6 +936,21 @@ export function App() {
       setMessage("Stop recording and let transcription finish before reanalyzing");
       return;
     }
+    // One run per session at a time, so runs are appended in the order they were started.
+    if (reanalyzingRef.current.has(session.id)) {
+      return;
+    }
+    reanalyzingRef.current.add(session.id);
+    setReanalyzingSessionIds([...reanalyzingRef.current]);
+    try {
+      await runReanalysis(session);
+    } finally {
+      reanalyzingRef.current.delete(session.id);
+      setReanalyzingSessionIds([...reanalyzingRef.current]);
+    }
+  }
+
+  async function runReanalysis(session: SavedSession) {
     setMessage("Reanalyzing saved session");
     const analysis = await analyzeWithFallback({
       segments: session.segments,
@@ -1329,7 +1353,7 @@ export function App() {
           selectedModel={transcription.model}
           selectedModelStatus={selectedModelStatus}
           modelStatuses={modelStatuses}
-          corpusAnalysis={corpusAnalysis}
+          corpusAnalysis={displayedCorpus}
           speakers={speakers}
           speakerLabel={speakerLabel}
           canEnroll={samplesRef.current.length > 0}
@@ -1374,6 +1398,7 @@ export function App() {
         }}
         onSessionDelete={(session) => void deleteSession(session)}
         onSessionReanalyze={(session) => void reanalyzeSavedSession(session)}
+        reanalyzingSessionIds={reanalyzingSessionIds}
       />
     </main>
   );
@@ -2065,6 +2090,23 @@ function localSpeechCorpusExport(sessions: SavedSession[]) {
   };
 }
 
+export function withUnverifiedNote(
+  corpus: SpeechCorpusAnalysis,
+  sessions: SavedSession[],
+): SpeechCorpusAnalysis {
+  const unverified = sessions.filter((session) => !isAnalysisVerified(session)).length;
+  if (unverified === 0) {
+    return corpus;
+  }
+  return {
+    ...corpus,
+    summary: [
+      ...corpus.summary,
+      `${unverified} of ${sessions.length} sessions have an analysis that is not verified for their transcript; reanalyze them before comparing.`,
+    ],
+  };
+}
+
 function analyzeLocalCorpus(sessions: SavedSession[]): SpeechCorpusAnalysis {
   const corpus = emptyCorpusAnalysis();
   const terms = new Map<string, { count: number; documents: Set<string> }>();
@@ -2158,13 +2200,6 @@ function analyzeLocalCorpus(sessions: SavedSession[]): SpeechCorpusAnalysis {
         })),
     }))
     .sort((left, right) => right.wordCount - left.wordCount);
-  const unverified = sessions.filter((session) => !isAnalysisVerified(session)).length;
-  if (unverified > 0) {
-    corpus.summary = [
-      ...corpus.summary,
-      `${unverified} of ${sessions.length} sessions have an analysis that is not verified for their transcript; reanalyze them before comparing.`,
-    ];
-  }
   return corpus;
 }
 

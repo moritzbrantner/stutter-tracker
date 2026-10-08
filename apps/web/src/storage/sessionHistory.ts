@@ -1,9 +1,4 @@
-import {
-  type AnalysisSource,
-  analysisSource,
-  analyzerKey,
-  isAnalysisVerified,
-} from "@stutter-tracker/shared";
+import { analyzerKey, isAnalysisVerified } from "@stutter-tracker/shared";
 import type { SavedSession } from "../types";
 
 export type SessionHistoryPoint = {
@@ -18,7 +13,8 @@ export type SessionHistoryPoint = {
   analyzerKey: string;
   /** The report is known to analyze exactly the saved transcript. */
   verified: boolean;
-  source: AnalysisSource;
+  /** Whether captured audio fed the analysis (acoustic events); null when not recorded. */
+  usedAudio: boolean | null;
 };
 
 export type ProgressComparability = {
@@ -28,25 +24,33 @@ export type ProgressComparability = {
 };
 
 /**
- * Points are comparable only when one analyzer produced every report, every report is verified
- * against its transcript, and all share one source. Anything else is flagged, not hidden.
+ * Points are comparable only when one known analyzer version produced every report from the same
+ * kind of input (with or without audio) and every report is verified against its transcript.
+ * Every point is an automated report; human annotations are not plotted here. Anything else is
+ * flagged, not hidden.
  */
 export function progressComparability(points: SessionHistoryPoint[]): ProgressComparability {
   const reasons: string[] = [];
-  const analyzers = new Set(points.map((point) => point.analyzerKey));
-  if (analyzers.size > 1) {
-    reasons.push(`analyzed by ${analyzers.size} different analyzer versions`);
-  } else if (analyzers.has("unknown")) {
-    reasons.push("the analyzer of these sessions was not recorded");
+  const known = new Set(
+    points.map((point) => point.analyzerKey).filter((key) => key !== "unknown"),
+  );
+  if (known.size > 1) {
+    reasons.push(`${known.size} different analyzer versions produced these results`);
+  }
+  const unknown = points.filter((point) => point.analyzerKey === "unknown").length;
+  if (unknown > 0) {
+    reasons.push(
+      `the analyzer version was not recorded for ${unknown === points.length ? "these sessions" : `${unknown} of them`}`,
+    );
+  }
+  if (new Set(points.map((point) => point.usedAudio)).size > 1) {
+    reasons.push("some were analyzed with audio and some without");
   }
   const unverified = points.filter((point) => !point.verified).length;
   if (unverified > 0) {
     reasons.push(
       `${unverified} session${unverified === 1 ? "'s analysis is" : "s' analyses are"} not verified for the saved transcript`,
     );
-  }
-  if (new Set(points.map((point) => point.source)).size > 1) {
-    reasons.push("mixes human-reviewed and automated results");
   }
   return { comparable: reasons.length === 0, reasons };
 }
@@ -88,7 +92,7 @@ function toHistoryPoint(session: SavedSession): SessionHistoryPoint {
     wordsPerMinute: wordsPerMinute == null ? null : Math.max(0, wordsPerMinute),
     analyzerKey: analyzerKey(session),
     verified: isAnalysisVerified(session),
-    source: analysisSource(session),
+    usedAudio: session.analysis.usedAudio,
   };
 }
 
