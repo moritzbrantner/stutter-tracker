@@ -78,7 +78,8 @@ export function parseStoredSession(value: unknown): SavedSession | null {
   if (value.schemaVersion !== SESSION_SCHEMA_VERSION) {
     throw new Error(`Unsupported session schema version ${String(value.schemaVersion)}.`);
   }
-  return isSessionProvenance(value) ? (value as unknown as SavedSession) : null;
+  // Version-2 records from before annotations existed are completed with an empty history.
+  return isSessionProvenance(value) ? migrateSessionRecord(value as unknown as SavedSession) : null;
 }
 
 function isSessionProvenance(value: Record<string, unknown>) {
@@ -101,7 +102,59 @@ function isSessionProvenance(value: Record<string, unknown>) {
   const runIds = [value.analysis, ...value.priorAnalyses].map((run) => (run as { id: string }).id);
   return (
     value.recordings.every((recording) => recording.sessionId === value.id) &&
-    new Set(runIds).size === runIds.length
+    new Set(runIds).size === runIds.length &&
+    isAnnotationHistory(value.annotations, runIds)
+  );
+}
+
+/** Optional on older version-2 records; when present, ids are unique and references resolve. */
+function isAnnotationHistory(value: unknown, runIds: string[]) {
+  if (value === undefined) {
+    return true;
+  }
+  if (!Array.isArray(value) || !value.every(isAnnotationRevision)) {
+    return false;
+  }
+  const ids = value.map((revision) => revision.id as string);
+  return (
+    new Set(ids).size === ids.length &&
+    value.every(
+      (revision) =>
+        (revision.supersedes === null || ids.includes(revision.supersedes as string)) &&
+        (revision.basedOnRunId === null || runIds.includes(revision.basedOnRunId as string)),
+    )
+  );
+}
+
+function isAnnotationRevision(value: unknown): value is Record<string, unknown> {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    isValidDateString(value.createdAt) &&
+    isRecord(value.author) &&
+    (value.author.role === "self" ||
+      value.author.role === "clinician" ||
+      value.author.role === "researcher") &&
+    isOptionalString(value.author.id) &&
+    (value.basedOnRunId === null || typeof value.basedOnRunId === "string") &&
+    typeof value.inputId === "string" &&
+    Array.isArray(value.events) &&
+    value.events.every(isAnnotatedEvent) &&
+    (value.status === "draft" || value.status === "accepted") &&
+    (value.supersedes === null || typeof value.supersedes === "string")
+  );
+}
+
+function isAnnotatedEvent(value: unknown) {
+  return (
+    isRecord(value) &&
+    isStutterKind(value.kind) &&
+    isFiniteNumber(value.startSeconds) &&
+    isFiniteNumber(value.endSeconds) &&
+    value.endSeconds >= value.startSeconds &&
+    (value.certainty === "certain" || value.certainty === "possible") &&
+    isOptionalString(value.note)
   );
 }
 
