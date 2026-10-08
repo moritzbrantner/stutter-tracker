@@ -126,10 +126,62 @@ fn detector_revision() -> Option<stutter_bench::DetectorRevision> {
                 .map(|byte| format!("{byte:02x}"))
                 .collect()
         });
+    let cargo_config = std::fs::read_to_string(root.join(".cargo/config.toml")).ok();
     Some(stutter_bench::DetectorRevision {
         commit,
         dirty,
         source_pins_sha256,
-        source_mode: root.join(".cargo/config.toml").is_file(),
+        source_mode: cargo_config.is_some(),
+        capability_sources: cargo_config
+            .as_deref()
+            .map(compiled_source_checkouts)
+            .unwrap_or_default(),
     })
+}
+
+/// Records HEAD and local changes of every sibling checkout the source-mode patches point at, so
+/// edits to those sources after activation are visible in the report.
+fn compiled_source_checkouts(cargo_config: &str) -> Vec<stutter_bench::SourceCheckout> {
+    use std::collections::BTreeMap;
+    use std::process::Command;
+
+    let git = |dir: &str, args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(dir)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let mut checkouts = BTreeMap::new();
+    for path in cargo_config.lines().filter_map(|line| {
+        let start = line.find("path = \"")? + "path = \"".len();
+        let end = line[start..].find('"')? + start;
+        Some(&line[start..end])
+    }) {
+        let Some(top) = git(path, &["rev-parse", "--show-toplevel"]) else {
+            continue;
+        };
+        if checkouts.contains_key(&top) {
+            continue;
+        }
+        let commit = git(&top, &["rev-parse", "HEAD"]).unwrap_or_default();
+        let dirty = git(&top, &["status", "--porcelain", "--untracked-files=no"])
+            .map(|status| !status.is_empty())
+            .unwrap_or(true);
+        checkouts.insert(top, (commit, dirty));
+    }
+    checkouts
+        .into_iter()
+        .map(|(top, (commit, dirty))| stutter_bench::SourceCheckout {
+            name: std::path::Path::new(&top)
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or(top),
+            commit,
+            dirty,
+        })
+        .collect()
 }

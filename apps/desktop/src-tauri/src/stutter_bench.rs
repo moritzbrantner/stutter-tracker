@@ -463,6 +463,16 @@ pub(crate) struct DetectorRevision {
     pub(crate) source_pins_sha256: Option<String>,
     /// Whether exact local sources were active (`.cargo/config.toml` present).
     pub(crate) source_mode: bool,
+    /// The sibling checkouts actually compiled in source mode, with their HEAD and local changes.
+    pub(crate) capability_sources: Vec<SourceCheckout>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SourceCheckout {
+    pub(crate) name: String,
+    pub(crate) commit: String,
+    pub(crate) dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -598,7 +608,7 @@ pub(crate) fn run_sep28k_corpus(
         .find(|line| !line.trim().is_empty())
         .map(|line| line.split(',').map(str::trim).collect::<HashSet<_>>())
         .unwrap_or_default();
-    for column in SEP28K_REQUIRED_COLUMNS {
+    for column in SEP28K_REQUIRED_COLUMNS.into_iter().chain(["Start", "Stop"]) {
         if !header.contains(column) {
             return Err(BenchmarkError::MissingColumn(column));
         }
@@ -610,6 +620,13 @@ pub(crate) fn run_sep28k_corpus(
         counts.processed_rows += 1;
         validate_sep28k_votes(row)?;
         let mut entry = normalize_sep28k_row(row, options.vote_threshold, None)?;
+        // Every row is validated, including rows excluded or missing audio below.
+        let (Some(start), Some(stop)) = (entry.start_sample, entry.stop_sample) else {
+            return Err(BenchmarkError::InvalidBounds(entry.id));
+        };
+        if stop <= start {
+            return Err(BenchmarkError::InvalidBounds(entry.id));
+        }
         if !seen.insert(entry.id.clone()) {
             return Err(BenchmarkError::DuplicateClip(entry.id));
         }
@@ -632,12 +649,6 @@ pub(crate) fn run_sep28k_corpus(
         }
         // Clips must cover the labelled interval; a truncated extraction would be scored against
         // labels for audio it does not contain.
-        let (Some(start), Some(stop)) = (entry.start_sample, entry.stop_sample) else {
-            return Err(BenchmarkError::InvalidBounds(entry.id));
-        };
-        if stop <= start {
-            return Err(BenchmarkError::InvalidBounds(entry.id));
-        }
         let expected_seconds = (stop - start) as f64 / f64::from(SEP28K_SAMPLE_RATE);
         let Ok((samples, sample_rate)) = read_mono_wav(&path) else {
             counts.unreadable_audio += 1;
@@ -944,6 +955,18 @@ fn parse_csv(text: &str, path: &Path) -> Result<Vec<Sep28kRow>, BenchmarkError> 
         .split(',')
         .map(|column| column.trim().to_owned())
         .collect::<Vec<_>>();
+    // A repeated header would let one cell silently overwrite another in the row map.
+    let mut seen_columns = HashSet::new();
+    if let Some(duplicate) = columns
+        .iter()
+        .find(|column| !seen_columns.insert(column.as_str()))
+    {
+        return Err(BenchmarkError::Csv {
+            path: path.display().to_string(),
+            line: 1,
+            message: format!("duplicate column `{duplicate}`"),
+        });
+    }
     lines
         .map(|(index, line)| {
             let error = |message: &str| BenchmarkError::Csv {
@@ -1675,8 +1698,55 @@ mod tests {
             dirty: true,
             source_pins_sha256: Some("pins".to_owned()),
             source_mode: true,
+            capability_sources: vec![SourceCheckout {
+                name: "audio-analysis".to_owned(),
+                commit: "def456".to_owned(),
+                dirty: false,
+            }],
         });
         let json = serde_json::to_string(&run_sep28k_corpus(&options).unwrap()).unwrap();
         assert!(json.contains("\"detectorRevision\":{\"commit\":\"abc123\",\"dirty\":true"));
+        assert!(json.contains("\"capabilitySources\":[{\"name\":\"audio-analysis\""));
+    }
+
+    #[test]
+    fn corpus_runner_validates_bounds_on_excluded_and_missing_rows_too() {
+        let corpus = FixtureCorpus::new("bounds-skipped");
+        // Excluded by a quality flag, and missing audio: both still need valid bounds.
+        for row in [
+            "show,1,3,x,48000,0,2,0,0,0,0,0,0,0,0,0,0",
+            "show,2,4,48000,0,0,0,0,2,0,0,0,0,0,0,0,0",
+        ] {
+            assert!(matches!(
+                run_sep28k_corpus(&corpus.options(corpus.labels(&[row]), None)),
+                Err(BenchmarkError::InvalidBounds(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn corpus_runner_rejects_duplicate_and_missing_bound_headers() {
+        let corpus = FixtureCorpus::new("headers");
+        let duplicate = corpus.root.join("duplicate.csv");
+        std::fs::write(
+            &duplicate,
+            "Show,EpId,ClipId,Start,Stop,Unsure,PoorAudioQuality,Prolongation,Block,SoundRep,WordRep,WordRep,DifficultToUnderstand,Interjection,NoStutteredWords,NaturalPause,Music,NoSpeech\nshow,1,1,0,48000,0,0,0,0,0,2,0,0,0,3,0,0,0\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            run_sep28k_corpus(&corpus.options(duplicate, None)),
+            Err(BenchmarkError::Csv { ref message, .. }) if message.contains("WordRep")
+        ));
+
+        let no_bounds = corpus.root.join("no-bounds.csv");
+        std::fs::write(
+            &no_bounds,
+            "Show,EpId,ClipId,Unsure,PoorAudioQuality,Prolongation,Block,SoundRep,WordRep,DifficultToUnderstand,Interjection,NoStutteredWords,NaturalPause,Music,NoSpeech\nshow,1,1,0,0,0,0,0,0,0,0,3,0,0,0\n",
+        )
+        .unwrap();
+        assert!(matches!(
+            run_sep28k_corpus(&corpus.options(no_bounds, None)),
+            Err(BenchmarkError::MissingColumn("Start"))
+        ));
     }
 }
