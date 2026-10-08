@@ -656,7 +656,19 @@ export function App() {
     recognitionRef.current = null;
     const recognitionEnded = recognition
       ? new Promise<void>((resolve) => {
-          const timer = setTimeout(resolve, RECOGNITION_END_TIMEOUT_MS);
+          const timer = setTimeout(() => {
+            // It never ended: detach it so late callbacks cannot reach a later capture.
+            recognition.onresult = null;
+            recognition.onerror = null;
+            recognition.onend = null;
+            try {
+              recognition.abort();
+            } catch {
+              // Already stopped.
+            }
+            recognitionEndedRef.current = null;
+            resolve();
+          }, RECOGNITION_END_TIMEOUT_MS);
           recognitionEndedRef.current = () => {
             clearTimeout(timer);
             recognitionEndedRef.current = null;
@@ -767,9 +779,18 @@ export function App() {
       setMessage("Nothing to save");
       return;
     }
-    // A saved session freezes the workspace's analysis, so the observation must be complete.
+    // A saved session freezes the workspace's analysis, so the observation must be complete and
+    // the shown report must be the analysis of exactly that observation.
     if (captureInProgress) {
       setMessage("Stop recording and let transcription finish before saving");
+      return;
+    }
+    if (
+      !viewedSessionRef.current &&
+      (isAnalyzing ||
+        (reportRun !== null && reportRun.inputId !== observationFingerprint(segments, pauses)))
+    ) {
+      setMessage("Analysis is still updating; save again in a moment");
       return;
     }
     const loaded = loadedSessionRef.current;
@@ -1217,7 +1238,7 @@ export function App() {
           canEnroll={samplesRef.current.length > 0}
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
-          saveDisabled={captureInProgress}
+          saveDisabled={captureInProgress || isAnalyzing}
           onExport={exportJson}
         />
 
