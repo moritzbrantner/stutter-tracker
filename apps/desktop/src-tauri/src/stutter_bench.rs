@@ -463,6 +463,8 @@ pub(crate) struct DetectorRevision {
     pub(crate) source_pins_sha256: Option<String>,
     /// Whether exact local sources were active (`.cargo/config.toml` present).
     pub(crate) source_mode: bool,
+    /// SHA-256 of the effective `Cargo.lock` the detector was built with.
+    pub(crate) lockfile_sha256: Option<String>,
     /// The sibling checkouts actually compiled in source mode, with their HEAD and local changes.
     pub(crate) capability_sources: Vec<SourceCheckout>,
 }
@@ -1698,6 +1700,7 @@ mod tests {
             dirty: true,
             source_pins_sha256: Some("pins".to_owned()),
             source_mode: true,
+            lockfile_sha256: Some("lock".to_owned()),
             capability_sources: vec![SourceCheckout {
                 name: "audio-analysis".to_owned(),
                 commit: "def456".to_owned(),

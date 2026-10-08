@@ -1,6 +1,6 @@
 //! Scores the existing detector on locally provided SEP-28k labels and clip audio.
 //!
-//! bun run benchmark:stutter:corpus -- --labels SEP-28k_labels.csv --clips clips [--speakers map.csv]
+//! bun run benchmark:stutter:corpus --labels SEP-28k_labels.csv --clips clips [--speakers map.csv]
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -64,7 +64,10 @@ fn run(args: Vec<String>) -> Result<(), String> {
                 )
             }
             "--out" => out = Some(PathBuf::from(value()?)),
-            "--help" | "-h" => return Err(USAGE.to_owned()),
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
             other => return Err(format!("unknown argument {other}\n{USAGE}")),
         }
     }
@@ -127,11 +130,22 @@ fn detector_revision() -> Option<stutter_bench::DetectorRevision> {
                 .collect()
         });
     let cargo_config = std::fs::read_to_string(root.join(".cargo/config.toml")).ok();
+    // The lockfile actually used for this build: source mode or `cargo update` can change resolved
+    // dependencies without changing any commit.
+    let lockfile_sha256 = std::fs::read(Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.lock"))
+        .ok()
+        .map(|bytes| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        });
     Some(stutter_bench::DetectorRevision {
         commit,
         dirty,
         source_pins_sha256,
         source_mode: cargo_config.is_some(),
+        lockfile_sha256,
         capability_sources: cargo_config
             .as_deref()
             .map(compiled_source_checkouts)
