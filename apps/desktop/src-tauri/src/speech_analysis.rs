@@ -24,6 +24,9 @@ pub enum SpeechAnalysisError {
 
 type Result<T> = std::result::Result<T, SpeechAnalysisError>;
 
+/// Bump whenever the detector's output can change for the same input; saved sessions record it.
+pub const SPEECH_ANALYSIS_VERSION: &str = "1";
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalyzeSpeechRequest {
@@ -56,6 +59,8 @@ pub struct PauseInput {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisReport {
+    /// Identifies this detector's behaviour in saved analysis provenance.
+    pub analyzer_version: &'static str,
     pub session_started_at: Option<String>,
     pub total_duration_seconds: f64,
     pub word_count: usize,
@@ -365,6 +370,7 @@ pub fn analyze_speech_session_impl(request: AnalyzeSpeechRequest) -> Result<Anal
     let chunks = chunk_analysis(&request.segments, &request.pauses, &events);
 
     Ok(AnalysisReport {
+        analyzer_version: SPEECH_ANALYSIS_VERSION,
         session_started_at: request.session_started_at,
         total_duration_seconds,
         word_count,

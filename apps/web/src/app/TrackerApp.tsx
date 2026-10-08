@@ -1201,13 +1201,6 @@ export function App() {
   );
 }
 
-// The desktop command does not report an analyzer version yet.
-const DESKTOP_NATIVE_ANALYZER: AnalyzerIdentity = {
-  producer: "desktopNative",
-  algorithm: "analyze_speech_session",
-  version: null,
-};
-
 async function analyze(request: {
   segments: TranscriptSegment[];
   pauses: PauseSpan[];
@@ -1218,9 +1211,19 @@ async function analyze(request: {
   if (!isDesktopApp()) {
     return computeClient.analyzeSpeechSessionRun(request);
   }
+  const report = await invoke<AnalysisReport & { analyzerVersion?: string }>(
+    "analyze_speech_session",
+    { request },
+  );
+  return { report, analyzer: desktopAnalyzer(report.analyzerVersion) };
+}
+
+/** The desktop command reports its detector version; older desktop builds leave it unknown. */
+export function desktopAnalyzer(version: string | undefined): AnalyzerIdentity {
   return {
-    report: await invoke<AnalysisReport>("analyze_speech_session", { request }),
-    analyzer: DESKTOP_NATIVE_ANALYZER,
+    producer: "desktopNative",
+    algorithm: "analyze_speech_session",
+    version: version ?? null,
   };
 }
 

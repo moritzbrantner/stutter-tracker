@@ -6,6 +6,7 @@ import {
   cosine,
   fallbackAnalyze,
   fallbackEmbedding,
+  SHARED_ANALYSIS_VERSION,
   staticModelStatuses,
 } from "@stutter-tracker/shared";
 import type { Server } from "bun";
@@ -33,6 +34,10 @@ import {
   validateTranscribeAudioFileForm,
   validateTranscriptionModelsRequest,
 } from "./validation";
+
+export const ANALYZER_ALGORITHM_HEADER = "x-analyzer-algorithm";
+export const ANALYZER_VERSION_HEADER = "x-analyzer-version";
+const SERVER_ANALYZER_ALGORITHM = "shared-fallback";
 
 export type ComputeServerDeps = {
   config: ServerConfig;
@@ -73,7 +78,12 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
         const body = validateAnalyzeSpeechRequest(
           await readJson(request, deps.config.maxBodyBytes),
         );
-        return jsonResponse(fallbackAnalyze(body), 200, cors);
+        // Saved sessions record which analyzer produced a report.
+        return jsonResponse(fallbackAnalyze(body), 200, {
+          ...cors,
+          [ANALYZER_ALGORITHM_HEADER]: SERVER_ANALYZER_ALGORITHM,
+          [ANALYZER_VERSION_HEADER]: SHARED_ANALYSIS_VERSION,
+        });
       }
 
       if (request.method === "GET" && url.pathname === "/speakers") {
@@ -300,6 +310,7 @@ function corsHeaders(config: ServerConfig, request: Request): ResponseHeaders | 
   const headers = {
     "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
     "access-control-allow-headers": "authorization, content-type",
+    "access-control-expose-headers": `${ANALYZER_ALGORITHM_HEADER}, ${ANALYZER_VERSION_HEADER}`,
     vary: "Origin",
   };
   if (!origin) {
