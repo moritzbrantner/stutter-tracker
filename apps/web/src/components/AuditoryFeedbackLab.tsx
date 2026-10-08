@@ -32,28 +32,49 @@ export function AuditoryFeedbackLab() {
     processed: null,
   });
   const sessionRef = useRef<AuditoryFeedbackSession | null>(null);
+  const startRef = useRef<AbortController | null>(null);
+  const recordingUrlsRef = useRef(recordingUrls);
+  const mountedRef = useRef(true);
+  const [isStarting, setIsStarting] = useState(false);
 
   useEffect(() => {
     sessionRef.current?.update(settings);
   }, [settings]);
 
-  useEffect(
-    () => () => {
+  useEffect(() => {
+    recordingUrlsRef.current = recordingUrls;
+  }, [recordingUrls]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      startRef.current?.abort();
+      startRef.current = null;
       const session = sessionRef.current;
       sessionRef.current = null;
       void session?.stop().catch(() => undefined);
-      releaseRecordingUrls(recordingUrls);
-    },
-    [recordingUrls],
-  );
+      releaseRecordingUrls(recordingUrlsRef.current);
+    };
+  }, []);
 
   async function startFeedback() {
-    if (!headphonesConfirmed || isActive || isStopping) {
+    if (!headphonesConfirmed || isActive || isStopping || startRef.current) {
       return;
     }
+    const controller = new AbortController();
+    startRef.current = controller;
+    setIsStarting(true);
     setStatus("Requesting microphone access…");
     try {
-      const session = await startAuditoryFeedbackSession(settings);
+      const session = await startAuditoryFeedbackSession(settings, {
+        signal: controller.signal,
+        onInterrupted: (reason) => void finishFeedback(session, reason),
+      });
+      if (controller.signal.aborted || !mountedRef.current) {
+        void session.stop().catch(() => undefined);
+        return;
+      }
       sessionRef.current = session;
       setIsActive(true);
       setPitchSupport(session.capabilities.pitchShift ? "supported" : "unsupported");
@@ -66,20 +87,52 @@ export function AuditoryFeedbackLab() {
           : "Feedback is live. This browser cannot make the local comparison recording.",
       );
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Unable to start live audio feedback");
+      if (!mountedRef.current) {
+        return;
+      }
+      setStatus(
+        controller.signal.aborted
+          ? "Feedback start was cancelled."
+          : error instanceof Error
+            ? error.message
+            : "Unable to start live audio feedback",
+      );
+    } finally {
+      if (startRef.current === controller) {
+        startRef.current = null;
+      }
+      if (mountedRef.current) {
+        setIsStarting(false);
+      }
     }
   }
 
-  async function stopFeedback() {
+  function stopFeedback() {
+    if (startRef.current) {
+      startRef.current.abort();
+      return;
+    }
     const session = sessionRef.current;
-    if (!session || isStopping) {
+    if (session) {
+      void finishFeedback(session);
+    }
+  }
+
+  // Shared by Stop and engine interruptions. session.stop() silences output synchronously,
+  // so the UI never waits on recorder finalization to make the trial inaudible.
+  async function finishFeedback(session: AuditoryFeedbackSession, interruptedReason?: string) {
+    if (sessionRef.current !== session) {
       return;
     }
     sessionRef.current = null;
+    const stopping = session.stop();
     setIsStopping(true);
-    setStatus("Stopping feedback and preparing the local comparison…");
+    setStatus(interruptedReason ?? "Feedback stopped. Preparing the local comparison…");
     try {
-      const recording = await session.stop();
+      const recording = await stopping;
+      if (!mountedRef.current) {
+        return;
+      }
       const nextUrls = {
         raw: recording.raw ? URL.createObjectURL(recording.raw) : null,
         processed: recording.processed ? URL.createObjectURL(recording.processed) : null,
@@ -88,16 +141,22 @@ export function AuditoryFeedbackLab() {
         releaseRecordingUrls(current);
         return nextUrls;
       });
-      setStatus(
-        nextUrls.raw && nextUrls.processed
-          ? "Trial stopped. Compare the untouched microphone recording with the monitored feedback below."
-          : "Trial stopped.",
-      );
+      if (!interruptedReason) {
+        setStatus(
+          nextUrls.raw && nextUrls.processed
+            ? "Trial stopped. Compare the untouched microphone recording with the monitored feedback below."
+            : "Trial stopped.",
+        );
+      }
     } catch (error) {
-      setStatus(error instanceof Error ? error.message : "Unable to finish the feedback trial");
+      if (mountedRef.current) {
+        setStatus(error instanceof Error ? error.message : "Unable to finish the feedback trial");
+      }
     } finally {
-      setIsActive(false);
-      setIsStopping(false);
+      if (mountedRef.current) {
+        setIsActive(false);
+        setIsStopping(false);
+      }
     }
   }
 
@@ -124,7 +183,7 @@ export function AuditoryFeedbackLab() {
             type="button"
             className="inline-flex items-center gap-2 rounded-full border border-[#ccd7d0] px-3 py-2 text-sm font-medium hover:bg-[#f4f7f5] disabled:cursor-not-allowed disabled:opacity-50"
             onClick={resetSettings}
-            disabled={isActive || isStopping}
+            disabled={isActive || isStarting || isStopping}
           >
             <RotateCcw size={16} aria-hidden="true" />
             Reset
@@ -137,7 +196,7 @@ export function AuditoryFeedbackLab() {
               className="mt-1 h-4 w-4 accent-[#276749]"
               type="checkbox"
               checked={headphonesConfirmed}
-              disabled={isActive || isStopping}
+              disabled={isActive || isStarting || isStopping}
               onChange={(event) => setHeadphonesConfirmed(event.target.checked)}
             />
             <span>
@@ -259,7 +318,7 @@ export function AuditoryFeedbackLab() {
             type="button"
             className="inline-flex items-center gap-2 rounded-full bg-[#235d41] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#1b4c35] disabled:cursor-not-allowed disabled:opacity-45"
             onClick={startFeedback}
-            disabled={!headphonesConfirmed || isActive || isStopping}
+            disabled={!headphonesConfirmed || isActive || isStarting || isStopping}
           >
             <Play size={16} fill="currentColor" aria-hidden="true" />
             Start feedback
@@ -268,10 +327,10 @@ export function AuditoryFeedbackLab() {
             type="button"
             className="inline-flex items-center gap-2 rounded-full border border-[#cbd6cf] px-4 py-2.5 text-sm font-semibold hover:bg-[#f4f7f5] disabled:cursor-not-allowed disabled:opacity-45"
             onClick={stopFeedback}
-            disabled={!isActive || isStopping}
+            disabled={!(isActive || isStarting) || isStopping}
           >
             <Square size={15} fill="currentColor" aria-hidden="true" />
-            {isStopping ? "Stopping…" : "Stop & compare"}
+            {isStopping ? "Stopping…" : isStarting ? "Cancel" : "Stop & compare"}
           </button>
           <p className="min-w-0 flex-1 text-sm text-[#5d6a62]" role="status" aria-live="polite">
             {status}
