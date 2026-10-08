@@ -54,6 +54,8 @@ type RecordingWorkspaceProps = {
   canEnroll: boolean;
   onEnroll: () => void;
   onSave: () => void;
+  /** Saving waits until capture and transcription have finished. */
+  saveDisabled?: boolean;
   onExport: () => void;
 };
 
@@ -80,6 +82,7 @@ export function RecordingWorkspace({
   canEnroll,
   onEnroll,
   onSave,
+  saveDisabled = false,
   onExport,
 }: RecordingWorkspaceProps) {
   const restoreDisabled =
@@ -193,7 +196,14 @@ export function RecordingWorkspace({
           <ShieldCheck size={17} />
           Enroll
         </button>
-        <button className={buttonClass} onClick={onSave}>
+        <button
+          className={buttonClass}
+          onClick={onSave}
+          disabled={saveDisabled}
+          title={
+            saveDisabled ? "Available once recording and transcription have finished" : undefined
+          }
+        >
           <Save size={17} />
           Save
         </button>

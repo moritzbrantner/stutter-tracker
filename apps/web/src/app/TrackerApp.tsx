@@ -234,6 +234,8 @@ export function App() {
     () => summarizeTranscriptionChunks(transcriptionChunks),
     [transcriptionChunks],
   );
+  const captureInProgress =
+    isRecording || isTranscribing || chunkProgress.queued + chunkProgress.processing > 0;
   const transcript = useMemo(() => segments.map((segment) => segment.text).join(" "), [segments]);
   const speechStats = normalizedSpeechStats(report);
   const blockerStats = normalizedBlockerStats(report);
@@ -730,6 +732,11 @@ export function App() {
       setMessage("Nothing to save");
       return;
     }
+    // A saved session freezes the workspace's analysis, so the observation must be complete.
+    if (captureInProgress) {
+      setMessage("Stop recording and let transcription finish before saving");
+      return;
+    }
     const loaded = loadedSessionRef.current;
     if (
       loaded &&
@@ -1174,6 +1181,7 @@ export function App() {
           canEnroll={samplesRef.current.length > 0}
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
+          saveDisabled={captureInProgress}
           onExport={exportJson}
         />
 
