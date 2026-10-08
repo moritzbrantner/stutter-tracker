@@ -48,6 +48,10 @@ pub(crate) enum BenchmarkError {
     EmptyManifest,
     #[error("the row limit must be at least 1")]
     ZeroLimit,
+    #[error("clips directory {0} does not exist or is not a directory")]
+    ClipsDirectory(String),
+    #[error("a label row has an empty {0}")]
+    EmptyIdentity(&'static str),
     #[error("labels are missing required SEP-28k column `{0}`")]
     MissingColumn(&'static str),
     #[error("clip `{clip_id}` has invalid {column} value `{value}` (expected 0-3)")]
@@ -439,6 +443,10 @@ fn f1(precision: f64, recall: f64) -> f64 {
 // ---------------------------------------------------------------------------------------------
 
 const DEFAULT_EVALUATION_FRACTION: f64 = 0.2;
+/// SEP-28k `Start`/`Stop` are sample offsets into the 16 kHz episode audio.
+const SEP28K_SAMPLE_RATE: u32 = 16_000;
+/// Allowed relative difference between decoded and labelled clip duration.
+const DURATION_TOLERANCE: f64 = 0.05;
 const PARTITION_SEED: &str = "sep28k-partition-v1";
 const LISTED_ID_LIMIT: usize = 20;
 
@@ -478,6 +486,8 @@ struct CorpusIdentity {
     labels_sha256: String,
     label_rows: usize,
     speaker_mapping_sha256: Option<String>,
+    /// SHA-256 over the sorted (clip id, WAV file SHA-256) pairs of every scored clip.
+    scored_audio_sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -514,7 +524,11 @@ struct KindPrevalence {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase", tag = "kind")]
+#[serde(
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    tag = "kind"
+)]
 enum PartitionSummary {
     /// No verified mapping: results are not speaker-exclusive and say so.
     NotSpeakerExclusive { reason: String },
@@ -533,6 +547,11 @@ pub(crate) fn run_sep28k_corpus(
 ) -> Result<CorpusRunReport, BenchmarkError> {
     if options.limit == Some(0) {
         return Err(BenchmarkError::ZeroLimit);
+    }
+    if !options.clips_dir.is_dir() {
+        return Err(BenchmarkError::ClipsDirectory(
+            options.clips_dir.display().to_string(),
+        ));
     }
     let labels = read_file(&options.labels_csv)?;
     let rows = parse_csv(&labels, &options.labels_csv)?;
@@ -554,6 +573,7 @@ pub(crate) fn run_sep28k_corpus(
     let mut missing = Vec::new();
     let mut unreadable = Vec::new();
     let mut clips = Vec::new();
+    let mut audio_digests = Vec::new();
     // The header is checked on its own so an empty or header-only manifest cannot pass.
     let header = labels
         .lines()
@@ -592,6 +612,14 @@ pub(crate) fn run_sep28k_corpus(
             missing.push(entry.id);
             continue;
         }
+        // Clips must cover the labelled interval; a truncated extraction would be scored against
+        // labels for audio it does not contain.
+        let expected_seconds = match (entry.start_sample, entry.stop_sample) {
+            (Some(start), Some(stop)) if stop > start => {
+                Some((stop - start) as f64 / f64::from(SEP28K_SAMPLE_RATE))
+            }
+            _ => None,
+        };
         let Ok((samples, sample_rate)) = read_mono_wav(&path) else {
             counts.unreadable_audio += 1;
             unreadable.push(entry.id);
@@ -603,6 +631,13 @@ pub(crate) fn run_sep28k_corpus(
             continue;
         }
         let duration_seconds = samples.len() as f64 / f64::from(sample_rate);
+        if expected_seconds.is_some_and(|expected| {
+            (duration_seconds - expected).abs() > expected * DURATION_TOLERANCE
+        }) {
+            counts.unreadable_audio += 1;
+            unreadable.push(entry.id);
+            continue;
+        }
         let report = match analyze_speech_session_impl(AnalyzeSpeechRequest {
             segments: Vec::new(),
             pauses: Vec::new(),
@@ -624,6 +659,14 @@ pub(crate) fn run_sep28k_corpus(
             .iter()
             .map(|event| event.kind)
             .collect::<HashSet<_>>();
+        audio_digests.push(format!(
+            "{}\t{}",
+            entry.id,
+            sha256_hex(&std::fs::read(&path).map_err(|error| BenchmarkError::Io {
+                path: path.display().to_string(),
+                message: error.to_string(),
+            })?)
+        ));
         clips.push(BenchmarkClip {
             id: entry.id,
             speaker_id: entry.speaker_id,
@@ -709,6 +752,10 @@ pub(crate) fn run_sep28k_corpus(
             speaker_mapping_sha256: speaker_file
                 .as_ref()
                 .map(|(_, text)| sha256_hex(text.as_bytes())),
+            scored_audio_sha256: (!audio_digests.is_empty()).then(|| {
+                audio_digests.sort();
+                sha256_hex(audio_digests.join("\n").as_bytes())
+            }),
         },
         configuration: RunConfiguration {
             detector: "existing-detector",
@@ -775,6 +822,11 @@ const SEP28K_REQUIRED_COLUMNS: [&str; 15] = [
 
 /// Vote cells must be integers 0-3; a damaged cell must not silently become a negative.
 fn validate_sep28k_votes(row: &Sep28kRow) -> Result<(), BenchmarkError> {
+    for column in &SEP28K_REQUIRED_COLUMNS[..3] {
+        if row.get(*column).is_none_or(|value| value.trim().is_empty()) {
+            return Err(BenchmarkError::EmptyIdentity(column));
+        }
+    }
     for column in &SEP28K_REQUIRED_COLUMNS[3..] {
         let value = row.get(*column).map(String::as_str).unwrap_or_default();
         if !matches!(value.parse::<u8>(), Ok(0..=3)) {
@@ -1453,5 +1505,64 @@ mod tests {
         assert_eq!(report.counts.unreadable_audio, 1);
         assert_eq!(report.unreadable_clip_ids, vec!["show:1:1".to_owned()]);
         assert_eq!(report.counts.scored, 1);
+    }
+
+    #[test]
+    fn corpus_runner_rejects_truncated_clips_and_records_an_audio_fingerprint() {
+        let corpus = FixtureCorpus::new("truncated");
+        corpus.wav_samples("show", "1", "1", None, 32_000);
+        corpus.wav("show", "1", "2", Some(220.0));
+        let labels = corpus.labels(&[FLUENT, PROLONGATION]);
+        let options = corpus.options(labels, None);
+        let report = run_sep28k_corpus(&options).unwrap();
+
+        assert_eq!(report.unreadable_clip_ids, vec!["show:1:1".to_owned()]);
+        assert_eq!(report.counts.scored, 1);
+        let fingerprint = report.corpus.scored_audio_sha256.clone().unwrap();
+        assert_eq!(fingerprint.len(), 64);
+
+        corpus.wav("show", "1", "2", Some(440.0));
+        let changed = run_sep28k_corpus(&options).unwrap();
+        assert_ne!(changed.corpus.scored_audio_sha256.unwrap(), fingerprint);
+    }
+
+    #[test]
+    fn corpus_runner_rejects_empty_identities_and_a_missing_clips_directory() {
+        let corpus = FixtureCorpus::new("identity");
+        let labels = corpus.labels(&["show,,1,0,48000,0,0,0,0,0,0,0,0,3,0,0,0"]);
+        assert!(matches!(
+            run_sep28k_corpus(&corpus.options(labels, None)),
+            Err(BenchmarkError::EmptyIdentity("EpId"))
+        ));
+
+        let mut options = corpus.options(corpus.labels(&[FLUENT]), None);
+        options.clips_dir = corpus.root.join("no-such-dir");
+        assert!(matches!(
+            run_sep28k_corpus(&options),
+            Err(BenchmarkError::ClipsDirectory(_))
+        ));
+    }
+
+    #[test]
+    fn corpus_report_uses_camel_case_keys_throughout() {
+        let corpus = FixtureCorpus::new("camel");
+        let mut rows = Vec::new();
+        let mut mapping = Vec::new();
+        for clip in 0..6 {
+            corpus.wav("show", "1", &clip.to_string(), None);
+            rows.push(format!("show,1,{clip},0,48000,0,0,0,0,0,0,0,0,3,0,0,0"));
+            mapping.push((format!("show:1:{clip}"), format!("speaker-{clip}")));
+        }
+        let rows = rows.iter().map(String::as_str).collect::<Vec<_>>();
+        let pairs = mapping
+            .iter()
+            .map(|(clip, speaker)| (clip.as_str(), speaker.as_str()))
+            .collect::<Vec<_>>();
+        let report =
+            run_sep28k_corpus(&corpus.options(corpus.labels(&rows), Some(corpus.speakers(&pairs))))
+                .unwrap();
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(json.contains("\"trainClips\""));
+        assert!(!json.contains('_'), "snake_case key in {json}");
     }
 }
