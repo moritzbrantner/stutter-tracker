@@ -6,7 +6,7 @@ import type { SpeakerProfile, TranscribeAudioRequest } from "@stutter-tracker/sh
 import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
 import { createComputeRequestHandler, withWorkerTimeouts } from "./index";
-import { createNativeWorker, type NativeWorker } from "./native-worker";
+import { createNativeWorker, killWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 
 const tempDirs: string[] = [];
@@ -597,6 +597,13 @@ describe("native worker process", () => {
       .then((stat) => stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3))
       .catch(() => "gone");
     expect(["gone", "Z"]).toContain(state);
+  });
+
+  it("signals the direct worker when its process group cannot be signalled", () => {
+    const kill = mock((_signal?: NodeJS.Signals) => undefined);
+    // No such group: the group kill throws, so the direct worker must still be signalled.
+    killWorker({ pid: 2 ** 22 + 12_345, kill }, "SIGTERM");
+    expect(kill.mock.calls).toEqual([["SIGTERM"]]);
   });
 
   it("does not echo worker stderr to public-ready clients", async () => {

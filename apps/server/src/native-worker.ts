@@ -119,8 +119,8 @@ async function runWorker<T>(
       return;
     }
     terminationError = error;
-    killGroup(process.pid, "SIGTERM");
-    const forceKill = setTimeout(() => killGroup(process.pid, "SIGKILL"), WORKER_KILL_GRACE_MS);
+    killWorker(process, "SIGTERM");
+    const forceKill = setTimeout(() => killWorker(process, "SIGKILL"), WORKER_KILL_GRACE_MS);
     void process.exited.finally(() => clearTimeout(forceKill));
   };
   const timer = setTimeout(
@@ -141,7 +141,7 @@ async function runWorker<T>(
     if (!terminationError) {
       return new Promise<never>(() => undefined);
     }
-    killGroup(process.pid, "SIGKILL");
+    killWorker(process, "SIGKILL");
     return Promise.reject(terminationError);
   });
 
@@ -200,11 +200,24 @@ function workerFailureMessage(config: ServerConfig, stderr: string) {
   return message || "native transcription worker failed";
 }
 
-function killGroup(pid: number, signal: NodeJS.Signals) {
+// Signals the worker's process group so ffmpeg/whisper children die too. Where group signalling
+// is unavailable (Windows) or fails, the direct worker is still signalled.
+export function killWorker(
+  worker: { pid: number; kill(signal?: NodeJS.Signals): void },
+  signal: NodeJS.Signals,
+) {
+  if (globalThis.process.platform !== "win32") {
+    try {
+      globalThis.process.kill(-worker.pid, signal);
+      return;
+    } catch {
+      // Fall through to the direct worker.
+    }
+  }
   try {
-    globalThis.process.kill(-pid, signal);
+    worker.kill(signal);
   } catch {
-    // The group is already gone.
+    // Already exited.
   }
 }
 
