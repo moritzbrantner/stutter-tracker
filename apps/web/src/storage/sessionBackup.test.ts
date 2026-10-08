@@ -242,6 +242,11 @@ describe("session backup", () => {
         },
       ],
       [{ ...valid, supersedes: "missing" }],
+      [{ ...valid, supersedes: "ann-1" }],
+      [
+        { ...valid, supersedes: "ann-2" },
+        { ...valid, id: "ann-2", supersedes: null },
+      ],
       [{ ...valid, basedOnRunId: "run-x" }],
       [valid, valid],
       "not a list",

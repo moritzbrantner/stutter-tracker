@@ -119,8 +119,10 @@ function isAnnotationHistory(value: unknown, runIds: string[]) {
   return (
     new Set(ids).size === ids.length &&
     value.every(
-      (revision) =>
-        (revision.supersedes === null || ids.includes(revision.supersedes as string)) &&
+      (revision, index) =>
+        // Only an earlier revision can be replaced; self-references and cycles would hide all.
+        (revision.supersedes === null ||
+          ids.slice(0, index).includes(revision.supersedes as string)) &&
         (revision.basedOnRunId === null || runIds.includes(revision.basedOnRunId as string)),
     )
   );
