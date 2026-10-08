@@ -67,6 +67,8 @@ const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const LANGUAGES = ["en-US", "de-DE", "en-GB"];
 const COMPUTE_SERVER_URL = import.meta.env.VITE_STUTTER_SERVER_URL ?? "http://127.0.0.1:8787";
 const TRANSCRIPTION_CHUNK_SECONDS = 8;
+/** Upper bound for browser recognition to deliver its final results after Stop. */
+const RECOGNITION_END_TIMEOUT_MS = 3_000;
 const TRANSCRIPTION_TARGET_SAMPLE_RATE = 16_000;
 const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
   {
@@ -142,6 +144,7 @@ export function App() {
   const [transcriptionChunks, setTranscriptionChunks] = useState<TranscriptionChunkRecord[]>([]);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isFinishingCapture, setIsFinishingCapture] = useState(false);
   const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isEnrolling, setIsEnrolling] = useState(false);
@@ -235,7 +238,10 @@ export function App() {
     [transcriptionChunks],
   );
   const captureInProgress =
-    isRecording || isTranscribing || chunkProgress.queued + chunkProgress.processing > 0;
+    isRecording ||
+    isFinishingCapture ||
+    isTranscribing ||
+    chunkProgress.queued + chunkProgress.processing > 0;
   const transcript = useMemo(() => segments.map((segment) => segment.text).join(" "), [segments]);
   const speechStats = normalizedSpeechStats(report);
   const blockerStats = normalizedBlockerStats(report);
@@ -543,6 +549,9 @@ export function App() {
       setMessage(`Speech recognition: ${event.error}`);
     };
     recognition.onend = () => {
+      if (!isRecordingRef.current) {
+        recognitionEndedRef.current?.();
+      }
       if (isRecordingRef.current) {
         try {
           recognition.start();
@@ -560,6 +569,8 @@ export function App() {
   }
 
   const isRecordingRef = useRef(false);
+  // Resolves when browser recognition has delivered its final results after Stop.
+  const recognitionEndedRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
@@ -625,15 +636,38 @@ export function App() {
     if (!isRecording) {
       return;
     }
+    // Saving and loading stay unavailable until every late transcript result has arrived.
+    setIsFinishingCapture(true);
+    try {
+      await finishCapture();
+    } finally {
+      setIsFinishingCapture(false);
+    }
+  }
+
+  async function finishCapture() {
     const shouldTranscribeNative = recordingTranscriptionRef.current?.engine !== "browser";
     const capturedSamples = samplesRef.current.slice();
     const capturedSampleRate = sampleRateRef.current;
     setIsRecording(false);
-    recognitionRef.current?.stop();
+    isRecordingRef.current = false;
+    const recognition = recognitionRef.current;
     recognitionRef.current = null;
+    const recognitionEnded = recognition
+      ? new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, RECOGNITION_END_TIMEOUT_MS);
+          recognitionEndedRef.current = () => {
+            clearTimeout(timer);
+            recognitionEndedRef.current = null;
+            resolve();
+          };
+        })
+      : Promise.resolve();
+    recognition?.stop();
     await browserRecorderRef.current?.stop();
     browserRecorderRef.current = null;
     setLevel(0);
+    await recognitionEnded;
     if (!shouldTranscribeNative) {
       setMessage("Stopped");
       recordingTranscriptionRef.current = null;
@@ -1218,7 +1252,12 @@ export function App() {
         blockerStats={blockerStats}
         sessions={sessions}
         deletingSessionId={deletingSessionId}
+        sessionLoadDisabled={captureInProgress}
         onSessionLoad={(session) => {
+          // Live capture would keep appending to the loaded transcript.
+          if (captureInProgress) {
+            return;
+          }
           startedAtRef.current = new Date(session.startedAt);
           activeSessionIdRef.current = session.id;
           setSegments(session.segments);

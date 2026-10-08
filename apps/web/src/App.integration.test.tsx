@@ -1,8 +1,29 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { fallbackAnalyze } from "@stutter-tracker/shared";
 import { App } from "./App";
+
+type AnalyzeRun =
+  import("@stutter-tracker/compute-client").ComputeClient["analyzeSpeechSessionRun"];
+// Lets a test control analyzer responses; null passes through to the real client.
+let analysisHook: AnalyzeRun | null = null;
+
+vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@stutter-tracker/compute-client")>();
+  return {
+    ...actual,
+    createComputeClient: (...args: Parameters<typeof actual.createComputeClient>) => {
+      const client = actual.createComputeClient(...args);
+      return {
+        ...client,
+        analyzeSpeechSessionRun: (request: Parameters<AnalyzeRun>[0]) =>
+          analysisHook ? analysisHook(request) : client.analyzeSpeechSessionRun(request),
+      };
+    },
+  };
+});
 
 const STORE_KEY = "stutter-tracker:sessions";
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
@@ -25,6 +46,7 @@ function renderApp() {
 }
 
 afterEach(() => {
+  analysisHook = null;
   localStorage.clear();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "mediaDevices", {
@@ -143,7 +165,7 @@ describe("App integration", () => {
     expect(stored.map((session) => session.id)).toEqual(["session-1"]);
   });
 
-  it("shows a loaded session's stored analysis instead of a live re-analysis", async () => {
+  it("shows a loaded session's stored analysis even when a pending analysis resolves later", async () => {
     const stored = {
       id: "session-stored",
       startedAt: "2026-05-19T10:00:00.000Z",
@@ -177,13 +199,38 @@ describe("App integration", () => {
       },
     };
     localStorage.setItem(STORE_KEY, JSON.stringify([stored]));
+    const requests: Parameters<AnalyzeRun>[0][] = [];
+    let resolvePending!: (value: Awaited<ReturnType<AnalyzeRun>>) => void;
+    analysisHook = (request) => {
+      requests.push(request);
+      return new Promise((resolve) => {
+        resolvePending = resolve;
+      });
+    };
     const { container } = renderApp();
+    // The initial workspace analysis is in flight when the saved session is loaded.
+    await waitFor(() => expect(requests).toHaveLength(1));
 
     await userEvent.click(container.querySelector<HTMLButtonElement>(".session-row")!);
     expect(await screen.findByText("Stored marker event")).toBeInTheDocument();
-    // Give any live analysis time to resolve; it must not replace the stored report.
-    await new Promise((resolve) => setTimeout(resolve, 300));
+
+    const lateReport = fallbackAnalyze({ segments: [], pauses: [] });
+    await act(async () =>
+      resolvePending({
+        report: {
+          ...lateReport,
+          events: [
+            { ...stored.report.events[0], kind: "prolongation", detail: "Late live result" },
+          ],
+        },
+        analyzer: { producer: "onDevice", algorithm: "test", version: null },
+      }),
+    );
+
     expect(screen.getByText("Stored marker event")).toBeInTheDocument();
+    expect(screen.queryByText("Late live result")).not.toBeInTheDocument();
+    // Loading a saved session runs no analysis of its own.
+    expect(requests).toHaveLength(1);
   });
 
   it("keeps a session when deletion is cancelled or its storage write fails", async () => {

@@ -34,6 +34,8 @@ type LowerDashboardProps = {
   blockerStats: BlockerStats;
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
+  /** Loading waits until capture and transcription have finished. */
+  sessionLoadDisabled?: boolean;
   onSessionDelete: (session: SavedSession) => void;
   deletingSessionId: string | null;
 };
@@ -46,6 +48,7 @@ export function LowerDashboard({
   blockerStats,
   sessions,
   onSessionLoad,
+  sessionLoadDisabled = false,
   onSessionDelete,
   deletingSessionId,
 }: LowerDashboardProps) {
@@ -59,6 +62,7 @@ export function LowerDashboard({
       <SessionsPanel
         sessions={sessions}
         onSessionLoad={onSessionLoad}
+        sessionLoadDisabled={sessionLoadDisabled}
         onSessionDelete={onSessionDelete}
         deletingSessionId={deletingSessionId}
       />
@@ -366,11 +370,13 @@ function TrendMetric({
 function SessionsPanel({
   sessions,
   onSessionLoad,
+  sessionLoadDisabled = false,
   onSessionDelete,
   deletingSessionId,
 }: {
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
+  sessionLoadDisabled?: boolean;
   onSessionDelete: (session: SavedSession) => void;
   deletingSessionId: string | null;
 }) {
@@ -399,6 +405,12 @@ function SessionsPanel({
                 <button
                   className={`session-row ${buttonClass} min-w-0 flex-1 justify-start rounded-none border-0 px-4 py-3`}
                   onClick={() => onSessionLoad(session)}
+                  disabled={sessionLoadDisabled}
+                  title={
+                    sessionLoadDisabled
+                      ? "Available once recording and transcription have finished"
+                      : undefined
+                  }
                 >
                   <PlayCircle className="shrink-0" size={18} />
                   <span className="min-w-0 flex-1 text-left">
