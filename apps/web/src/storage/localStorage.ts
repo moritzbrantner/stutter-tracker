@@ -5,6 +5,7 @@ import {
   hasConsent,
   parseConsentLedger,
   recordConsent,
+  withdrawOtherScopes,
 } from "@stutter-tracker/shared";
 import type {
   SavedSession,
@@ -41,7 +42,8 @@ export function loadConsentLedger(storage: Storage = localStorage): ConsentLedge
     } catch {
       // Storage unavailable.
     }
-    ledger = EMPTY_CONSENT_LEDGER;
+    // A legacy grant must not be revived on top of a ledger whose later decisions are unknown.
+    return EMPTY_CONSENT_LEDGER;
   }
   try {
     const legacyUrl = storage.getItem(REMOTE_CONSENT_KEY);
@@ -87,7 +89,13 @@ export function saveRemoteConsent(
   granted: boolean,
   storage: Storage = localStorage,
 ) {
-  recordConsentDecision({ purpose: "remoteAnalysis", granted, scope: serverUrl }, storage);
+  let ledger = loadConsentLedger(storage);
+  if (granted) {
+    // Consent covers one server at a time; returning to an earlier server needs consent again.
+    ledger = withdrawOtherScopes(ledger, "remoteAnalysis", serverUrl);
+  }
+  ledger = recordConsent(ledger, { purpose: "remoteAnalysis", granted, scope: serverUrl });
+  storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
 }
 
 export function loadSessionsFromStorage(storage: Storage = localStorage): SavedSession[] {

@@ -1,8 +1,8 @@
 import {
   type ConsentLedger,
-  currentConsent,
   hasConsent,
   recordConsent,
+  withdrawOtherScopes,
 } from "@stutter-tracker/shared";
 
 export function normalizeServerUrl(url: string) {
@@ -27,17 +27,5 @@ export function setRemoteConsent(ledger: ConsentLedger, serverUrl: string, grant
  * an earlier URL needs consent again.
  */
 export function withdrawOtherServerConsent(ledger: ConsentLedger, serverUrl: string) {
-  const url = normalizeServerUrl(serverUrl);
-  const grantedScopes = new Set(
-    ledger
-      .filter((entry) => entry.purpose === "remoteAnalysis" && entry.scope !== url)
-      .map((entry) => entry.scope),
-  );
-  let next = ledger;
-  for (const scope of grantedScopes) {
-    if (currentConsent(next, "remoteAnalysis", scope)?.granted) {
-      next = recordConsent(next, { purpose: "remoteAnalysis", granted: false, scope });
-    }
-  }
-  return next;
+  return withdrawOtherScopes(ledger, "remoteAnalysis", normalizeServerUrl(serverUrl));
 }

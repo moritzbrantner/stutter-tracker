@@ -10,6 +10,7 @@ import {
   parseConsentLedger,
   recordConsent,
   requireConsent,
+  withdrawOtherScopes,
 } from "./consent";
 
 const server = "https://compute.example.com";
@@ -81,6 +82,20 @@ describe("consent ledger", () => {
       expect(parseConsentLedger([grant, corrupt])).toBeNull();
     }
     expect(parseConsentLedger({ not: "an array" })).toBeNull();
+  });
+
+  test("withdraws grants for other scopes of the same purpose only", () => {
+    let ledger = recordConsent(EMPTY_CONSENT_LEDGER, {
+      purpose: "remoteAnalysis",
+      granted: true,
+      scope: "a",
+    });
+    ledger = recordConsent(ledger, { purpose: "clinicianSharing", granted: true, scope: "a" });
+    const moved = withdrawOtherScopes(ledger, "remoteAnalysis", "b");
+
+    expect(hasConsent(moved, "remoteAnalysis", "a")).toBe(false);
+    expect(hasConsent(moved, "clinicianSharing", "a")).toBe(true);
+    expect(withdrawOtherScopes(moved, "remoteAnalysis", "b")).toBe(moved);
   });
 
   test("rejects recording an unknown purpose", () => {

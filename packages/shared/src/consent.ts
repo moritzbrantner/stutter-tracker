@@ -55,6 +55,30 @@ export function recordConsent(
   ];
 }
 
+/**
+ * Appends a withdrawal for every currently granted scope of `purpose` except `keepScope`, e.g.
+ * when consent moves to another server, so returning to an earlier one needs consent again.
+ */
+export function withdrawOtherScopes(
+  ledger: ConsentLedger,
+  purpose: ConsentPurpose,
+  keepScope: string,
+  at?: Date,
+): ConsentLedger {
+  const scopes = new Set(
+    ledger
+      .filter((entry) => entry.purpose === purpose && entry.scope !== keepScope)
+      .map((entry) => entry.scope),
+  );
+  let next = ledger;
+  for (const scope of scopes) {
+    if (hasConsent(next, purpose, scope)) {
+      next = recordConsent(next, { purpose, granted: false, scope, at });
+    }
+  }
+  return next;
+}
+
 /** The latest decision for this purpose and exact scope; none means denied. */
 export function currentConsent(
   ledger: ConsentLedger,

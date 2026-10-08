@@ -32,6 +32,25 @@ describe("local storage helpers", () => {
     ]);
   });
 
+  it("withdraws the previous server's grant when another server is granted", () => {
+    const storage = memoryStorage({});
+    saveRemoteConsent("https://a.example.com", true, storage);
+    saveRemoteConsent("https://b.example.com", true, storage);
+
+    expect(loadRemoteConsent("https://b.example.com", storage)).toBe(true);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+  });
+
+  it("does not revive a legacy grant when the ledger is unreadable", () => {
+    const storage = memoryStorage({
+      [CONSENT_LEDGER_KEY]: "{",
+      [REMOTE_CONSENT_KEY]: "https://a.example.com",
+    });
+
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+    expect(storage.getItem(CONSENT_LEDGER_KEY)).toBe("{");
+  });
+
   it("migrates a legacy remote-analysis grant into the ledger once", () => {
     const storage = memoryStorage({ [REMOTE_CONSENT_KEY]: "https://a.example.com" });
 
