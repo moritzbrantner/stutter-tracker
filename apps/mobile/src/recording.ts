@@ -32,6 +32,9 @@ export function mobileErrorMessage(error: unknown) {
   if (message.includes("native_worker_unavailable")) {
     return "Compute server has no native transcription worker configured";
   }
+  if (message.includes("server_busy")) {
+    return "Compute server is busy; try again shortly";
+  }
   if (message.includes("Network request failed") || message.includes("Failed to fetch")) {
     return "Compute server is unreachable";
   }
