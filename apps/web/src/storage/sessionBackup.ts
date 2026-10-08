@@ -116,7 +116,7 @@ function isSessionProvenance(value: Record<string, unknown>) {
 }
 
 /** Optional on older version-2 records; when present, ids are unique and references resolve. */
-function isAnnotationHistory(value: unknown, runIds: string[], inputId: string) {
+function isAnnotationHistory(value: unknown, runIdList: string[], inputId: string) {
   if (value === undefined) {
     return true;
   }
@@ -126,12 +126,13 @@ function isAnnotationHistory(value: unknown, runIds: string[], inputId: string) 
   // One pass: ids are unique, only an earlier revision can be replaced (self-references and
   // cycles would hide every revision), and each revision describes this session's observation.
   const earlier = new Set<string>();
+  const runIds = new Set(runIdList);
   for (const revision of value) {
     const id = revision.id as string;
     if (
       earlier.has(id) ||
       (revision.supersedes !== null && !earlier.has(revision.supersedes as string)) ||
-      (revision.basedOnRunId !== null && !runIds.includes(revision.basedOnRunId as string)) ||
+      (revision.basedOnRunId !== null && !runIds.has(revision.basedOnRunId as string)) ||
       revision.inputId !== inputId
     ) {
       return false;
