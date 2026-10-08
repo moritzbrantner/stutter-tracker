@@ -47,7 +47,7 @@ export function validateSpeakerProfilesBody(value: unknown): SpeakerProfile[] {
 
 export function validateSpeakerProfile(value: unknown): SpeakerProfile | null {
   const body = object(value);
-  const id = optionalTrimmedString(body.id, "id") ?? "";
+  const id = normalizeSpeakerProfileId(body.id);
   const label = optionalTrimmedString(body.label, "label") ?? "";
   if (!id || !label) {
     return null;
@@ -66,6 +66,10 @@ export function validateSpeakerProfile(value: unknown): SpeakerProfile | null {
     sampleRate: positiveInteger(body.sampleRate, "sampleRate"),
     sampleCount: positiveInteger(body.sampleCount, "sampleCount"),
   };
+}
+
+export function normalizeSpeakerProfileId(value: unknown): string {
+  return optionalTrimmedString(value, "id") ?? "";
 }
 
 export function validateCreateSpeakerProfileRequest(value: unknown) {

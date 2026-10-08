@@ -25,6 +25,7 @@ import {
 import { createNativeWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 import {
+  normalizeSpeakerProfileId,
   validateAnalyzeSpeechRequest,
   validateCreateSpeakerProfileRequest,
   validateDownloadModelRequest,
@@ -95,6 +96,25 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
           await readJson(request, deps.config.maxBodyBytes),
         );
         return jsonResponse({ speakers: await deps.speakerStore.upsertMany(speakers) }, 200, cors);
+      }
+
+      // The id travels as a query parameter: as a path segment, ids such as "." or ".." would be
+      // normalized away by URL parsing. Deleting everything needs an explicit all=1.
+      if (request.method === "DELETE" && url.pathname === "/speakers") {
+        const originalId = url.searchParams.get("id");
+        if (originalId !== null && originalId !== "") {
+          const id = normalizeSpeakerProfileId(originalId);
+          if (!id) throw new HttpError("invalid_request", "speaker id must not be blank", 400);
+          if (!(await deps.speakerStore.delete(id))) {
+            // A specific code, so clients can tell a missing profile from a missing route.
+            return errorResponse("speaker_not_found", "speaker profile not found", 404, cors);
+          }
+          return jsonResponse({ deleted: 1 }, 200, cors);
+        }
+        if (url.searchParams.get("all") === "1") {
+          return jsonResponse({ deleted: await deps.speakerStore.deleteAll() }, 200, cors);
+        }
+        throw new HttpError("invalid_request", "pass ?id=<speaker id> or ?all=1", 400);
       }
 
       if (request.method === "POST" && url.pathname === "/speakers/profile") {
@@ -305,10 +325,22 @@ function identifySpeaker(body: {
   return { bestMatch: matches[0], matches, isMatch: Boolean(matches[0]) };
 }
 
+function isLoopbackOrigin(origin: string) {
+  try {
+    const host = new URL(origin).hostname;
+    // The whole 127.0.0.0/8 range is loopback, as in the client's local-companion policy.
+    return (
+      host === "localhost" || host === "[::1]" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host)
+    );
+  } catch {
+    return false;
+  }
+}
+
 function corsHeaders(config: ServerConfig, request: Request): ResponseHeaders | Response {
   const origin = request.headers.get("origin");
   const headers = {
-    "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
     "access-control-allow-headers": "authorization, content-type",
     "access-control-expose-headers": `${ANALYZER_ALGORITHM_HEADER}, ${ANALYZER_VERSION_HEADER}`,
     vary: "Origin",
@@ -323,6 +355,21 @@ function corsHeaders(config: ServerConfig, request: Request): ResponseHeaders | 
     (!config.publicReady && config.allowedOrigins.length === 0);
   if (!allowed) {
     return errorResponse("forbidden_origin", "origin is not allowed", 403, headers);
+  }
+  // Loopback mode accepts any origin without a token, so destructive requests from a browser must
+  // come from a loopback page or an explicitly allowed origin; any website could otherwise erase
+  // the stored voiceprints. Non-browser clients send no Origin and are unaffected.
+  const destructive =
+    request.method === "DELETE" ||
+    (request.method === "OPTIONS" &&
+      request.headers.get("access-control-request-method")?.toUpperCase() === "DELETE");
+  if (destructive && !config.allowedOrigins.includes(origin) && !isLoopbackOrigin(origin)) {
+    return errorResponse(
+      "forbidden_origin",
+      "deleting requires a loopback or explicitly allowed origin",
+      403,
+      headers,
+    );
   }
 
   return {

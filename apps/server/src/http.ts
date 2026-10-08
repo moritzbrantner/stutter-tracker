@@ -8,6 +8,7 @@ export type ErrorCode =
   | "native_worker_unavailable"
   | "transcription_failed"
   | "not_found"
+  | "speaker_not_found"
   | "internal_error";
 
 export class HttpError extends Error {

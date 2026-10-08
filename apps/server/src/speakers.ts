@@ -7,6 +7,10 @@ import { validateSpeakerProfile } from "./validation";
 export type SpeakerStore = {
   list(): Promise<SpeakerProfile[]>;
   upsertMany(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
+  /** Removes one voiceprint; resolves false when it did not exist. */
+  delete(id: string): Promise<boolean>;
+  /** Removes every stored voiceprint; resolves the number removed. */
+  deleteAll(): Promise<number>;
   deleteMissing?: false;
 };
 
@@ -28,13 +32,14 @@ export function createSpeakerStore(options: {
   return new FileSpeakerStore(options.filePath);
 }
 
-class PostgresSpeakerStore implements SpeakerStore {
+export class PostgresSpeakerStore implements SpeakerStore {
   deleteMissing = false as const;
   private sql: ReturnType<typeof postgres>;
   private schemaReady = false;
 
-  constructor(databaseUrl: string) {
-    this.sql = postgres(databaseUrl);
+  /** Takes a connection URL, or an existing client (tests pass a recording fake). */
+  constructor(connection: string | ReturnType<typeof postgres>) {
+    this.sql = typeof connection === "string" ? postgres(connection) : connection;
   }
 
   async list(): Promise<SpeakerProfile[]> {
@@ -74,6 +79,18 @@ class PostgresSpeakerStore implements SpeakerStore {
     return this.list();
   }
 
+  async delete(id: string): Promise<boolean> {
+    const db = await this.ensureSchema();
+    const rows = await db`delete from known_speakers where id = ${id} returning id`;
+    return rows.length > 0;
+  }
+
+  async deleteAll(): Promise<number> {
+    const db = await this.ensureSchema();
+    const rows = await db`delete from known_speakers returning id`;
+    return rows.length;
+  }
+
   private async ensureSchema() {
     if (this.schemaReady) {
       return this.sql;
@@ -95,6 +112,9 @@ class PostgresSpeakerStore implements SpeakerStore {
 
 class FileSpeakerStore implements SpeakerStore {
   deleteMissing = false as const;
+  // Every read-modify-write runs after the previous one, so concurrent requests cannot restore a
+  // deleted voiceprint by writing back a list they read earlier.
+  private tail: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly filePath: string) {}
 
@@ -111,18 +131,54 @@ class FileSpeakerStore implements SpeakerStore {
     }
   }
 
-  async upsertMany(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]> {
-    const existing = await this.list();
-    const byId = new Map(existing.map((speaker) => [speaker.id, speaker]));
-    for (const speaker of normalizeSpeakerProfiles(speakers)) {
-      byId.set(speaker.id, speaker);
-    }
-    const next = [...byId.values()].sort((left, right) => left.label.localeCompare(right.label));
+  upsertMany(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]> {
+    return this.mutate(async (existing) => {
+      const byId = new Map(existing.map((speaker) => [speaker.id, speaker]));
+      for (const speaker of normalizeSpeakerProfiles(speakers)) {
+        byId.set(speaker.id, speaker);
+      }
+      const next = [...byId.values()].sort((left, right) => left.label.localeCompare(right.label));
+      return { next, result: next };
+    });
+  }
+
+  delete(id: string): Promise<boolean> {
+    return this.mutate(async (existing) => {
+      const next = existing.filter((speaker) => speaker.id !== id);
+      return next.length === existing.length ? { result: false } : { next, result: true };
+    });
+  }
+
+  deleteAll(): Promise<number> {
+    // Erasure must not depend on parsing the bytes being erased. Writes still fail
+    // normally; only the reported previous count is best effort.
+    return this.mutate(async (existing) => ({ next: [], result: existing.length }), true);
+  }
+
+  private mutate<T>(
+    change: (existing: SpeakerProfile[]) => Promise<{ next?: SpeakerProfile[]; result: T }>,
+    bestEffortRead = false,
+  ): Promise<T> {
+    const operation = this.tail.then(async () => {
+      const existing = await this.list().catch((error: unknown) => {
+        if (bestEffortRead) return [];
+        throw error;
+      });
+      const { next, result } = await change(existing);
+      if (next) {
+        await this.write(next);
+      }
+      return result;
+    });
+    this.tail = operation.catch(() => undefined);
+    return operation;
+  }
+
+  private async write(speakers: SpeakerProfile[]) {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, JSON.stringify(next, null, 2), "utf8");
+    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    await writeFile(tempPath, JSON.stringify(speakers, null, 2), "utf8");
     await rename(tempPath, this.filePath);
-    return next;
   }
 }
 

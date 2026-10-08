@@ -136,6 +136,12 @@ export type ComputeClient = {
   analyzeSpeechSessionRun(request: AnalyzeSpeechRequest): Promise<AnalyzedSpeech>;
   listSpeakerProfiles(): Promise<SpeakerProfile[]>;
   saveSpeakerProfiles(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
+  /**
+   * Deletes a voiceprint on the server. Resolves "deleted", "notFound" (already gone), or
+   * "noServer" when no server is currently permitted. A server used under earlier
+   * consent may still hold a copy; this result makes no claim about past uploads.
+   */
+  deleteSpeakerProfile(id: string): Promise<"deleted" | "notFound" | "noServer">;
   createSpeakerProfile(request: {
     id?: string;
     label: string;
@@ -202,6 +208,32 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
         headers,
       );
       return result.speakers;
+    },
+    async deleteSpeakerProfile(id) {
+      if (!baseUrl) {
+        return "noServer";
+      }
+      const path = `/speakers?id=${encodeURIComponent(id)}`;
+      const response = await fetcher(`${baseUrl}${path}`, {
+        redirect: "error",
+        method: "DELETE",
+        headers,
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (response.status === 404) {
+        // Only the endpoint's own answer means "already gone"; an older server without the route
+        // also returns 404, and then the voiceprint is still there.
+        const code = await response
+          .clone()
+          .json()
+          .then((body: { error?: { code?: string } }) => body.error?.code)
+          .catch(() => undefined);
+        if (code === "speaker_not_found") {
+          return "notFound";
+        }
+      }
+      await assertOk(response, path);
+      return "deleted";
     },
     async saveSpeakerProfiles(speakers) {
       if (!baseUrl) {

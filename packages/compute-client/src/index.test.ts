@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
 import {
   COMPUTE_SERVER_ANALYZER,
@@ -174,6 +174,35 @@ function countingFetch(respond: () => Response | Promise<Response> = () => json(
 }
 
 describe("processing policy", () => {
+  it("cancels a speaker deletion when the server never responds", async () => {
+    const originalTimeout = AbortSignal.timeout.bind(AbortSignal);
+    const timeout = spyOn(AbortSignal, "timeout").mockImplementation((milliseconds) =>
+      originalTimeout(Math.min(milliseconds, 5)),
+    );
+    const stalledFetch = Object.assign(
+      (_input: RequestInfo | URL, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          const signal = init?.signal;
+          if (!signal) {
+            reject(new Error("Request has no cancellation signal"));
+            return;
+          }
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        }),
+      { preconnect: fetch.preconnect },
+    );
+    const request = spyOn(globalThis, "fetch").mockImplementation(stalledFetch);
+    try {
+      const client = createComputeClient({
+        processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      });
+      await expect(client.deleteSpeakerProfile("a")).rejects.toHaveProperty("name", "TimeoutError");
+    } finally {
+      request.mockRestore();
+      timeout.mockRestore();
+    }
+  });
+
   const blockedPolicies: Array<[string, ProcessingPolicy | undefined]> = [
     ["default (no policy)", undefined],
     ["on-device", { mode: "onDevice" }],
@@ -214,6 +243,34 @@ describe("processing policy", () => {
 
     expect(report).toBeDefined();
     expect(calls).toEqual(["http://127.0.0.1:8787/analysis"]);
+  });
+
+  it("deletes a voiceprint on the permitted server only", async () => {
+    const { calls, fetchImpl } = countingFetch(() => json({ deleted: 1 }, 200));
+    const client = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl,
+    });
+    expect(await client.deleteSpeakerProfile("speaker 1")).toBe("deleted");
+    expect(calls).toEqual(["http://127.0.0.1:8787/speakers?id=speaker%201"]);
+
+    const gone = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(() => json({ error: { code: "speaker_not_found" } }, 404)).fetchImpl,
+    });
+    expect(await gone.deleteSpeakerProfile("a")).toBe("notFound");
+
+    // An older server without the route answers its generic 404: the voiceprint is still there.
+    const older = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(() => json({ error: { code: "not_found" } }, 404)).fetchImpl,
+    });
+    await expect(older.deleteSpeakerProfile("a")).rejects.toThrow();
+
+    const onDevice = countingFetch();
+    const local = createComputeClient({ fetchImpl: onDevice.fetchImpl });
+    expect(await local.deleteSpeakerProfile("a")).toBe("noServer");
+    expect(onDevice.calls).toEqual([]);
   });
 
   it("reports which analyzer produced the report", async () => {

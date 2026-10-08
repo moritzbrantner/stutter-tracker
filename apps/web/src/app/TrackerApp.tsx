@@ -66,6 +66,8 @@ export { formatTime } from "../utils/formatting";
 const STORE_KEY = "stutter-tracker:sessions";
 const VOICE_KEY = "stutter-tracker:voiceprint";
 const SPEAKERS_KEY = "stutter-tracker:speakers";
+/** How long speaker removal waits for the startup load before it is enabled anyway. */
+const SPEAKER_LOAD_GRACE_MS = 5_000;
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const LANGUAGES = ["en-US", "de-DE", "en-GB"];
 const COMPUTE_SERVER_URL = import.meta.env.VITE_STUTTER_SERVER_URL ?? "http://127.0.0.1:8787";
@@ -135,6 +137,19 @@ export function App() {
   const [reportRun, setReportRun] = useState<AnalysisRunIdentity | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
+  const [failedSpeakerDeletions, setFailedSpeakerDeletions] = useState<SpeakerProfile[]>([]);
+  const [pendingSpeakerDeletionIds, setPendingSpeakerDeletionIds] = useState<ReadonlySet<string>>(
+    new Set(),
+  );
+  // Removal waits for the startup load, which could otherwise restore or re-upload a removed
+  // voiceprint from its earlier snapshot.
+  const [speakersReady, setSpeakersReady] = useState(false);
+  // Counts removals, so a slow startup load can tell its snapshot is stale.
+  const speakerRemovalsRef = useRef(0);
+  const speakerEnrollmentsRef = useRef(0);
+  const removedSpeakerIdsRef = useRef(new Set<string>());
+  const reloadSpeakersRef = useRef<(() => void) | null>(null);
+  const speakerMutationTailRef = useRef<Promise<unknown>>(Promise.resolve());
   const [corpusAnalysis, setCorpusAnalysis] = useState<SpeechCorpusAnalysis>(() =>
     emptyCorpusAnalysis(),
   );
@@ -339,15 +354,48 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadPersistedSpeakerProfiles()
-      .then((persistedSpeakers) => {
-        if (!cancelled) {
-          setSpeakers(persistedSpeakers);
-        }
-      })
-      .catch(() => undefined);
+    let latestRequest = 0;
+    const readyTimer = setTimeout(() => setSpeakersReady(true), SPEAKER_LOAD_GRACE_MS);
+    const hydrate = (fallbackToLocal = false) => {
+      const request = ++latestRequest;
+      const removalsAtStart = speakerRemovalsRef.current;
+      const enrollmentsAtStart = speakerEnrollmentsRef.current;
+      const isStale = () =>
+        cancelled ||
+        request !== latestRequest ||
+        speakerRemovalsRef.current !== removalsAtStart ||
+        speakerEnrollmentsRef.current !== enrollmentsAtStart;
+      loadPersistedSpeakerProfiles(
+        isStale,
+        (profiles) =>
+          queueSpeakerMutation(async () => {
+            if (isStale()) return [];
+            return savePersistedSpeakerProfiles(
+              profiles.filter((profile) => !removedSpeakerIdsRef.current.has(profile.id)),
+            );
+          }),
+        fallbackToLocal,
+      )
+        .then((persistedSpeakers) => {
+          if (!isStale()) {
+            const next = persistedSpeakers.filter(
+              (profile) => !removedSpeakerIdsRef.current.has(profile.id),
+            );
+            speakersRef.current = next;
+            setSpeakers(next);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          clearTimeout(readyTimer);
+          if (!cancelled) setSpeakersReady(true);
+        });
+    };
+    reloadSpeakersRef.current = () => hydrate();
+    hydrate(true);
     return () => {
       cancelled = true;
+      reloadSpeakersRef.current = null;
     };
   }, []);
 
@@ -667,7 +715,16 @@ export function App() {
         speakerMatchInFlightRef.current = true;
         setIsMatchingVoice(true);
         identifySpeaker(recent, sampleRateRef.current, speakerProfiles)
-          .then((result) => setSpeakerMatch(result.bestMatch ?? null))
+          .then((result) => {
+            // A speaker removed while identification ran must not come back as a match.
+            const match =
+              result.bestMatch &&
+              speakersRef.current.some((speaker) => speaker.id === result.bestMatch?.speakerId)
+                ? result.bestMatch
+                : null;
+            speakerMatchRef.current = match;
+            setSpeakerMatch(match);
+          })
           .catch(() => undefined)
           .finally(() => {
             speakerMatchInFlightRef.current = false;
@@ -779,20 +836,37 @@ export function App() {
         samplesRef.current.slice(-sampleRateRef.current * 12),
         sampleRateRef.current,
       );
-      const next = existing
-        ? speakersRef.current.map((speaker) =>
-            speaker.id === existing.id
-              ? {
-                  ...speaker,
-                  label: result.label,
-                  embeddings: [...speaker.embeddings, ...result.embeddings],
-                  sampleCount: speaker.sampleCount + result.sampleCount,
-                  sampleRate: result.sampleRate,
-                }
-              : speaker,
-          )
-        : [...speakersRef.current, result];
-      const persisted = await savePersistedSpeakerProfiles(next);
+      // Same queue as removals, built from the latest list when it runs, so an enrollment
+      // cannot write back a profile removed while it was being created.
+      const persisted = await queueSpeakerMutation(async () => {
+        const latest = speakersRef.current;
+        if (existing && !latest.some((speaker) => speaker.id === existing.id)) {
+          throw new Error(
+            "This voiceprint was removed while enrollment was pending. Enroll again to create a new profile.",
+          );
+        }
+        const next =
+          existing && latest.some((speaker) => speaker.id === existing.id)
+            ? latest.map((speaker) =>
+                speaker.id === existing.id
+                  ? {
+                      ...speaker,
+                      label: result.label,
+                      embeddings: [...speaker.embeddings, ...result.embeddings],
+                      sampleCount: speaker.sampleCount + result.sampleCount,
+                      sampleRate: result.sampleRate,
+                    }
+                  : speaker,
+              )
+            : [...latest, result];
+        const saved = await savePersistedSpeakerProfiles(next);
+        speakerEnrollmentsRef.current += 1;
+        if (saved.some((speaker) => speaker.id === result.id)) {
+          removedSpeakerIdsRef.current.delete(result.id);
+        }
+        speakersRef.current = saved;
+        return saved;
+      });
       setSpeakers(persisted);
       setSpeakerLabel("");
       setMessage(`${result.label} enrolled`);
@@ -1041,6 +1115,100 @@ export function App() {
             ? "Session was deleted; nothing reanalyzed"
             : "Could not save the reanalysis: browser storage is full or unavailable",
     );
+  }
+
+  // Removing a voiceprint deletes the local copy and, when a server holds it, the server copy;
+  // the message says which happened. Removals run one at a time from the latest list.
+  function removeSpeakerProfile(speaker: SpeakerProfile) {
+    if (!window.confirm(`Remove the voiceprint for ${speaker.label}?`)) {
+      return Promise.resolve();
+    }
+    speakerRemovalsRef.current += 1;
+    return queueSpeakerMutation(() => removeSpeakerLocally(speaker)).then((removed) => {
+      if (!removed) {
+        speakerRemovalsRef.current -= 1;
+        reloadSpeakersRef.current?.();
+        return;
+      }
+      removedSpeakerIdsRef.current.add(speaker.id);
+      reloadSpeakersRef.current?.();
+      // Remote deletion remains outside the queue so a stalled server does not block local changes.
+      return deleteSpeakerRemotely(speaker);
+    });
+  }
+
+  function queueSpeakerMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const operation = speakerMutationTailRef.current.then(mutation);
+    speakerMutationTailRef.current = operation.catch(() => undefined);
+    return operation;
+  }
+
+  /** Removes the local copies; resolves true when the speaker is gone locally. */
+  async function removeSpeakerLocally(speaker: SpeakerProfile): Promise<boolean> {
+    const remaining = speakersRef.current.filter((candidate) => candidate.id !== speaker.id);
+    // Browser-storage copies go first (on desktop they are what the profile was migrated from),
+    // so a failure leaves the profile listed and removable.
+    try {
+      removeLocalSpeakerCopy(speaker.id);
+    } catch (error) {
+      setMessage(`Could not remove ${speaker.label} from this browser: ${errorMessage(error)}`);
+      return false;
+    }
+    let next = remaining;
+    if (isDesktopApp()) {
+      try {
+        next = await invoke<SpeakerProfile[]>("save_speaker_profiles", { speakers: remaining });
+      } catch (error) {
+        setMessage(`Could not remove ${speaker.label}: ${errorMessage(error)}`);
+        return false;
+      }
+    }
+    speakersRef.current = next;
+    setSpeakers(next);
+    if (speakerMatchRef.current?.speakerId === speaker.id) {
+      speakerMatchRef.current = null;
+      setSpeakerMatch(null);
+    }
+    if (isDesktopApp()) {
+      setMessage(`Removed ${speaker.label}`);
+    }
+    return true;
+  }
+
+  async function deleteSpeakerRemotely(speaker: SpeakerProfile) {
+    if (isDesktopApp()) {
+      return;
+    }
+    setPendingSpeakerDeletionIds((ids) => new Set([...ids, speaker.id]));
+    try {
+      const result = await computeClient.deleteSpeakerProfile(speaker.id);
+      if (result !== "noServer") {
+        setFailedSpeakerDeletions((profiles) =>
+          profiles.filter((profile) => profile.id !== speaker.id),
+        );
+        reloadSpeakersRef.current?.();
+      }
+      setMessage(
+        result === "noServer"
+          ? // No server is permitted now; one used under earlier consent may still hold a copy.
+            `Removed ${speaker.label} from this device. No compute server is selected now; if you sent it to one earlier, delete it there too.`
+          : `Removed ${speaker.label} here and from the compute server`,
+      );
+    } catch (error) {
+      setFailedSpeakerDeletions((profiles) => [
+        ...profiles.filter((profile) => profile.id !== speaker.id),
+        speaker,
+      ]);
+      setMessage(
+        `Removed ${speaker.label} on this device only; deleting it from the compute server failed (${errorMessage(error)})`,
+      );
+    } finally {
+      setPendingSpeakerDeletionIds((ids) => {
+        const next = new Set(ids);
+        next.delete(speaker.id);
+        return next;
+      });
+    }
   }
 
   async function deleteSession(session: SavedSession) {
@@ -1395,6 +1563,9 @@ export function App() {
           corpusAnalysis={corpusAnalysis}
           unverifiedSessionCount={unverifiedSessionCount}
           speakers={speakers}
+          failedSpeakerDeletions={failedSpeakerDeletions}
+          pendingSpeakerDeletionIds={pendingSpeakerDeletionIds}
+          onSpeakerDeletionRetry={(speaker) => void deleteSpeakerRemotely(speaker)}
           speakerLabel={speakerLabel}
           canEnroll={samplesRef.current.length > 0}
           isRecording={isRecording}
@@ -1404,6 +1575,9 @@ export function App() {
           onModelSelect={updateTranscriptionModel}
           onModelDownload={(model) => downloadModel(model)}
           onSpeakerLabelChange={setSpeakerLabel}
+          onSpeakerRemove={
+            speakersReady ? (speaker) => void removeSpeakerProfile(speaker) : undefined
+          }
           onEnroll={saveSpeakerProfile}
           onCorpusExport={exportCorpusJson}
         />
@@ -2303,7 +2477,45 @@ function emptyChunkStats(): TranscriptionChunkStats {
   };
 }
 
-async function loadPersistedSpeakerProfiles(): Promise<SpeakerProfile[]> {
+function removeLocalSpeakerCopy(id: string) {
+  const raw = localStorage.getItem(SPEAKERS_KEY);
+  let stored: unknown;
+  try {
+    stored = JSON.parse(raw ?? "[]");
+  } catch (error) {
+    if (!(error instanceof SyntaxError)) {
+      throw error;
+    }
+    // Corrupt payloads contain no usable local profiles; do not block server deletion.
+    stored = [];
+  }
+  if (Array.isArray(stored)) {
+    const kept = stored.filter(
+      (candidate: unknown) =>
+        !(
+          typeof candidate === "object" &&
+          candidate !== null &&
+          "id" in candidate &&
+          typeof candidate.id === "string" &&
+          speakerProfileStorageId(candidate.id) === speakerProfileStorageId(id)
+        ),
+    );
+    if (kept.length !== stored.length) {
+      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(kept));
+    }
+  }
+  // The pre-profile key belongs only to this profile. Absent copies need no write.
+  if (id === "legacy-speaker" && localStorage.getItem(VOICE_KEY) !== null) {
+    localStorage.removeItem(VOICE_KEY);
+  }
+}
+
+/** `isStale` turns true after a removal, so the snapshot taken at start is not re-uploaded. */
+async function loadPersistedSpeakerProfiles(
+  isStale: () => boolean = () => false,
+  migrate: (profiles: SpeakerProfile[]) => Promise<SpeakerProfile[]> = savePersistedSpeakerProfiles,
+  fallbackToLocal = true,
+): Promise<SpeakerProfile[]> {
   const localSpeakers = loadSpeakerProfiles();
   if (isDesktopApp()) {
     try {
@@ -2311,11 +2523,12 @@ async function loadPersistedSpeakerProfiles(): Promise<SpeakerProfile[]> {
       if (speakers.length) {
         return normalizeSpeakerProfiles(speakers);
       }
-      if (localSpeakers.length) {
-        return savePersistedSpeakerProfiles(localSpeakers);
+      if (localSpeakers.length && !isStale()) {
+        return migrate(localSpeakers);
       }
       return [];
-    } catch {
+    } catch (error) {
+      if (!fallbackToLocal) throw error;
       return localSpeakers;
     }
   }
@@ -2325,11 +2538,12 @@ async function loadPersistedSpeakerProfiles(): Promise<SpeakerProfile[]> {
     if (speakers.length) {
       return normalizeSpeakerProfiles(speakers);
     }
-    if (localSpeakers.length) {
-      return savePersistedSpeakerProfiles(localSpeakers);
+    if (localSpeakers.length && !isStale()) {
+      return migrate(localSpeakers);
     }
     return [];
-  } catch {
+  } catch (error) {
+    if (!fallbackToLocal) throw error;
     return localSpeakers;
   }
 }
@@ -2384,16 +2598,27 @@ function loadSpeakerProfiles(): SpeakerProfile[] {
   }
 }
 
+/** Native IDs are opaque; only browser/server IDs use the server's canonical form. */
+function speakerProfileStorageId(id: string) {
+  return isDesktopApp() ? id : id.trim().slice(0, 120);
+}
+
 function normalizeSpeakerProfiles(speakers: SpeakerProfile[]) {
-  return speakers.filter(
-    (speaker) =>
+  const normalized = new Map<string, SpeakerProfile>();
+  for (const speaker of speakers) {
+    if (
       typeof speaker.id === "string" &&
       speaker.id.trim().length > 0 &&
       typeof speaker.label === "string" &&
       speaker.label.trim().length > 0 &&
       Array.isArray(speaker.embeddings) &&
-      speaker.embeddings.length > 0,
-  );
+      speaker.embeddings.length > 0
+    ) {
+      const id = speakerProfileStorageId(speaker.id);
+      normalized.set(id, { ...speaker, id, label: speaker.label.trim() });
+    }
+  }
+  return [...normalized.values()];
 }
 
 function loadTranscriptionSettings(): TranscriptionSettings {

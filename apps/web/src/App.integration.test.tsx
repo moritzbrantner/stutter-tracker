@@ -1,14 +1,28 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
 import { App } from "./App";
+import * as tauriCore from "@tauri-apps/api/core";
+import * as recorderModule from "./audio/browserRecorder";
 
 type AnalyzeRun =
   import("@stutter-tracker/compute-client").ComputeClient["analyzeSpeechSessionRun"];
 // Lets a test control analyzer responses; null passes through to the real client.
 let analysisHook: AnalyzeRun | null = null;
+type DeleteSpeaker =
+  import("@stutter-tracker/compute-client").ComputeClient["deleteSpeakerProfile"];
+let deleteSpeakerHook: DeleteSpeaker | null = null;
+type CreateSpeaker =
+  import("@stutter-tracker/compute-client").ComputeClient["createSpeakerProfile"];
+let createSpeakerHook: CreateSpeaker | null = null;
+type ListSpeakers = import("@stutter-tracker/compute-client").ComputeClient["listSpeakerProfiles"];
+let listSpeakersHook: ListSpeakers | null = null;
+type SaveSpeakers = import("@stutter-tracker/compute-client").ComputeClient["saveSpeakerProfiles"];
+let saveSpeakersHook: SaveSpeakers | null = null;
+type IdentifySpeaker = import("@stutter-tracker/compute-client").ComputeClient["identifySpeaker"];
+let identifySpeakerHook: IdentifySpeaker | null = null;
 
 vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@stutter-tracker/compute-client")>();
@@ -18,8 +32,28 @@ vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
       const client = actual.createComputeClient(...args);
       return {
         ...client,
+        get destination() {
+          return saveSpeakersHook
+            ? {
+                kind: "server" as const,
+                mode: "localCompanion" as const,
+                url: "http://localhost:4321",
+                label: "Test companion",
+              }
+            : client.destination;
+        },
+        saveSpeakerProfiles: (profiles: Parameters<SaveSpeakers>[0]) =>
+          saveSpeakersHook ? saveSpeakersHook(profiles) : client.saveSpeakerProfiles(profiles),
         analyzeSpeechSessionRun: (request: Parameters<AnalyzeRun>[0]) =>
           analysisHook ? analysisHook(request) : client.analyzeSpeechSessionRun(request),
+        identifySpeaker: (request: Parameters<IdentifySpeaker>[0]) =>
+          identifySpeakerHook ? identifySpeakerHook(request) : client.identifySpeaker(request),
+        listSpeakerProfiles: () =>
+          listSpeakersHook ? listSpeakersHook() : client.listSpeakerProfiles(),
+        createSpeakerProfile: (request: Parameters<CreateSpeaker>[0]) =>
+          createSpeakerHook ? createSpeakerHook(request) : client.createSpeakerProfile(request),
+        deleteSpeakerProfile: (id: string) =>
+          deleteSpeakerHook ? deleteSpeakerHook(id) : client.deleteSpeakerProfile(id),
       };
     },
   };
@@ -47,6 +81,12 @@ function renderApp() {
 
 afterEach(() => {
   analysisHook = null;
+  deleteSpeakerHook = null;
+  createSpeakerHook = null;
+  listSpeakersHook = null;
+  saveSpeakersHook = null;
+  identifySpeakerHook = null;
+  Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   localStorage.clear();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "mediaDevices", {
@@ -349,6 +389,98 @@ describe("App integration", () => {
     ).toBeDisabled();
   });
 
+  it("removes a voiceprint here and on the server, and says when only the local copy went", async () => {
+    const speakerProfiles = [
+      {
+        id: "speaker-a",
+        label: "Alex",
+        embeddings: [[1, 0]],
+        sampleRate: 16_000,
+        sampleCount: 16_000,
+      },
+      {
+        id: "speaker-b",
+        label: "Blair",
+        embeddings: [[0, 1]],
+        sampleRate: 16_000,
+        sampleCount: 16_000,
+      },
+    ];
+    localStorage.setItem("stutter-tracker:speakers", JSON.stringify(speakerProfiles));
+    const deleted: string[] = [];
+    deleteSpeakerHook = async (id) => {
+      deleted.push(id);
+      return "deleted";
+    };
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+    expect(
+      await screen.findByText("Removed Alex here and from the compute server"),
+    ).toBeInTheDocument();
+    expect(deleted).toEqual(["speaker-a"]);
+    expect(
+      (
+        JSON.parse(localStorage.getItem("stutter-tracker:speakers") ?? "[]") as { id: string }[]
+      ).map((profile) => profile.id),
+    ).toEqual(["speaker-b"]);
+
+    deleteSpeakerHook = async () => {
+      throw new Error("server unreachable");
+    };
+    await userEvent.click(screen.getByRole("button", { name: "Remove speaker Blair" }));
+    expect(
+      await screen.findByText(
+        /Removed Blair on this device only; deleting it from the compute server failed/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Remove speaker/ })).not.toBeInTheDocument();
+  });
+
+  it("removes a legacy voiceprint for good and keeps a speaker whose local removal failed", async () => {
+    localStorage.setItem(
+      "stutter-tracker:voiceprint",
+      JSON.stringify({ embedding: [1, 0], sampleRate: 16_000, sampleCount: 16_000 }),
+    );
+    deleteSpeakerHook = async () => "noServer";
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { unmount } = renderApp();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Remove speaker Enrolled speaker" }),
+    );
+    expect(await screen.findByText(/Removed Enrolled speaker/)).toBeInTheDocument();
+    expect(localStorage.getItem("stutter-tracker:voiceprint")).toBeNull();
+    unmount();
+
+    localStorage.setItem(
+      "stutter-tracker:speakers",
+      JSON.stringify([
+        {
+          id: "speaker-a",
+          label: "Alex",
+          embeddings: [[1, 0]],
+          sampleRate: 16_000,
+          sampleCount: 16_000,
+        },
+      ]),
+    );
+    renderApp();
+    const button = await screen.findByRole("button", { name: "Remove speaker Alex" });
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === "stutter-tracker:speakers") {
+        throw new DOMException("blocked", "SecurityError");
+      }
+      return setItem.call(this, key, value);
+    });
+    await userEvent.click(button);
+
+    expect(await screen.findByText(/Could not remove Alex from this browser/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
+  });
+
   it("previews and exports only the sessions and content the user chooses", async () => {
     const make = (id: string, startedAt: string, text: string) => ({
       id,
@@ -460,6 +592,300 @@ describe("App integration", () => {
   });
 });
 
+it("does not restore a removed voiceprint from a pending re-enrollment", async () => {
+  const profile = {
+    id: "speaker-a",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 16000,
+  };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([profile]));
+  let capture: recorderModule.BrowserRecorderOptions | undefined;
+  vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+    capture = options;
+    return { sampleRate: 16000, stop: async () => {} };
+  });
+  let finishEnrollment: ((value: typeof profile) => void) | undefined;
+  createSpeakerHook = () =>
+    new Promise((resolve) => {
+      finishEnrollment = resolve;
+    });
+  let finishDeletion: (() => void) | undefined;
+  deleteSpeakerHook = () =>
+    new Promise((resolve) => {
+      finishDeletion = () => resolve("deleted");
+    });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const user = userEvent.setup();
+  renderApp();
+  await screen.findByRole("button", { name: "Remove speaker Alex" });
+  await user.click(screen.getByRole("button", { name: /record/i }));
+  act(() => {
+    capture!.onSamples(new Float32Array(16000));
+    capture!.onLevel(0.1);
+  });
+  await user.type(screen.getByRole("textbox", { name: "Speaker label" }), "Alex");
+  await user.click(screen.getAllByRole("button", { name: "Enroll" }).at(-1)!);
+  await waitFor(() => expect(finishEnrollment).toBeDefined());
+  await user.click(screen.getByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(finishDeletion).toBeDefined());
+  await act(async () => {
+    finishEnrollment!(profile);
+  });
+  expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers") ?? "[]")).toEqual([]);
+  await act(async () => {
+    finishDeletion!();
+  });
+});
+
+it.each(["malformed", "absent"])(
+  "removes server-only profiles with %s local data",
+  async (kind) => {
+    if (kind === "malformed") {
+      localStorage.setItem("stutter-tracker:speakers", "{broken");
+    }
+    listSpeakersHook = async () => [
+      {
+        id: "server-speaker",
+        label: "Server Alex",
+        embeddings: [[1, 0]],
+        sampleRate: 16000,
+        sampleCount: 16000,
+      },
+    ];
+    const deleted: string[] = [];
+    deleteSpeakerHook = async (id) => {
+      deleted.push(id);
+      return "deleted";
+    };
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+    const remove = await screen.findByRole("button", { name: "Remove speaker Server Alex" });
+    const originalSetItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === "stutter-tracker:speakers") {
+        throw new DOMException("blocked", "SecurityError");
+      }
+      return originalSetItem.call(this, key, value);
+    });
+    await userEvent.click(remove);
+    expect(
+      await screen.findByText("Removed Server Alex here and from the compute server"),
+    ).toBeInTheDocument();
+    expect(deleted).toEqual(["server-speaker"]);
+    expect(
+      screen.queryByRole("button", { name: "Remove speaker Server Alex" }),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it("clears a match accepted immediately before queued profile removal", async () => {
+  localStorage.setItem(
+    "stutter-tracker:speakers",
+    JSON.stringify([
+      {
+        id: "speaker-a",
+        label: "Alex",
+        embeddings: [[1, 0]],
+        sampleRate: 16000,
+        sampleCount: 16000,
+      },
+      {
+        id: "speaker-b",
+        label: "Blair",
+        embeddings: [[0, 1]],
+        sampleRate: 16000,
+        sampleCount: 16000,
+      },
+    ]),
+  );
+  let capture: recorderModule.BrowserRecorderOptions | undefined;
+  vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+    capture = options;
+    return { sampleRate: 16000, stop: async () => {} };
+  });
+  let finishMatch: ((value: Awaited<ReturnType<IdentifySpeaker>>) => void) | undefined;
+  identifySpeakerHook = () =>
+    new Promise((resolve) => {
+      finishMatch = resolve;
+    });
+  deleteSpeakerHook = async () => "deleted";
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  const remove = await screen.findByRole("button", { name: "Remove speaker Alex" });
+  await userEvent.click(screen.getByRole("button", { name: /record/i }));
+  const now = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 2000);
+  act(() => {
+    capture!.onSamples(new Float32Array(32000).fill(0.1));
+    capture!.onLevel(0.1);
+  });
+  now.mockRestore();
+  await waitFor(() => expect(finishMatch).toBeDefined());
+  await act(async () => {
+    const match = { speakerId: "speaker-a", label: "Alex", score: 1 };
+    finishMatch!({ bestMatch: match, matches: [match], isMatch: true });
+    // Accept the asynchronous match within the same React batch as the removal gesture.
+    for (let microtask = 0; microtask < 5; microtask++) {
+      await Promise.resolve();
+    }
+    fireEvent.click(remove);
+  });
+  expect(
+    await screen.findByText("Removed Alex here and from the compute server"),
+  ).toBeInTheDocument();
+  expect(screen.queryByText(/Alex 100%/)).not.toBeInTheDocument();
+});
+
+it("finishes startup migration before deleting its voiceprint", async () => {
+  const profile = {
+    id: "migration-alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+    updatedAt: "2026-10-01T00:00:00Z",
+  };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([profile]));
+  let finishMigration: (() => void) | undefined;
+  const serverIds = new Set<string>();
+  listSpeakersHook = async () => [];
+  saveSpeakersHook = (profiles) =>
+    new Promise((resolve) => {
+      finishMigration = () => {
+        for (const saved of profiles) serverIds.add(saved.id);
+        resolve(profiles);
+      };
+    });
+  const deleted = vi.fn(async (id: string) => {
+    serverIds.delete(id);
+    return "deleted" as const;
+  });
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  await waitFor(() => expect(finishMigration).toBeDefined());
+  const remove = await screen.findByRole(
+    "button",
+    { name: "Remove speaker Alex" },
+    { timeout: 6500 },
+  );
+  fireEvent.click(remove);
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(deleted).not.toHaveBeenCalled();
+  await act(async () => finishMigration?.());
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith(profile.id));
+  expect(serverIds.has(profile.id)).toBe(false);
+}, 15000);
+
+it("removes canonical server IDs from whitespace-padded persisted profiles", async () => {
+  const profile = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([{ ...profile, id: " alex " }]));
+  listSpeakersHook = async () => [profile];
+  const deleted = vi.fn(async () => "deleted" as const);
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith("alex"));
+  expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
+});
+
+it("reloads server-only profiles after a failed local removal during hydration", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([alex]));
+  let finishLoad: ((profiles: (typeof alex)[]) => void) | undefined;
+  let requests = 0;
+  listSpeakersHook = () =>
+    ++requests === 1
+      ? new Promise((resolve) => {
+          finishLoad = resolve;
+        })
+      : Promise.resolve([alex, blair]);
+  const deleted = vi.fn(async () => "deleted" as const);
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  const remove = await screen.findByRole(
+    "button",
+    { name: "Remove speaker Alex" },
+    { timeout: 6500 },
+  );
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("Quota full");
+  });
+  fireEvent.click(remove);
+  await act(async () => {
+    await Promise.resolve();
+    finishLoad?.([alex, blair]);
+  });
+  expect(await screen.findByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
+  expect(deleted).not.toHaveBeenCalled();
+}, 15000);
+
+it.each([" alex ", `alex${"x".repeat(126)}`])(
+  "uses a canonical ID when removing before startup hydration finishes: %s",
+  async (storedId) => {
+    localStorage.setItem(
+      "stutter-tracker:speakers",
+      JSON.stringify([
+        { id: storedId, label: "Alex", embeddings: [[1, 0]], sampleRate: 16000, sampleCount: 1 },
+      ]),
+    );
+    listSpeakersHook = () => new Promise(() => undefined);
+    const deleted = vi.fn(async () => "deleted" as const);
+    deleteSpeakerHook = deleted;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Remove speaker Alex" }, { timeout: 6500 }),
+    );
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(storedId.trim().slice(0, 120)));
+    expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
+  },
+  15000,
+);
+
+it("removes canonical server IDs from overlong persisted profiles", async () => {
+  const profile = {
+    id: "a".repeat(120),
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  localStorage.setItem(
+    "stutter-tracker:speakers",
+    JSON.stringify([{ ...profile, id: "a".repeat(130) }]),
+  );
+  listSpeakersHook = async () => [profile];
+  const deleted = vi.fn(async () => "deleted" as const);
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith(profile.id));
+  expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
+});
+
 it("reuses the data preview across parent recording renders", async () => {
   const { EvidenceExportPanel } = await import("./components/EvidenceExportPanel");
   const { createSessionRecord } = await import("@stutter-tracker/shared");
@@ -554,4 +980,222 @@ it("requires saved clinician-sharing consent and rechecks withdrawal before down
   await user.click(screen.getByRole("button", { name: "Choose sessions" }));
   await user.click(screen.getByRole("checkbox", { name: /Session 1/ }));
   expect(screen.getByRole("button", { name: "Download report" })).toBeDisabled();
+});
+
+it("hydrates server-only profiles after a successful removal during startup", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([alex]));
+  let finishStartup: ((profiles: (typeof alex)[]) => void) | undefined;
+  let requests = 0;
+  listSpeakersHook = () =>
+    ++requests === 1
+      ? new Promise((resolve) => {
+          finishStartup = resolve;
+        })
+      : Promise.resolve([alex, blair]);
+  deleteSpeakerHook = async () => "deleted";
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Remove speaker Alex" }, { timeout: 6500 }),
+  );
+  await act(async () => {
+    finishStartup?.([alex, blair]);
+  });
+  expect(await screen.findByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
+}, 15000);
+
+it.each(["deleted", "notFound"] as const)(
+  "reveals local profiles after the final server deletion is confirmed: %s",
+  async (result) => {
+    const alex = {
+      id: "alex",
+      label: "Server Alex",
+      embeddings: [[1, 0]],
+      sampleRate: 16000,
+      sampleCount: 1,
+    };
+    const blair = { ...alex, id: "blair", label: "Local Blair" };
+    localStorage.setItem("stutter-tracker:speakers", JSON.stringify([blair]));
+    let server = [alex];
+    let requests = 0;
+    let finishDeletion: (() => void) | undefined;
+    listSpeakersHook = async () => {
+      requests += 1;
+      return server;
+    };
+    deleteSpeakerHook = () =>
+      new Promise((resolve) => {
+        finishDeletion = () => {
+          server = [];
+          resolve(result);
+        };
+      });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Server Alex" }));
+    await waitFor(() => expect(requests).toBe(2));
+    expect(
+      screen.queryByRole("button", { name: "Remove speaker Local Blair" }),
+    ).not.toBeInTheDocument();
+    await act(async () => finishDeletion?.());
+    expect(
+      await screen.findByRole("button", { name: "Remove speaker Local Blair" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Remove speaker Server Alex" }),
+    ).not.toBeInTheDocument();
+  },
+);
+
+it("preserves distinct native profile IDs with the same long prefix", async () => {
+  const prefix = "a".repeat(130);
+  const alex = {
+    id: prefix + "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: prefix + "blair", label: "Blair" };
+  let native = [alex, blair];
+  const invoke = vi.spyOn(tauriCore, "invoke").mockImplementation(async (command) => {
+    if (command === "load_speaker_profiles") return native;
+    if (command === "save_speaker_profiles") {
+      native = [blair];
+      return native;
+    }
+    throw new Error("Native command unavailable in this profile fixture");
+  });
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: { invoke } });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  const remove = await screen.findByRole("button", { name: "Remove speaker Alex" });
+  expect(screen.getByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+  fireEvent.click(remove);
+  await waitFor(() => expect(native.map((profile) => profile.id)).toEqual([blair.id]));
+  expect(invoke).toHaveBeenCalledWith("save_speaker_profiles", { speakers: [blair] });
+  expect(screen.getByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+});
+
+it("offers a retry after local deletion succeeds but server deletion fails", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  listSpeakersHook = async () => [alex];
+  deleteSpeakerHook = async () => {
+    throw new Error("Temporary network failure");
+  };
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  const retry = await screen.findByRole("button", {
+    name: "Retry deleting speaker Alex from compute server",
+  });
+  deleteSpeakerHook = async () => "deleted";
+  fireEvent.click(retry);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Retry deleting speaker Alex from compute server" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
+});
+
+it("keeps unrelated server profiles when post-removal refresh fails", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  let requests = 0;
+  listSpeakersHook = async () => {
+    if (++requests === 1) return [alex, blair];
+    throw new Error("Temporary fetch failure");
+  };
+  deleteSpeakerHook = async () => "deleted";
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(requests).toBe(3));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+});
+
+it("keeps a re-enrolled native ID visible after another removal refresh", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 16000,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  let native = [alex, blair];
+  let saves = 0;
+  let loads = 0;
+  let finishRefresh: ((profiles: typeof native) => void) | undefined;
+  const invoke = vi.spyOn(tauriCore, "invoke").mockImplementation(async (command) => {
+    if (command === "load_speaker_profiles") {
+      if (++loads === 2)
+        return new Promise((resolve) => {
+          finishRefresh = resolve;
+        });
+      return native;
+    }
+    if (command === "create_speaker_profile") return alex;
+    if (command === "save_speaker_profiles") {
+      native = ++saves === 1 ? [blair] : saves === 2 ? [blair, alex] : [alex];
+      return native;
+    }
+    throw new Error("Native command unavailable in this profile fixture");
+  });
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: { invoke } });
+  let capture: recorderModule.BrowserRecorderOptions | undefined;
+  vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+    capture = options;
+    return { sampleRate: 16000, stop: async () => {} };
+  });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(saves).toBe(1));
+  await waitFor(() => expect(finishRefresh).toBeDefined());
+  await userEvent.click(screen.getByRole("button", { name: /record/i }));
+  act(() => {
+    capture!.onSamples(new Float32Array(16000));
+  });
+  await userEvent.type(screen.getByRole("textbox", { name: "Speaker label" }), "Alex");
+  await userEvent.click(screen.getAllByRole("button", { name: "Enroll" }).at(-1)!);
+  expect(await screen.findByText("Alex enrolled")).toBeInTheDocument();
+  expect(invoke).toHaveBeenCalledWith("save_speaker_profiles", { speakers: [blair, alex] });
+  await act(async () => {
+    finishRefresh?.([blair]);
+  });
+  expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "Remove speaker Blair" }));
+  await waitFor(() => expect(saves).toBe(3));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
+  expect(invoke).toHaveBeenCalledWith("save_speaker_profiles", { speakers: [alex] });
 });
