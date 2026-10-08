@@ -90,8 +90,17 @@ describe("buildSessionHistory", () => {
     );
     expect(legacy.reasons).toEqual([
       "the analyzer version was not recorded for these sessions",
+      "whether audio was analyzed was not recorded for these sessions",
       "1 session's analysis is not verified for the saved transcript",
     ]);
+    const unknownAudio = (session: SavedSession) => ({
+      ...session,
+      analysis: { ...session.analysis, usedAudio: null },
+    });
+    expect(
+      progressComparability(buildSessionHistory([unknownAudio(first), unknownAudio(second)]))
+        .reasons,
+    ).toEqual(["whether audio was analyzed was not recorded for these sessions"]);
 
     const withAudio = { ...first, analysis: { ...first.analysis, usedAudio: true } };
     expect(progressComparability(buildSessionHistory([withAudio, second])).reasons).toEqual([

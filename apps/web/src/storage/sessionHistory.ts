@@ -43,8 +43,16 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
       `the analyzer version was not recorded for ${unknown === points.length ? "these sessions" : `${unknown} of them`}`,
     );
   }
-  if (new Set(points.map((point) => point.usedAudio)).size > 1) {
+  const audioUse = new Set(points.map((point) => point.usedAudio).filter((used) => used !== null));
+  if (audioUse.size > 1) {
     reasons.push("some were analyzed with audio and some without");
+  }
+  // Unknown audio use is not a shared modality: either report may include acoustic analysis.
+  const audioUnknown = points.filter((point) => point.usedAudio === null).length;
+  if (audioUnknown > 0) {
+    reasons.push(
+      `whether audio was analyzed was not recorded for ${audioUnknown === points.length ? "these sessions" : `${audioUnknown} of them`}`,
+    );
   }
   const unverified = points.filter((point) => !point.verified).length;
   if (unverified > 0) {
