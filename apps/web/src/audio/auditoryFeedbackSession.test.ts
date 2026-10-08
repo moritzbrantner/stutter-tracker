@@ -376,6 +376,38 @@ describe("auditory feedback session lifecycle", () => {
     expect(recorders).toHaveLength(0);
   });
 
+  it("settles a cancelled start while worklet loading hangs", async () => {
+    const controller = new AbortController();
+    duringWorkletLoad = () => new Promise(() => undefined);
+    const starting = startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS, {
+      signal: controller.signal,
+    });
+    await vi.waitFor(() => expect(context.audioWorklet.addModule).toHaveBeenCalled());
+
+    controller.abort();
+
+    await expect(starting).rejects.toMatchObject({ name: "AbortError" });
+    expect(stream.tracks[0].stopped).toBe(true);
+    expect(context.state).toBe("closed");
+    expect(recorders).toHaveLength(0);
+  });
+
+  it("settles when the microphone ends while resume hangs", async () => {
+    const resume = FakeContext.prototype.resume;
+    const hangingResume = vi.fn(() => new Promise<void>(() => undefined));
+    FakeContext.prototype.resume = hangingResume;
+    try {
+      const starting = startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS);
+      await vi.waitFor(() => expect(hangingResume).toHaveBeenCalled());
+      stream.tracks[0].dispatchEvent(new Event("ended"));
+      await expect(starting).rejects.toThrow(/input ended/);
+    } finally {
+      FakeContext.prototype.resume = resume;
+    }
+    expect(stream.tracks[0].stopped).toBe(true);
+    expect(context.state).toBe("closed");
+  });
+
   it("surfaces permission rejection without creating an audio context", async () => {
     mediaDevices.getUserMedia.mockRejectedValue(new DOMException("denied", "NotAllowedError"));
     const contextsBefore = context;

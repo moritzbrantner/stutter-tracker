@@ -93,8 +93,19 @@ export async function startAuditoryFeedbackSession(
   // Interruptions are watched from the moment the microphone is held. Until the session exists
   // they only record why setup must not continue; afterwards they stop the session.
   let interruption: string | null = null;
+  // Settles a pending setup step as soon as the start is cancelled or interrupted, so a hung
+  // browser call cannot keep the microphone held.
+  let cancelSetup = (_error: unknown) => {};
+  const setupCancelled = new Promise<never>((_, reject) => {
+    cancelSetup = reject;
+  });
+  setupCancelled.catch(() => undefined);
+  const onSetupAbort = () => cancelSetup(abortError());
+  signal?.addEventListener("abort", onSetupAbort, { once: true });
+  const duringSetup = <T>(step: Promise<T>) => Promise.race([step, setupCancelled]);
   let onInterruption = (reason: string) => {
     interruption ??= reason;
+    cancelSetup(new Error(interruption));
   };
   const onTrackEnded = () => onInterruption(TRACK_ENDED_REASON);
   const onDeviceChange = () => onInterruption(DEVICE_CHANGE_REASON);
@@ -103,6 +114,7 @@ export async function startAuditoryFeedbackSession(
   }
   navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
   const unwatch = () => {
+    signal?.removeEventListener("abort", onSetupAbort);
     for (const track of stream.getTracks()) {
       track.removeEventListener("ended", onTrackEnded);
     }
@@ -135,7 +147,7 @@ export async function startAuditoryFeedbackSession(
   };
 
   try {
-    await context.resume();
+    await duringSetup(context.resume());
     assertUsable();
   } catch (error) {
     return abandon(error);
@@ -159,7 +171,7 @@ export async function startAuditoryFeedbackSession(
   try {
     if (context.audioWorklet && typeof AudioWorkletNode !== "undefined") {
       const processorUrl = new URL("./pitchShiftProcessor.js", import.meta.url);
-      await context.audioWorklet.addModule(processorUrl);
+      await duringSetup(context.audioWorklet.addModule(processorUrl));
       pitchShiftNode = new AudioWorkletNode(context, PITCH_SHIFT_PROCESSOR_NAME, {
         numberOfInputs: 1,
         numberOfOutputs: 1,
@@ -167,6 +179,7 @@ export async function startAuditoryFeedbackSession(
       });
     }
   } catch {
+    // A failed worklet only disables pitch shifting; cancellation is re-checked below.
     pitchShiftNode = null;
   }
   try {
@@ -255,6 +268,7 @@ export async function startAuditoryFeedbackSession(
     return stopPromise;
   };
 
+  signal?.removeEventListener("abort", onSetupAbort);
   onInterruption = (reason: string) => {
     if (stopped) {
       return;
