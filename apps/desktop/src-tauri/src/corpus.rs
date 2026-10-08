@@ -27,7 +27,7 @@ pub enum CorpusError {
 type Result<T> = std::result::Result<T, CorpusError>;
 
 #[derive(Debug, Clone, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(try_from = "CorpusSessionWire")]
 pub struct CorpusSessionInput {
     pub id: String,
     pub started_at: String,
@@ -35,8 +35,42 @@ pub struct CorpusSessionInput {
     pub report: CorpusReportInput,
     /// Canonical session-record provenance (schema owned by `packages/shared/src/sessions.ts`),
     /// kept verbatim. Absent for callers that predate it.
-    #[serde(flatten)]
     pub provenance: SessionProvenance,
+}
+
+/// The canonical record's fingerprints (`analysis.inputId`, annotation `inputId`) are computed
+/// over the exact segments sent. The corpus trims and filters segments (and stores confidence as
+/// f32), so the untouched segments are kept as `observedSegments` next to the normalized view.
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CorpusSessionWire {
+    id: String,
+    started_at: String,
+    segments: serde_json::Value,
+    report: CorpusReportInput,
+    #[serde(flatten)]
+    provenance: SessionProvenance,
+}
+
+impl TryFrom<CorpusSessionWire> for CorpusSessionInput {
+    type Error = serde_json::Error;
+
+    fn try_from(wire: CorpusSessionWire) -> std::result::Result<Self, Self::Error> {
+        let segments = serde_json::from_value(wire.segments.clone())?;
+        let mut provenance = wire.provenance;
+        if !provenance.fields.is_empty() {
+            provenance
+                .fields
+                .insert("observedSegments".to_owned(), wire.segments);
+        }
+        Ok(Self {
+            id: wire.id,
+            started_at: wire.started_at,
+            segments,
+            report: wire.report,
+            provenance,
+        })
+    }
 }
 
 /// Every other top-level field of the canonical record, kept as-is, so fields added to the shared
@@ -736,10 +770,14 @@ mod tests {
             "annotations": [{ "id": "a-1", "status": "accepted" }],
             "futureOutcomes": [{ "measure": "effort", "value": 3 }]
         });
+        let observed = serde_json::json!([
+            { "text": "  I I want  ", "startSeconds": 0.0, "endSeconds": 1.5, "confidence": 0.91, "speakerLabel": " Me ", "isFinal": true },
+            { "text": "", "startSeconds": 1.5, "endSeconds": 2.0, "isFinal": false }
+        ]);
         let mut input = serde_json::json!({
             "id": "s-1",
             "startedAt": "2026-10-08T10:00:00.000Z",
-            "segments": [],
+            "segments": observed.clone(),
             "report": { "totalDurationSeconds": 3.0, "wordCount": 0, "stutterCount": 0, "stuttersPerMinute": 0.0 }
         });
         input
@@ -752,6 +790,10 @@ mod tests {
         let _ = fs::remove_file(&path);
 
         let session = &exported["sessions"][0];
+        // Fingerprints refer to the untouched segments, which are kept next to the normalized view.
+        assert_eq!(session["observedSegments"], observed);
+        assert_eq!(session["segments"].as_array().unwrap().len(), 1);
+        assert_eq!(session["segments"][0]["text"], "I I want");
         for key in [
             "schemaVersion",
             "context",
