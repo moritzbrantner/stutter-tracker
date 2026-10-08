@@ -236,6 +236,25 @@ describe("processing policy", () => {
       report: serverReport,
       analyzer: COMPUTE_SERVER_ANALYZER,
     });
+
+    const reporting = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(
+        () =>
+          new Response(JSON.stringify(serverReport), {
+            headers: {
+              "content-type": "application/json",
+              "x-analyzer-algorithm": "shared-fallback",
+              "x-analyzer-version": "1",
+            },
+          }),
+      ).fetchImpl,
+    });
+    expect((await reporting.analyzeSpeechSessionRun(analysisRequest)).analyzer).toEqual({
+      producer: "computeServer",
+      algorithm: "shared-fallback",
+      version: "1",
+    });
   });
 
   it("keeps the destination fixed for the client's lifetime", async () => {

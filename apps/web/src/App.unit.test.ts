@@ -2,6 +2,7 @@ import { migrateSessionRecord, reanalyzeSession } from "@stutter-tracker/shared"
 import { analysisProvenanceLabel } from "./components/LowerDashboard";
 import { describe, expect, it } from "vitest";
 import {
+  desktopAnalyzer,
   fallbackAnalyze,
   fallbackPredictSpeakerIntent,
   formatTime,
@@ -285,5 +286,16 @@ describe("analysis provenance label", () => {
       legacy.report,
     );
     expect(analysisProvenanceLabel(rerun)).toBe("On-device analysis v1 · 2 analysis runs");
+  });
+});
+
+describe("desktop analyzer identity", () => {
+  it("records the version the desktop command reports, unknown for older builds", () => {
+    expect(desktopAnalyzer("1")).toEqual({
+      producer: "desktopNative",
+      algorithm: "analyze_speech_session",
+      version: "1",
+    });
+    expect(desktopAnalyzer(undefined).version).toBeNull();
   });
 });

@@ -2,7 +2,11 @@ import { afterEach, describe, expect, it, mock } from "bun:test";
 import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import type { SpeakerProfile, TranscribeAudioRequest } from "@stutter-tracker/shared";
+import {
+  SHARED_ANALYSIS_VERSION,
+  type SpeakerProfile,
+  type TranscribeAudioRequest,
+} from "@stutter-tracker/shared";
 import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
 import { createComputeRequestHandler, withWorkerTimeouts } from "./index";
@@ -324,6 +328,26 @@ describe("transcription worker routes", () => {
       provider: "whisperCpp",
       models: [{ id: "tiny.en", label: "tiny.en", cached: true, downloadable: true }],
     });
+  });
+
+  it("reports the analyzer that produced an analysis and exposes it to browsers", async () => {
+    const handler = createComputeRequestHandler({
+      config: localConfig({ allowedOrigins: ["https://app.example.com"] }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: fakeWorker(),
+    });
+    const response = await handler(
+      new Request("http://server/analysis", {
+        method: "POST",
+        headers: { "content-type": "application/json", origin: "https://app.example.com" },
+        body: JSON.stringify({ segments: [], pauses: [] }),
+      }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-analyzer-algorithm")).toBe("shared-fallback");
+    expect(response.headers.get("x-analyzer-version")).toBe(SHARED_ANALYSIS_VERSION);
+    expect(response.headers.get("access-control-expose-headers")).toContain("x-analyzer-version");
   });
 
   it("returns worker transcription segments", async () => {

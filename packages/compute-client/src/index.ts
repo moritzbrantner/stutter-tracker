@@ -173,9 +173,10 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
   const analyzeSpeechSessionRun = async (request: AnalyzeSpeechRequest) => {
     if (baseUrl) {
       try {
+        const response = await postResponse(fetcher, baseUrl, "/analysis", request, headers);
         return {
-          report: await post<AnalysisReport>(fetcher, baseUrl, "/analysis", request, headers),
-          analyzer: COMPUTE_SERVER_ANALYZER,
+          report: (await response.json()) as AnalysisReport,
+          analyzer: serverAnalyzer(response.headers),
         };
       } catch {
         return analyzeWithLocalGpuFallback(request);
@@ -334,6 +335,17 @@ async function post<T>(
   body: unknown,
   extraHeaders: HeadersInit,
 ): Promise<T> {
+  const response = await postResponse(fetcher, baseUrl, path, body, extraHeaders);
+  return (await response.json()) as T;
+}
+
+async function postResponse(
+  fetcher: typeof fetch,
+  baseUrl: string,
+  path: string,
+  body: unknown,
+  extraHeaders: HeadersInit,
+): Promise<Response> {
   // Redirects could move speech content to a destination the policy did not approve.
   const response = await fetcher(`${baseUrl}${path}`, {
     redirect: "error",
@@ -345,7 +357,7 @@ async function post<T>(
     body: JSON.stringify(body),
   });
   await assertOk(response, path);
-  return (await response.json()) as T;
+  return response;
 }
 
 async function postForm<T>(
@@ -415,12 +427,20 @@ export const ON_DEVICE_ANALYZER: AnalyzerIdentity = {
   version: SHARED_ANALYSIS_VERSION,
 };
 
-// The server does not report its analyzer version yet, so it stays unknown.
+/** Used when a server does not report its analyzer (older servers); the version stays unknown. */
 export const COMPUTE_SERVER_ANALYZER: AnalyzerIdentity = {
   producer: "computeServer",
   algorithm: "compute-server",
   version: null,
 };
+
+function serverAnalyzer(headers: Headers): AnalyzerIdentity {
+  return {
+    producer: "computeServer",
+    algorithm: headers.get("x-analyzer-algorithm") ?? COMPUTE_SERVER_ANALYZER.algorithm,
+    version: headers.get("x-analyzer-version"),
+  };
+}
 
 async function analyzeWithLocalGpuFallback(request: AnalyzeSpeechRequest): Promise<AnalyzedSpeech> {
   await tryWarmWebGpu();
