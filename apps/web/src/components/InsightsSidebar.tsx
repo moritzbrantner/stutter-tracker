@@ -34,6 +34,9 @@ type InsightsSidebarProps = {
   modelStatuses: TranscriptionModelStatus[];
   corpusAnalysis: SpeechCorpusAnalysis;
   speakers: SpeakerProfile[];
+  failedSpeakerDeletions?: SpeakerProfile[];
+  pendingSpeakerDeletionIds?: ReadonlySet<string>;
+  onSpeakerDeletionRetry?: (speaker: SpeakerProfile) => void;
   speakerLabel: string;
   canEnroll: boolean;
   isRecording: boolean;
@@ -61,6 +64,9 @@ export function InsightsSidebar({
   modelStatuses,
   corpusAnalysis,
   speakers,
+  failedSpeakerDeletions = [],
+  pendingSpeakerDeletionIds,
+  onSpeakerDeletionRetry,
   speakerLabel,
   canEnroll,
   isRecording,
@@ -279,6 +285,22 @@ export function InsightsSidebar({
               </div>
             ))
           )}
+          {failedSpeakerDeletions.map((speaker) => (
+            <div className="flex items-center justify-between gap-3" key={speaker.id}>
+              <span className={mutedTextClass}>
+                Deleting {speaker.label} from the server could not be confirmed.
+              </span>
+              <button
+                type="button"
+                className={buttonClass}
+                aria-label={`Retry deleting speaker ${speaker.label} from compute server`}
+                disabled={pendingSpeakerDeletionIds?.has(speaker.id)}
+                onClick={() => onSpeakerDeletionRetry?.(speaker)}
+              >
+                Retry deletion
+              </button>
+            </div>
+          ))}
         </div>
       </PanelBlock>
 

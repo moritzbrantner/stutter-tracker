@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
 import { App } from "./App";
+import * as tauriCore from "@tauri-apps/api/core";
 import * as recorderModule from "./audio/browserRecorder";
 
 type AnalyzeRun =
@@ -85,6 +86,7 @@ afterEach(() => {
   listSpeakersHook = null;
   saveSpeakersHook = null;
   identifySpeakerHook = null;
+  Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   localStorage.clear();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "mediaDevices", {
@@ -1010,3 +1012,86 @@ it("hydrates server-only profiles after a successful removal during startup", as
   expect(await screen.findByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
 }, 15000);
+
+it("preserves distinct native profile IDs with the same long prefix", async () => {
+  const prefix = "a".repeat(130);
+  const alex = {
+    id: prefix + "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: prefix + "blair", label: "Blair" };
+  let native = [alex, blair];
+  const invoke = vi.spyOn(tauriCore, "invoke").mockImplementation(async (command) => {
+    if (command === "load_speaker_profiles") return native;
+    if (command === "save_speaker_profiles") {
+      native = [blair];
+      return native;
+    }
+    throw new Error("Native command unavailable in this profile fixture");
+  });
+  Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: { invoke } });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  const remove = await screen.findByRole("button", { name: "Remove speaker Alex" });
+  expect(screen.getByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+  fireEvent.click(remove);
+  await waitFor(() => expect(native.map((profile) => profile.id)).toEqual([blair.id]));
+  expect(invoke).toHaveBeenCalledWith("save_speaker_profiles", { speakers: [blair] });
+  expect(screen.getByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+});
+
+it("offers a retry after local deletion succeeds but server deletion fails", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  listSpeakersHook = async () => [alex];
+  deleteSpeakerHook = async () => {
+    throw new Error("Temporary network failure");
+  };
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  const retry = await screen.findByRole("button", {
+    name: "Retry deleting speaker Alex from compute server",
+  });
+  deleteSpeakerHook = async () => "deleted";
+  fireEvent.click(retry);
+  await waitFor(() =>
+    expect(
+      screen.queryByRole("button", { name: "Retry deleting speaker Alex from compute server" }),
+    ).not.toBeInTheDocument(),
+  );
+  expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
+});
+
+it("keeps unrelated server profiles when post-removal refresh fails", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  let requests = 0;
+  listSpeakersHook = async () => {
+    if (++requests === 1) return [alex, blair];
+    throw new Error("Temporary fetch failure");
+  };
+  deleteSpeakerHook = async () => "deleted";
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(requests).toBe(2));
+  await act(async () => {
+    await Promise.resolve();
+  });
+  expect(screen.getByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+});
