@@ -414,6 +414,9 @@ function SessionsPanel({
                         · {historyPoint.stuttersPerMinute.toFixed(1)} events/min
                       </span>
                     )}
+                    <span className={`mt-0.5 block text-xs ${mutedTextClass}`}>
+                      {analysisProvenanceLabel(session)}
+                    </span>
                   </span>
                   <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
                 </button>
@@ -500,4 +503,22 @@ function intentReasonLabel(reason: SpeakerIntentPrediction["reason"]) {
     repetition: "After repetition",
     prolongation: "After prolongation",
   }[reason];
+}
+
+const ANALYZER_LABELS = {
+  onDevice: "On-device analysis",
+  computeServer: "Compute-server analysis",
+  desktopNative: "Desktop analysis",
+} as const;
+
+/** Missing provenance is shown as unknown rather than hidden, so mixed results are visible. */
+export function analysisProvenanceLabel(session: SavedSession) {
+  const { analyzer } = session.analysis;
+  const runs = session.priorAnalyses.length + 1;
+  const reruns = runs > 1 ? ` · ${runs} analysis runs` : "";
+  if (!analyzer) {
+    return `Analysis origin not recorded${reruns}`;
+  }
+  const version = analyzer.version ? ` v${analyzer.version}` : " (version not reported)";
+  return `${ANALYZER_LABELS[analyzer.producer]}${version}${reruns}`;
 }

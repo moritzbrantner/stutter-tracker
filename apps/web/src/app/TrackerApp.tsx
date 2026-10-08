@@ -1,7 +1,17 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { createComputeClient, processingPolicyForServerUrl } from "@stutter-tracker/compute-client";
 import {
+  type AnalyzedSpeech,
+  createComputeClient,
+  ON_DEVICE_ANALYZER,
+  processingPolicyForServerUrl,
+} from "@stutter-tracker/compute-client";
+import {
+  type AnalysisRunIdentity,
+  type AnalyzerIdentity,
+  canonicalSpokenLanguage,
+  createSessionRecord,
   fallbackAnalyze as sharedFallbackAnalyze,
+  observationFingerprint,
   resampleSamples as sharedResampleSamples,
 } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -40,7 +50,11 @@ import type {
   TranscriptionSettings,
   Voiceprint,
 } from "../types";
-import { loadRemoteConsent, saveRemoteConsent } from "../storage/localStorage";
+import {
+  loadRemoteConsent,
+  loadSessionsFromStorage,
+  saveRemoteConsent,
+} from "../storage/localStorage";
 export { formatTime } from "../utils/formatting";
 
 const STORE_KEY = "stutter-tracker:sessions";
@@ -109,6 +123,8 @@ export function App() {
   const [segments, setSegments] = useState<TranscriptSegment[]>([]);
   const [pauses, setPauses] = useState<PauseSpan[]>([]);
   const [report, setReport] = useState<AnalysisReport>(() => emptyReport());
+  // Identity of the analysis run that produced `report`; null when nothing has analyzed it.
+  const [reportRun, setReportRun] = useState<AnalysisRunIdentity | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
   const [corpusAnalysis, setCorpusAnalysis] = useState<SpeechCorpusAnalysis>(() =>
@@ -322,7 +338,14 @@ export function App() {
 
   useEffect(() => {
     if (analysisQuery.data) {
-      setReport(analysisQuery.data);
+      setReport(analysisQuery.data.report);
+      setReportRun({
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+        analyzer: analysisQuery.data.analyzer,
+        usedAudio: analysisQuery.data.usedAudio,
+        inputId: analysisQuery.data.inputId,
+      });
     }
   }, [analysisQuery.data]);
 
@@ -683,13 +706,24 @@ export function App() {
       setMessage("Nothing to save");
       return;
     }
-    const session: SavedSession = {
+    const session: SavedSession = createSessionRecord({
       id: crypto.randomUUID(),
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
       segments,
       pauses,
       report,
-    };
+      run: reportRun ?? {
+        id: crypto.randomUUID(),
+        createdAt: null,
+        analyzer: null,
+        usedAudio: null,
+      },
+      context: {
+        spokenLanguage: canonicalSpokenLanguage(recordingLanguageRef.current),
+        task: null,
+        condition: null,
+      },
+    });
     const next = [session, ...sessionsRef.current].slice(0, 50);
     persistSessions(next);
     activeSessionIdRef.current = session.id;
@@ -719,6 +753,7 @@ export function App() {
           setSegments([]);
           setPauses([]);
           setReport(emptyReport());
+          setReportRun(null);
           setInterimText("");
           setSpeakerMatch(null);
           resetChunkTranscription();
@@ -1076,6 +1111,7 @@ export function App() {
           setSegments(session.segments);
           setPauses(session.pauses);
           setReport(session.report);
+          setReportRun(session.analysis);
         }}
         onSessionDelete={(session) => void deleteSession(session)}
       />
@@ -1083,17 +1119,27 @@ export function App() {
   );
 }
 
+// The desktop command does not report an analyzer version yet.
+const DESKTOP_NATIVE_ANALYZER: AnalyzerIdentity = {
+  producer: "desktopNative",
+  algorithm: "analyze_speech_session",
+  version: null,
+};
+
 async function analyze(request: {
   segments: TranscriptSegment[];
   pauses: PauseSpan[];
   sessionStartedAt?: string;
   samples?: number[];
   sampleRate?: number;
-}): Promise<AnalysisReport> {
+}): Promise<AnalyzedSpeech> {
   if (!isDesktopApp()) {
-    return computeClient.analyzeSpeechSession(request);
+    return computeClient.analyzeSpeechSessionRun(request);
   }
-  return invoke<AnalysisReport>("analyze_speech_session", { request });
+  return {
+    report: await invoke<AnalysisReport>("analyze_speech_session", { request }),
+    analyzer: DESKTOP_NATIVE_ANALYZER,
+  };
 }
 
 async function analyzeWithFallback(request: {
@@ -1102,11 +1148,15 @@ async function analyzeWithFallback(request: {
   sessionStartedAt?: string;
   samples?: number[];
   sampleRate?: number;
-}): Promise<AnalysisReport> {
+}): Promise<AnalyzedSpeech & { usedAudio: boolean; inputId: string }> {
+  const provenance = {
+    usedAudio: Boolean(request.samples?.length),
+    inputId: observationFingerprint(request.segments, request.pauses),
+  };
   try {
-    return await analyze(request);
+    return { ...(await analyze(request)), ...provenance };
   } catch {
-    return fallbackAnalyze(request);
+    return { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER, ...provenance };
   }
 }
 
@@ -1932,7 +1982,7 @@ async function savePersistedSpeakerProfiles(speakers: SpeakerProfile[]): Promise
 
 function loadSessions(): SavedSession[] {
   try {
-    return JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    return loadSessionsFromStorage();
   } catch {
     return [];
   }

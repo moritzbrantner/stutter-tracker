@@ -1,3 +1,5 @@
+import type { SessionRecord } from "@stutter-tracker/shared";
+
 export type TranscriptSegment = {
   text: string;
   startSeconds: number;
@@ -185,13 +187,8 @@ export type TranscriptionChunkSummary = Record<TranscriptionChunkStatus, number>
   total: number;
 };
 
-export type SavedSession = {
-  id: string;
-  startedAt: string;
-  segments: TranscriptSegment[];
-  pauses: PauseSpan[];
-  report: AnalysisReport;
-};
+/** Saved sessions use the canonical product record shared with the other apps. */
+export type SavedSession = SessionRecord;
 
 export type IntentPredictionReason =
   | "currentContext"

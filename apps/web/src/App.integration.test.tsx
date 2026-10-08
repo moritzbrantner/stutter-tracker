@@ -87,6 +87,7 @@ describe("App integration", () => {
     const { container } = renderApp();
     const sessionButton = container.querySelector<HTMLButtonElement>(".session-row");
     expect(sessionButton).not.toBeNull();
+    expect(within(sessionButton!).getByText("Analysis origin not recorded")).toBeInTheDocument();
 
     await userEvent.click(sessionButton!);
 

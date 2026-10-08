@@ -5,8 +5,11 @@ import type {
   TranscriptionSettings,
   Voiceprint,
 } from "../types";
+import { parseStoredSession } from "./sessionBackup";
 
 export const STORE_KEY = "stutter-tracker:sessions";
+/** Stored sessions this build cannot read; kept so a later save does not drop them. */
+export const UNREADABLE_SESSIONS_KEY = "stutter-tracker:sessions:unreadable";
 export const VOICE_KEY = "stutter-tracker:voiceprint";
 export const SPEAKERS_KEY = "stutter-tracker:speakers";
 export const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
@@ -33,12 +36,49 @@ export function saveRemoteConsent(
   }
 }
 
+/** Loads saved sessions, migrating legacy records to the canonical schema. */
 export function loadSessionsFromStorage(storage: Storage = localStorage): SavedSession[] {
+  let parsed: unknown;
   try {
-    const parsed = JSON.parse(storage.getItem(STORE_KEY) ?? "[]");
-    return Array.isArray(parsed) ? (parsed as SavedSession[]) : [];
+    parsed = JSON.parse(storage.getItem(STORE_KEY) ?? "[]");
   } catch {
     return [];
+  }
+  if (!Array.isArray(parsed)) {
+    return [];
+  }
+  const sessions: SavedSession[] = [];
+  const unreadable: unknown[] = [];
+  for (const candidate of parsed) {
+    let session: SavedSession | null;
+    try {
+      session = parseStoredSession(candidate);
+    } catch {
+      session = null;
+    }
+    if (session) {
+      sessions.push(session);
+    } else {
+      unreadable.push(candidate);
+    }
+  }
+  if (unreadable.length) {
+    preserveUnreadableSessions(unreadable, storage);
+  }
+  return sessions;
+}
+
+function preserveUnreadableSessions(entries: unknown[], storage: Storage) {
+  try {
+    const existing = JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]") as unknown;
+    const kept = Array.isArray(existing) ? existing : [];
+    const seen = new Set(kept.map((entry) => JSON.stringify(entry)));
+    const added = entries.filter((entry) => !seen.has(JSON.stringify(entry)));
+    if (added.length) {
+      storage.setItem(UNREADABLE_SESSIONS_KEY, JSON.stringify([...kept, ...added]));
+    }
+  } catch {
+    // Storage full or unavailable: the entries stay in STORE_KEY until the next save.
   }
 }
 

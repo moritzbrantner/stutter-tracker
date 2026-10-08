@@ -1,3 +1,4 @@
+import { migrateSessionRecord } from "@stutter-tracker/shared";
 import { describe, expect, it } from "vitest";
 import type { AnalysisReport, SavedSession } from "../types";
 import { buildSessionHistory } from "./sessionHistory";
@@ -64,7 +65,7 @@ function savedSession(
   stuttersPerMinute: number,
   wordsPerMinute: number,
 ): SavedSession {
-  return {
+  return migrateSessionRecord({
     id,
     startedAt,
     segments: [],
@@ -97,5 +98,5 @@ function savedSession(
       events: [],
       byKind: {},
     },
-  };
+  });
 }

@@ -1,6 +1,13 @@
+import {
+  type LegacySessionRecord,
+  migrateSessionRecord,
+  SESSION_SCHEMA_VERSION,
+} from "@stutter-tracker/shared";
 import type { SavedSession } from "../types";
 
-export const SESSION_BACKUP_VERSION = 1;
+/** Version 1 held legacy session records; version 2 holds canonical session records. */
+export const SESSION_BACKUP_VERSION = 2;
+const SUPPORTED_BACKUP_VERSIONS = new Set([1, 2]);
 export const MAX_RESTORED_SESSIONS = 50;
 
 export type SessionBackup = {
@@ -24,7 +31,7 @@ export function parseSessionBackup(value: unknown): SavedSession[] {
   if (!isRecord(value) || !Array.isArray(value.sessions)) {
     throw new Error("Backup must contain a sessions array.");
   }
-  if (value.version != null && value.version !== SESSION_BACKUP_VERSION) {
+  if (value.version != null && !SUPPORTED_BACKUP_VERSIONS.has(value.version as number)) {
     throw new Error(`Unsupported backup version ${String(value.version)}.`);
   }
   if (value.exportedAt != null && !isValidDateString(value.exportedAt)) {
@@ -34,20 +41,101 @@ export function parseSessionBackup(value: unknown): SavedSession[] {
     throw new Error(`Backup contains more than ${MAX_RESTORED_SESSIONS} sessions.`);
   }
 
+  // Every session is validated before any is returned, so an import applies all or nothing.
   const ids = new Set<string>();
   return value.sessions.map((candidate, index) => {
-    if (!isSavedSession(candidate)) {
+    const session = parseStoredSession(candidate);
+    if (!session) {
       throw new Error(`Backup session ${index + 1} is invalid.`);
     }
-    if (ids.has(candidate.id)) {
-      throw new Error(`Backup contains duplicate session id ${candidate.id}.`);
+    if (ids.has(session.id)) {
+      throw new Error(`Backup contains duplicate session id ${session.id}.`);
     }
-    ids.add(candidate.id);
-    return candidate;
+    ids.add(session.id);
+    return session;
   });
 }
 
-function isSavedSession(value: unknown): value is SavedSession {
+/**
+ * Validates one stored or exported session and lifts legacy records into the canonical schema.
+ * Returns null for malformed records; throws for a schema version this build cannot read.
+ */
+export function parseStoredSession(value: unknown): SavedSession | null {
+  if (!isLegacySession(value)) {
+    return null;
+  }
+  if (!("schemaVersion" in value)) {
+    return migrateSessionRecord(value);
+  }
+  if (value.schemaVersion !== SESSION_SCHEMA_VERSION) {
+    throw new Error(`Unsupported session schema version ${String(value.schemaVersion)}.`);
+  }
+  return isSessionProvenance(value) ? (value as unknown as SavedSession) : null;
+}
+
+function isSessionProvenance(value: Record<string, unknown>) {
+  return (
+    isSessionContext(value.context) &&
+    Array.isArray(value.recordings) &&
+    value.recordings.every(isRecordingDescriptor) &&
+    isAnalysisRunIdentity(value.analysis) &&
+    Array.isArray(value.priorAnalyses) &&
+    value.priorAnalyses.every(
+      (run) => isAnalysisRunIdentity(run) && isAnalysisReport((run as { report: unknown }).report),
+    )
+  );
+}
+
+function isSessionContext(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.spokenLanguage === "string" &&
+    (value.task === null ||
+      (isRecord(value.task) &&
+        typeof value.task.kind === "string" &&
+        typeof value.task.trained === "boolean")) &&
+    (value.condition === null ||
+      (isRecord(value.condition) &&
+        (value.condition.kind === "unassisted" ||
+          (value.condition.kind === "assisted" && typeof value.condition.aidId === "string"))))
+  );
+}
+
+function isRecordingDescriptor(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.sessionId === "string" &&
+    typeof value.runId === "string" &&
+    (value.role === "appInput" || value.role === "interventionOutput") &&
+    isNonNegativeNumber(value.sampleRate) &&
+    isNonNegativeNumber(value.channelCount)
+  );
+}
+
+function isAnalysisRunIdentity(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    value.id.length > 0 &&
+    (value.createdAt === null || isValidDateString(value.createdAt)) &&
+    (value.analyzer === null || isAnalyzerIdentity(value.analyzer)) &&
+    typeof value.inputId === "string" &&
+    (value.usedAudio === null || typeof value.usedAudio === "boolean")
+  );
+}
+
+function isAnalyzerIdentity(value: unknown) {
+  return (
+    isRecord(value) &&
+    (value.producer === "onDevice" ||
+      value.producer === "computeServer" ||
+      value.producer === "desktopNative") &&
+    typeof value.algorithm === "string" &&
+    (value.version === null || typeof value.version === "string")
+  );
+}
+
+function isLegacySession(value: unknown): value is LegacySessionRecord & Record<string, unknown> {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&

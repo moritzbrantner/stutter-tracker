@@ -1,5 +1,6 @@
 import {
   type AnalysisReport,
+  type AnalyzerIdentity,
   type AnalyzeSpeechRequest,
   type SpeakerIdentification,
   type SpeakerProfile,
@@ -10,6 +11,7 @@ import {
   cosine,
   fallbackAnalyze,
   fallbackEmbedding,
+  SHARED_ANALYSIS_VERSION,
   staticModelStatuses,
 } from "@stutter-tracker/shared";
 
@@ -130,6 +132,8 @@ export type ComputeClient = {
   /** Fixed for the client's lifetime; a new destination requires a new client. */
   readonly destination: ProcessingDestination;
   analyzeSpeechSession(request: AnalyzeSpeechRequest): Promise<AnalysisReport>;
+  /** Like `analyzeSpeechSession`, and also says which analyzer produced the report. */
+  analyzeSpeechSessionRun(request: AnalyzeSpeechRequest): Promise<AnalyzedSpeech>;
   listSpeakerProfiles(): Promise<SpeakerProfile[]>;
   saveSpeakerProfiles(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
   createSpeakerProfile(request: {
@@ -166,18 +170,26 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
         : `${what} needs a configured compute server; processing is set to this device only`,
     );
 
+  const analyzeSpeechSessionRun = async (request: AnalyzeSpeechRequest) => {
+    if (baseUrl) {
+      try {
+        return {
+          report: await post<AnalysisReport>(fetcher, baseUrl, "/analysis", request, headers),
+          analyzer: COMPUTE_SERVER_ANALYZER,
+        };
+      } catch {
+        return analyzeWithLocalGpuFallback(request);
+      }
+    }
+    return analyzeWithLocalGpuFallback(request);
+  };
+
   return {
     destination,
     async analyzeSpeechSession(request) {
-      if (baseUrl) {
-        try {
-          return await post<AnalysisReport>(fetcher, baseUrl, "/analysis", request, headers);
-        } catch {
-          return analyzeWithLocalGpuFallback(request);
-        }
-      }
-      return analyzeWithLocalGpuFallback(request);
+      return (await analyzeSpeechSessionRun(request)).report;
     },
+    analyzeSpeechSessionRun,
     async listSpeakerProfiles() {
       if (!baseUrl) {
         return [];
@@ -395,9 +407,24 @@ async function assertOk(response: Response, path: string) {
   }
 }
 
-async function analyzeWithLocalGpuFallback(request: AnalyzeSpeechRequest) {
+export type AnalyzedSpeech = { report: AnalysisReport; analyzer: AnalyzerIdentity };
+
+export const ON_DEVICE_ANALYZER: AnalyzerIdentity = {
+  producer: "onDevice",
+  algorithm: "shared-fallback",
+  version: SHARED_ANALYSIS_VERSION,
+};
+
+// The server does not report its analyzer version yet, so it stays unknown.
+export const COMPUTE_SERVER_ANALYZER: AnalyzerIdentity = {
+  producer: "computeServer",
+  algorithm: "compute-server",
+  version: null,
+};
+
+async function analyzeWithLocalGpuFallback(request: AnalyzeSpeechRequest): Promise<AnalyzedSpeech> {
   await tryWarmWebGpu();
-  return fallbackAnalyze(request);
+  return { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER };
 }
 
 async function tryWarmWebGpu() {

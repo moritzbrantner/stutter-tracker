@@ -1,3 +1,4 @@
+import { migrateSessionRecord } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
@@ -33,7 +34,7 @@ function deferred<T>() {
 }
 
 function makeSession(id: string, text: string, startedAt: string): SavedSession {
-  return {
+  return migrateSessionRecord({
     id,
     startedAt,
     segments: [
@@ -74,7 +75,7 @@ function makeSession(id: string, text: string, startedAt: string): SavedSession 
       events: [],
       byKind: {},
     },
-  };
+  });
 }
 
 function emptyCorpusAnalysis(): SpeechCorpusAnalysis {
