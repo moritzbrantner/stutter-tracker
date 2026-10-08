@@ -289,6 +289,9 @@ describe("speaker deletion", () => {
     expect(await one.json()).toEqual({ deleted: 1 });
     const missing = await handler(new Request("http://server/speakers/b", { method: "DELETE" }));
     expect(missing.status).toBe(404);
+    expect((await responseJson<{ error: { code: string } }>(missing)).error.code).toBe(
+      "speaker_not_found",
+    );
 
     const listed = await handler(new Request("http://server/speakers"));
     expect(
@@ -299,6 +302,38 @@ describe("speaker deletion", () => {
     expect(await all.json()).toEqual({ deleted: 2 });
     const empty = await handler(new Request("http://server/speakers"));
     expect((await responseJson<{ speakers: SpeakerProfile[] }>(empty)).speakers).toEqual([]);
+  });
+
+  it("keeps concurrent file-store deletions and deletes ids containing an encoded slash", async () => {
+    const dir = await tempDir();
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: createSpeakerStore({ filePath: join(dir, "speakers.json") }),
+      nativeWorker: fakeWorker(),
+    });
+    await putSpeakers(handler, [
+      speaker("a", "Alpha"),
+      speaker("b", "Beta"),
+      speaker("team/c", "Gamma"),
+    ]);
+
+    const results = await Promise.all(
+      ["a", "b"].map((id) =>
+        handler(new Request(`http://server/speakers/${id}`, { method: "DELETE" })),
+      ),
+    );
+    expect(results.map((response) => response.status)).toEqual([200, 200]);
+    const slashed = await handler(
+      new Request(`http://server/speakers/${encodeURIComponent("team/c")}`, { method: "DELETE" }),
+    );
+    expect(slashed.status).toBe(200);
+    const extraSegment = await handler(
+      new Request("http://server/speakers/team/c", { method: "DELETE" }),
+    );
+    expect(extraSegment.status).toBe(400);
+
+    const listed = await handler(new Request("http://server/speakers"));
+    expect((await responseJson<{ speakers: SpeakerProfile[] }>(listed)).speakers).toEqual([]);
   });
 
   it("requires authorization to delete in public-ready mode and allows DELETE in CORS", async () => {

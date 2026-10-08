@@ -219,7 +219,16 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
         headers,
       });
       if (response.status === 404) {
-        return "notFound";
+        // Only the endpoint's own answer means "already gone"; an older server without the route
+        // also returns 404, and then the voiceprint is still there.
+        const code = await response
+          .clone()
+          .json()
+          .then((body: { error?: { code?: string } }) => body.error?.code)
+          .catch(() => undefined);
+        if (code === "speaker_not_found") {
+          return "notFound";
+        }
       }
       await assertOk(response, path);
       return "deleted";

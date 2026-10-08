@@ -102,12 +102,15 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
       }
 
       if (request.method === "DELETE" && url.pathname.startsWith("/speakers/")) {
-        const id = decodeURIComponent(url.pathname.slice("/speakers/".length));
-        if (!id || id.includes("/")) {
+        // One path segment; an encoded slash belongs to the id (ids may contain "/").
+        const segment = url.pathname.slice("/speakers/".length);
+        if (!segment || segment.includes("/")) {
           throw new HttpError("invalid_request", "speaker id is required", 400);
         }
+        const id = decodeURIComponent(segment);
         if (!(await deps.speakerStore.delete(id))) {
-          return errorResponse("not_found", "speaker profile not found", 404, cors);
+          // A specific code, so clients can tell a missing profile from a missing route.
+          return errorResponse("speaker_not_found", "speaker profile not found", 404, cors);
         }
         return jsonResponse({ deleted: 1 }, 200, cors);
       }

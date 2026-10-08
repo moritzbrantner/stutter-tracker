@@ -404,6 +404,49 @@ describe("App integration", () => {
     expect(screen.queryByRole("button", { name: /Remove speaker/ })).not.toBeInTheDocument();
   });
 
+  it("removes a legacy voiceprint for good and keeps a speaker whose local removal failed", async () => {
+    localStorage.setItem(
+      "stutter-tracker:voiceprint",
+      JSON.stringify({ embedding: [1, 0], sampleRate: 16_000, sampleCount: 16_000 }),
+    );
+    deleteSpeakerHook = async () => "noServer";
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const { unmount } = renderApp();
+
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Remove speaker Enrolled speaker" }),
+    );
+    expect(await screen.findByText(/Removed Enrolled speaker/)).toBeInTheDocument();
+    expect(localStorage.getItem("stutter-tracker:voiceprint")).toBeNull();
+    unmount();
+
+    localStorage.setItem(
+      "stutter-tracker:speakers",
+      JSON.stringify([
+        {
+          id: "speaker-a",
+          label: "Alex",
+          embeddings: [[1, 0]],
+          sampleRate: 16_000,
+          sampleCount: 16_000,
+        },
+      ]),
+    );
+    renderApp();
+    const button = await screen.findByRole("button", { name: "Remove speaker Alex" });
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === "stutter-tracker:speakers") {
+        throw new DOMException("blocked", "SecurityError");
+      }
+      return setItem.call(this, key, value);
+    });
+    await userEvent.click(button);
+
+    expect(await screen.findByText(/Could not remove Alex from this browser/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
+  });
+
   it("keeps external-server transcription settings in web mode", async () => {
     localStorage.setItem(
       TRANSCRIPTION_KEY,

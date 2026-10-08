@@ -227,9 +227,16 @@ describe("processing policy", () => {
 
     const gone = createComputeClient({
       processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
-      fetchImpl: countingFetch(() => json({ error: { code: "not_found" } }, 404)).fetchImpl,
+      fetchImpl: countingFetch(() => json({ error: { code: "speaker_not_found" } }, 404)).fetchImpl,
     });
     expect(await gone.deleteSpeakerProfile("a")).toBe("notFound");
+
+    // An older server without the route answers its generic 404: the voiceprint is still there.
+    const older = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(() => json({ error: { code: "not_found" } }, 404)).fetchImpl,
+    });
+    await expect(older.deleteSpeakerProfile("a")).rejects.toThrow();
 
     const onDevice = countingFetch();
     const local = createComputeClient({ fetchImpl: onDevice.fetchImpl });

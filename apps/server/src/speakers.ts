@@ -112,6 +112,9 @@ export class PostgresSpeakerStore implements SpeakerStore {
 
 class FileSpeakerStore implements SpeakerStore {
   deleteMissing = false as const;
+  // Every read-modify-write runs after the previous one, so concurrent requests cannot restore a
+  // deleted voiceprint by writing back a list they read earlier.
+  private tail: Promise<unknown> = Promise.resolve();
 
   constructor(private readonly filePath: string) {}
 
@@ -128,36 +131,45 @@ class FileSpeakerStore implements SpeakerStore {
     }
   }
 
-  async upsertMany(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]> {
-    const existing = await this.list();
-    const byId = new Map(existing.map((speaker) => [speaker.id, speaker]));
-    for (const speaker of normalizeSpeakerProfiles(speakers)) {
-      byId.set(speaker.id, speaker);
-    }
-    const next = [...byId.values()].sort((left, right) => left.label.localeCompare(right.label));
-    await this.write(next);
-    return next;
+  upsertMany(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]> {
+    return this.mutate(async (existing) => {
+      const byId = new Map(existing.map((speaker) => [speaker.id, speaker]));
+      for (const speaker of normalizeSpeakerProfiles(speakers)) {
+        byId.set(speaker.id, speaker);
+      }
+      const next = [...byId.values()].sort((left, right) => left.label.localeCompare(right.label));
+      return { next, result: next };
+    });
   }
 
-  async delete(id: string): Promise<boolean> {
-    const existing = await this.list();
-    const next = existing.filter((speaker) => speaker.id !== id);
-    if (next.length === existing.length) {
-      return false;
-    }
-    await this.write(next);
-    return true;
+  delete(id: string): Promise<boolean> {
+    return this.mutate(async (existing) => {
+      const next = existing.filter((speaker) => speaker.id !== id);
+      return next.length === existing.length ? { result: false } : { next, result: true };
+    });
   }
 
-  async deleteAll(): Promise<number> {
-    const existing = await this.list();
-    await this.write([]);
-    return existing.length;
+  deleteAll(): Promise<number> {
+    return this.mutate(async (existing) => ({ next: [], result: existing.length }));
+  }
+
+  private mutate<T>(
+    change: (existing: SpeakerProfile[]) => Promise<{ next?: SpeakerProfile[]; result: T }>,
+  ): Promise<T> {
+    const operation = this.tail.then(async () => {
+      const { next, result } = await change(await this.list());
+      if (next) {
+        await this.write(next);
+      }
+      return result;
+    });
+    this.tail = operation.catch(() => undefined);
+    return operation;
   }
 
   private async write(speakers: SpeakerProfile[]) {
     await mkdir(dirname(this.filePath), { recursive: true });
-    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
+    const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
     await writeFile(tempPath, JSON.stringify(speakers, null, 2), "utf8");
     await rename(tempPath, this.filePath);
   }

@@ -1061,10 +1061,22 @@ export function App() {
       }
       return;
     }
+    // Only this speaker leaves local storage: it may also hold local-only profiles that the
+    // server-backed list on screen does not show.
     try {
-      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(remaining));
-    } catch {
-      // The local copy may not exist; the server copy below is what matters then.
+      const stored = JSON.parse(localStorage.getItem(SPEAKERS_KEY) ?? "[]") as unknown;
+      const kept = Array.isArray(stored)
+        ? (stored as SpeakerProfile[]).filter((candidate) => candidate.id !== speaker.id)
+        : [];
+      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(kept));
+      // The pre-profile voiceprint key reappears as "legacy-speaker" whenever the list is empty.
+      if (speaker.id === "legacy-speaker" || kept.length === 0) {
+        localStorage.removeItem(VOICE_KEY);
+      }
+    } catch (error) {
+      setSpeakers(speakers);
+      setMessage(`Could not remove ${speaker.label} from this browser: ${errorMessage(error)}`);
+      return;
     }
     try {
       const result = await computeClient.deleteSpeakerProfile(speaker.id);
