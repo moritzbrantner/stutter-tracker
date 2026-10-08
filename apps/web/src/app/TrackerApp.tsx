@@ -771,12 +771,21 @@ export function App() {
       return;
     }
     const run = reportRun;
-    const updated = reanalyzeSession(loaded, run, report);
-    // Runs after any queued deletion, so a session deleted meanwhile is never written back.
+    const savedReport = report;
+    // Runs after every queued mutation and rebuilds from the latest stored record, so a session
+    // deleted meanwhile is never written back and queued saves keep each other's runs.
     const outcome = await serializeSessionMutation(async () => {
-      if (!sessionsRef.current.some((candidate) => candidate.id === updated.id)) {
+      const latest = sessionsRef.current.find((candidate) => candidate.id === loaded.id);
+      if (!latest) {
         return "deleted" as const;
       }
+      if (
+        latest.analysis.id === run.id ||
+        latest.priorAnalyses.some((prior) => prior.id === run.id)
+      ) {
+        return "unchanged" as const;
+      }
+      const updated = reanalyzeSession(latest, run, savedReport);
       loadedSessionRef.current = updated;
       persistSessions(
         sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
@@ -792,9 +801,11 @@ export function App() {
     setMessage(
       outcome === "deleted"
         ? "Session was deleted; nothing saved"
-        : outcome === "corpus"
-          ? "New analysis saved to the session"
-          : "New analysis saved locally",
+        : outcome === "unchanged"
+          ? "Session is already saved"
+          : outcome === "corpus"
+            ? "New analysis saved to the session"
+            : "New analysis saved locally",
     );
   }
 
