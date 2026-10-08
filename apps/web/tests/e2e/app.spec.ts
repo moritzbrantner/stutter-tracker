@@ -79,3 +79,21 @@ test("records and stops with fake media devices", async ({ page }, testInfo) => 
   await stopButton.click();
   await expect(page.getByRole("button", { name: /record/i })).toBeVisible();
 });
+
+test("starts and stops the auditory feedback lab with fake media devices", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    testInfo.project.name !== "chromium-fake-media",
+    "fake media flags are configured for this project",
+  );
+
+  await page.goto("/");
+  await page.getByRole("checkbox", { name: /I am using headphones/ }).check();
+  await page.getByRole("button", { name: "Start feedback" }).click();
+  const stopButton = page.getByRole("button", { name: "Stop & compare" });
+  await expect(stopButton).toBeEnabled();
+  await stopButton.click();
+  await expect(page.getByText(/^Trial stopped/)).toBeVisible();
+  await expect(page.getByRole("button", { name: "Start feedback" })).toBeEnabled();
+});
