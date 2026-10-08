@@ -16,6 +16,10 @@ class StutterTrackerPitchShiftProcessor extends AudioWorkletProcessor {
     this.buffer = new Float32Array(16384);
     this.writeIndex = 0;
     this.phase = 0;
+    // 0 = dry passthrough, 1 = fully shifted; ramps so switching shifting on or off never clicks.
+    this.shiftMix = 0;
+    // Sign of (ratio - 1) last used, so a direction change can keep the read delay continuous.
+    this.direction = 0;
   }
 
   process(inputs, outputs, parameters) {
@@ -26,24 +30,39 @@ class StutterTrackerPitchShiftProcessor extends AudioWorkletProcessor {
     }
 
     const semitones = parameters.semitones;
-    const sweepSamples = 2048;
-    const minimumDelaySamples = 256;
 
     for (let index = 0; index < input.length; index += 1) {
-      this.buffer[this.writeIndex] = input[index] ?? 0;
-      const currentSemitones = semitones.length === 1 ? semitones[0] : (semitones[index] ?? 0);
-      const ratio = 2 ** (currentSemitones / 12);
-      let sample = input[index] ?? 0;
+      // Non-finite input would poison the delay line for its whole length.
+      const dry = Number.isFinite(input[index]) ? input[index] : 0;
+      this.buffer[this.writeIndex] = dry;
+      const rawSemitones = semitones.length === 1 ? semitones[0] : semitones[index];
+      const ratio = Number.isFinite(rawSemitones) ? 2 ** (rawSemitones / 12) : 1;
+      const shifting = Math.abs(ratio - 1) > 0.0001;
+      this.shiftMix = shifting
+        ? Math.min(1, this.shiftMix + 1 / SHIFT_RAMP_SAMPLES)
+        : Math.max(0, this.shiftMix - 1 / SHIFT_RAMP_SAMPLES);
+      let sample = dry;
 
-      if (Math.abs(ratio - 1) > 0.0001) {
+      if (this.shiftMix > 0) {
+        const direction = shifting ? Math.sign(ratio - 1) : this.direction;
+        if (direction !== 0 && this.direction !== 0 && direction !== this.direction) {
+          // Reflecting the phase maps each grain's delay onto itself under the other direction.
+          this.phase = (1 - this.phase) % 1;
+        }
+        if (direction !== 0) {
+          this.direction = direction;
+        }
         const phaseA = this.phase;
         const phaseB = (phaseA + 0.5) % 1;
-        const delayA = delayForPhase(phaseA, ratio, minimumDelaySamples, sweepSamples);
-        const delayB = delayForPhase(phaseB, ratio, minimumDelaySamples, sweepSamples);
+        const delayA = delayForPhase(phaseA, this.direction, MINIMUM_DELAY_SAMPLES, SWEEP_SAMPLES);
+        const delayB = delayForPhase(phaseB, this.direction, MINIMUM_DELAY_SAMPLES, SWEEP_SAMPLES);
         const weightA = Math.sin(Math.PI * phaseA) ** 2;
         const weightB = Math.sin(Math.PI * phaseB) ** 2;
-        sample = this.readDelay(delayA) * weightA + this.readDelay(delayB) * weightB;
-        this.phase = (this.phase + Math.abs(1 - ratio) / sweepSamples) % 1;
+        const shifted = this.readDelay(delayA) * weightA + this.readDelay(delayB) * weightB;
+        sample = dry * (1 - this.shiftMix) + shifted * this.shiftMix;
+        if (shifting) {
+          this.phase = (this.phase + Math.abs(1 - ratio) / SWEEP_SAMPLES) % 1;
+        }
       }
 
       for (const channel of outputChannels) {
@@ -67,8 +86,12 @@ class StutterTrackerPitchShiftProcessor extends AudioWorkletProcessor {
   }
 }
 
-function delayForPhase(phase, ratio, minimumDelaySamples, sweepSamples) {
-  if (ratio > 1) {
+const SWEEP_SAMPLES = 2048;
+const MINIMUM_DELAY_SAMPLES = 256;
+const SHIFT_RAMP_SAMPLES = 512;
+
+function delayForPhase(phase, direction, minimumDelaySamples, sweepSamples) {
+  if (direction > 0) {
     return minimumDelaySamples + sweepSamples * (1 - phase);
   }
   return minimumDelaySamples + sweepSamples * phase;
