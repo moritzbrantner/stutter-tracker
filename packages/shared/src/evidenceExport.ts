@@ -52,6 +52,7 @@ export type EvidenceSession = {
   /** Model estimate from the app's automated analysis; not a clinical judgment. */
   automatedEstimate: {
     eventCount: number;
+    /** Stored analyzer rate; its effective denominator may differ from sample duration. */
     eventsPerMinute: number;
     eventsByKind: Partial<Record<StutterKind, number>>;
     analyzer: string;
@@ -194,7 +195,7 @@ export function buildEvidenceExport(
           : "selected",
     },
     sessions: selected.map((session, index) => {
-      // The exported denominator and the rate derived from it stay consistent.
+      // Sample duration and the stored analyzer rate are separate observations.
       const seconds = round(Math.max(0, session.report.totalDurationSeconds));
       const condition = session.context.condition;
       const reference = acceptedAnnotation(session);
@@ -213,7 +214,7 @@ export function buildEvidenceExport(
         sample: { durationSeconds: seconds, wordCount: session.report.wordCount },
         automatedEstimate: {
           eventCount: session.report.stutterCount,
-          eventsPerMinute: seconds > 0 ? round((session.report.stutterCount * 60) / seconds) : 0,
+          eventsPerMinute: session.report.stuttersPerMinute,
           eventsByKind: { ...session.report.byKind },
           analyzer: analyzerKey(session),
           analysisRuns: sessionAnalysisRuns(session).length,
@@ -274,7 +275,7 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
       `${session.ref} · ${session.startedAt}`,
       `  Context: language ${oneLine(session.context.spokenLanguage)}; task ${oneLine(describeTask(session.context))}; condition ${oneLine(describeCondition(session.context))}`,
       `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
-      `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute over ${session.sample.durationSeconds} s`,
+      `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute (stored analyzer rate)`,
       `  Analysis: ${oneLine(estimate.analyzer)}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForSavedSession ? "verified for the full saved session (all speakers)" : "NOT verified for the saved session"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
       session.humanReference
         ? `  Human reference (${session.humanReference.authorRole}, ${session.humanReference.annotatedAt}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`

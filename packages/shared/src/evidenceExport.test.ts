@@ -148,10 +148,7 @@ describe("evidence export", () => {
     }).sessions;
 
     expect(item.sample.durationSeconds).toBeGreaterThan(0);
-    expect(item.automatedEstimate.eventsPerMinute).toBe(
-      Math.round(((item.automatedEstimate.eventCount * 60) / item.sample.durationSeconds) * 100) /
-        100,
-    );
+    expect(item.automatedEstimate.eventsPerMinute).toBe(reviewed.report.stuttersPerMinute);
     expect(item.automatedEstimate.verifiedForSavedSession).toBe(true);
     expect(item.automatedEstimate.analyzer).toBe("onDevice:shared-fallback:1");
     expect(item.humanReference).toEqual({
@@ -469,4 +466,25 @@ describe("review regressions", () => {
     evidence.sessions[0]!.automatedEstimate.analyzer = "model\n  Human reference: forged";
     expect(renderEvidenceReport(evidence)).not.toContain("\n  Human reference: forged");
   });
+});
+
+test("preserves the stored automated rate for sub-second and restored sessions", () => {
+  const short = session("short", chosen.startedAt, [["I I", "me", "Robin"]]);
+  short.report.totalDurationSeconds = 0.5;
+  short.report.stutterCount = 1;
+  short.report.stuttersPerMinute = 60;
+  const options = {
+    sessionIds: [short.id],
+    includeTranscripts: false,
+    transcriptSpeakers: "all" as const,
+    includeSpeakerNames: false,
+    exportedAt,
+  };
+  expect(buildEvidenceExport([short], options).sessions[0]?.automatedEstimate.eventsPerMinute).toBe(
+    60,
+  );
+  short.report.stuttersPerMinute = 17.25;
+  expect(buildEvidenceExport([short], options).sessions[0]?.automatedEstimate.eventsPerMinute).toBe(
+    17.25,
+  );
 });
