@@ -67,6 +67,8 @@ const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const LANGUAGES = ["en-US", "de-DE", "en-GB"];
 const COMPUTE_SERVER_URL = import.meta.env.VITE_STUTTER_SERVER_URL ?? "http://127.0.0.1:8787";
 const TRANSCRIPTION_CHUNK_SECONDS = 8;
+/** Upper bound for browser recognition to deliver its final results after Stop. */
+const RECOGNITION_END_TIMEOUT_MS = 3_000;
 const TRANSCRIPTION_TARGET_SAMPLE_RATE = 16_000;
 const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [
   {
@@ -142,6 +144,10 @@ export function App() {
   const [transcriptionChunks, setTranscriptionChunks] = useState<TranscriptionChunkRecord[]>([]);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
   const [isRecording, setIsRecording] = useState(false);
+  const [isFinishingCapture, setIsFinishingCapture] = useState(false);
+  // Bumped when a capture finishes, so the final audio (which can grow after the last transcript
+  // update) gets its own analysis before the session can be saved.
+  const [captureRevision, setCaptureRevision] = useState(0);
   const [isNative, setIsNative] = useState(() => isDesktopApp());
   const [isTranscribing, setIsTranscribing] = useState(false);
   const [isEnrolling, setIsEnrolling] = useState(false);
@@ -177,6 +183,15 @@ export function App() {
   const sessionLanguageRef = useRef<string | null>(null);
   // The saved record shown in the workspace, so saving it again keeps its analysis history.
   const loadedSessionRef = useRef<SavedSession | null>(null);
+  // The saved session shown in the workspace. While one is shown, the view keeps its stored
+  // analysis: live analysis does not run, and a late result never replaces it. The ref is set
+  // synchronously so a result that lands before React applies the load is still ignored.
+  const [viewedSession, setViewedSessionState] = useState<SavedSession | null>(null);
+  const viewedSessionRef = useRef<SavedSession | null>(null);
+  const setViewedSession = (session: SavedSession | null) => {
+    viewedSessionRef.current = session;
+    setViewedSessionState(session);
+  };
   const nextChunkStartSampleRef = useRef(0);
   const chunkIndexRef = useRef(0);
   const chunkTranscriptionTailRef = useRef<Promise<void>>(Promise.resolve());
@@ -194,11 +209,14 @@ export function App() {
       sessionStartedAt: startedAtRef.current?.toISOString(),
       ...audio,
     };
-  }, [segments, pauses]);
+    // captureRevision is a deliberate trigger: samplesRef is a ref and not a dependency itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments, pauses, captureRevision]);
 
   const analysisQuery = useQuery({
     queryKey: ["analysis", analysisRequest],
     queryFn: () => analyzeWithFallback(analysisRequest),
+    enabled: viewedSession === null,
   });
 
   const modelStatusesQuery = useQuery({
@@ -224,6 +242,11 @@ export function App() {
     () => summarizeTranscriptionChunks(transcriptionChunks),
     [transcriptionChunks],
   );
+  const captureInProgress =
+    isRecording ||
+    isFinishingCapture ||
+    isTranscribing ||
+    chunkProgress.queued + chunkProgress.processing > 0;
   const transcript = useMemo(() => segments.map((segment) => segment.text).join(" "), [segments]);
   const speechStats = normalizedSpeechStats(report);
   const blockerStats = normalizedBlockerStats(report);
@@ -345,7 +368,8 @@ export function App() {
   }, [language]);
 
   useEffect(() => {
-    if (analysisQuery.data) {
+    // A late result must not replace a saved session's stored analysis.
+    if (analysisQuery.data && viewedSessionRef.current === null) {
       setReport(analysisQuery.data.report);
       setReportRun({
         id: analysisQuery.data.runId,
@@ -432,7 +456,8 @@ export function App() {
   }, [sessions]);
 
   async function startRecording() {
-    if (isRecording) {
+    // A new capture would reset the refs the previous one is still finishing with.
+    if (isRecording || isFinishingCapture) {
       return;
     }
     try {
@@ -455,6 +480,7 @@ export function App() {
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
       loadedSessionRef.current = null;
+      setViewedSession(null);
       resetChunkTranscription();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
@@ -529,6 +555,9 @@ export function App() {
       setMessage(`Speech recognition: ${event.error}`);
     };
     recognition.onend = () => {
+      if (!isRecordingRef.current) {
+        recognitionEndedRef.current?.();
+      }
       if (isRecordingRef.current) {
         try {
           recognition.start();
@@ -546,6 +575,8 @@ export function App() {
   }
 
   const isRecordingRef = useRef(false);
+  // Resolves when browser recognition has delivered its final results after Stop.
+  const recognitionEndedRef = useRef<(() => void) | null>(null);
   useEffect(() => {
     isRecordingRef.current = isRecording;
   }, [isRecording]);
@@ -611,15 +642,51 @@ export function App() {
     if (!isRecording) {
       return;
     }
+    // Saving and loading stay unavailable until every late transcript result has arrived.
+    setIsFinishingCapture(true);
+    try {
+      await finishCapture();
+    } finally {
+      setIsFinishingCapture(false);
+      setCaptureRevision((revision) => revision + 1);
+    }
+  }
+
+  async function finishCapture() {
     const shouldTranscribeNative = recordingTranscriptionRef.current?.engine !== "browser";
     const capturedSamples = samplesRef.current.slice();
     const capturedSampleRate = sampleRateRef.current;
     setIsRecording(false);
-    recognitionRef.current?.stop();
+    isRecordingRef.current = false;
+    const recognition = recognitionRef.current;
     recognitionRef.current = null;
+    const recognitionEnded = recognition
+      ? new Promise<void>((resolve) => {
+          const timer = setTimeout(() => {
+            // It never ended: detach it so late callbacks cannot reach a later capture.
+            recognition.onresult = null;
+            recognition.onerror = null;
+            recognition.onend = null;
+            try {
+              recognition.abort();
+            } catch {
+              // Already stopped.
+            }
+            recognitionEndedRef.current = null;
+            resolve();
+          }, RECOGNITION_END_TIMEOUT_MS);
+          recognitionEndedRef.current = () => {
+            clearTimeout(timer);
+            recognitionEndedRef.current = null;
+            resolve();
+          };
+        })
+      : Promise.resolve();
+    recognition?.stop();
     await browserRecorderRef.current?.stop();
     browserRecorderRef.current = null;
     setLevel(0);
+    await recognitionEnded;
     if (!shouldTranscribeNative) {
       setMessage("Stopped");
       recordingTranscriptionRef.current = null;
@@ -697,9 +764,10 @@ export function App() {
     }
   }
 
+  // Writes storage first, so a failed write (quota, blocked storage) leaves memory unchanged.
   function persistSessions(next: SavedSession[]) {
-    sessionsRef.current = next;
     localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    sessionsRef.current = next;
     setSessions(next);
   }
 
@@ -715,6 +783,22 @@ export function App() {
   async function saveSession() {
     if (!segments.length && !report.events.length) {
       setMessage("Nothing to save");
+      return;
+    }
+    // A saved session freezes the workspace's analysis, so the observation must be complete and
+    // the shown report must be the analysis of exactly that observation.
+    if (captureInProgress) {
+      setMessage("Stop recording and let transcription finish before saving");
+      return;
+    }
+    if (
+      !viewedSessionRef.current &&
+      (isAnalyzing ||
+        (reportRun !== null &&
+          (reportRun.inputId !== observationFingerprint(segments, pauses) ||
+            reportRun.audioId !== currentAudioId())))
+    ) {
+      setMessage("Analysis is still updating; save again in a moment");
       return;
     }
     const loaded = loadedSessionRef.current;
@@ -748,10 +832,16 @@ export function App() {
       },
     });
     const next = [session, ...sessionsRef.current].slice(0, 50);
-    persistSessions(next);
+    try {
+      persistSessions(next);
+    } catch {
+      setMessage("Could not save the session: browser storage is full or unavailable");
+      return;
+    }
     activeSessionIdRef.current = session.id;
     // Later saves of this workspace append runs to this record instead of creating copies.
     loadedSessionRef.current = session;
+    setViewedSession(session);
     try {
       const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(session));
       setCorpusAnalysis(corpus);
@@ -760,6 +850,14 @@ export function App() {
       setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
       setMessage("Session saved locally");
     }
+  }
+
+  // Fingerprint of the audio an analysis of the workspace would use now (null without audio).
+  function currentAudioId() {
+    const audio = analysisAudioPayload(samplesRef.current, sampleRateRef.current);
+    return audio.samples && audio.sampleRate
+      ? audioFingerprint(audio.samples, audio.sampleRate)
+      : null;
   }
 
   // Saving the session already on screen never creates a copy: either it is unchanged, or a new
@@ -790,9 +888,15 @@ export function App() {
       if (loadedSessionRef.current?.id === updated.id) {
         loadedSessionRef.current = updated;
       }
-      persistSessions(
-        sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
-      );
+      try {
+        persistSessions(
+          sessionsRef.current.map((candidate) =>
+            candidate.id === updated.id ? updated : candidate,
+          ),
+        );
+      } catch {
+        return "failed" as const;
+      }
       try {
         setCorpusAnalysis(await saveSpeechCorpusSession(updated));
         return "corpus" as const;
@@ -802,13 +906,15 @@ export function App() {
       }
     });
     setMessage(
-      outcome === "deleted"
-        ? "Session was deleted; nothing saved"
-        : outcome === "unchanged"
-          ? "Session is already saved"
-          : outcome === "corpus"
-            ? "New analysis saved to the session"
-            : "New analysis saved locally",
+      outcome === "failed"
+        ? "Could not save the session: browser storage is full or unavailable"
+        : outcome === "deleted"
+          ? "Session was deleted; nothing saved"
+          : outcome === "unchanged"
+            ? "Session is already saved"
+            : outcome === "corpus"
+              ? "New analysis saved to the session"
+              : "New analysis saved locally",
     );
   }
 
@@ -831,6 +937,7 @@ export function App() {
           setReportRun(null);
           sessionLanguageRef.current = null;
           loadedSessionRef.current = null;
+          setViewedSession(null);
           setInterimText("");
           setSpeakerMatch(null);
           resetChunkTranscription();
@@ -1097,6 +1204,7 @@ export function App() {
   return (
     <main className="mx-auto min-h-screen max-w-[1420px] bg-[#f5f7f5] p-5 text-[#17201b] max-sm:p-3">
       <DashboardHeader
+        isFinishingCapture={isFinishingCapture}
         engines={TRANSCRIPTION_ENGINES}
         languages={LANGUAGES}
         transcription={transcription}
@@ -1146,6 +1254,7 @@ export function App() {
           canEnroll={samplesRef.current.length > 0}
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
+          saveDisabled={captureInProgress || isAnalyzing}
           onExport={exportJson}
         />
 
@@ -1182,7 +1291,12 @@ export function App() {
         blockerStats={blockerStats}
         sessions={sessions}
         deletingSessionId={deletingSessionId}
+        sessionLoadDisabled={captureInProgress}
         onSessionLoad={(session) => {
+          // Live capture would keep appending to the loaded transcript.
+          if (captureInProgress) {
+            return;
+          }
           startedAtRef.current = new Date(session.startedAt);
           activeSessionIdRef.current = session.id;
           setSegments(session.segments);
@@ -1191,6 +1305,7 @@ export function App() {
           setReportRun(session.analysis);
           sessionLanguageRef.current = session.context.spokenLanguage;
           loadedSessionRef.current = session;
+          setViewedSession(session);
           // Audio is not stored with sessions; keeping the last recording's PCM would analyze
           // this session against someone else's audio.
           samplesRef.current = [];

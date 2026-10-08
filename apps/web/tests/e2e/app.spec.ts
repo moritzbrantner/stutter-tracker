@@ -76,8 +76,12 @@ test("records and stops with fake media devices", async ({ page }, testInfo) => 
   await page.getByRole("button", { name: /record/i }).click();
   const stopButton = page.getByRole("button", { name: "Stop", exact: true });
   await expect(stopButton).toBeEnabled();
+  // Saving would freeze the analysis of an observation that is still growing.
+  await expect(page.getByRole("button", { name: "Save", exact: true })).toBeDisabled();
   await stopButton.click();
   await expect(page.getByRole("button", { name: /record/i })).toBeVisible();
+  // Record comes back once the previous capture has fully finished.
+  await expect(page.getByRole("button", { name: /record/i })).toBeEnabled();
 });
 
 test("starts and stops the auditory feedback lab with fake media devices", async ({
