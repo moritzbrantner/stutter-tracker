@@ -2557,15 +2557,21 @@ function loadSpeakerProfiles(): SpeakerProfile[] {
 }
 
 function normalizeSpeakerProfiles(speakers: SpeakerProfile[]) {
-  return speakers.filter(
-    (speaker) =>
+  const normalized = new Map<string, SpeakerProfile>();
+  for (const speaker of speakers) {
+    if (
       typeof speaker.id === "string" &&
       speaker.id.trim().length > 0 &&
       typeof speaker.label === "string" &&
       speaker.label.trim().length > 0 &&
       Array.isArray(speaker.embeddings) &&
-      speaker.embeddings.length > 0,
-  );
+      speaker.embeddings.length > 0
+    ) {
+      const id = speaker.id.trim();
+      normalized.set(id, { ...speaker, id, label: speaker.label.trim() });
+    }
+  }
+  return [...normalized.values()];
 }
 
 function loadTranscriptionSettings(): TranscriptionSettings {

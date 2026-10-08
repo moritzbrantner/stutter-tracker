@@ -793,3 +793,22 @@ it("reloads server-only profiles after a failed local removal during hydration",
   expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
   expect(deleted).not.toHaveBeenCalled();
 }, 15000);
+
+it("uses a canonical ID when removing before startup hydration finishes", async () => {
+  localStorage.setItem(
+    "stutter-tracker:speakers",
+    JSON.stringify([
+      { id: " alex ", label: "Alex", embeddings: [[1, 0]], sampleRate: 16000, sampleCount: 1 },
+    ]),
+  );
+  listSpeakersHook = () => new Promise(() => undefined);
+  const deleted = vi.fn(async () => "deleted" as const);
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Remove speaker Alex" }, { timeout: 6500 }),
+  );
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith("alex"));
+  expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
+}, 15000);
