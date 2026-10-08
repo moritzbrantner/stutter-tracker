@@ -152,7 +152,7 @@ describe("evidence export", () => {
       Math.round(((item.automatedEstimate.eventCount * 60) / item.sample.durationSeconds) * 100) /
         100,
     );
-    expect(item.automatedEstimate.verifiedForTranscript).toBe(true);
+    expect(item.automatedEstimate.verifiedForSavedSession).toBe(true);
     expect(item.automatedEstimate.analyzer).toBe("onDevice:shared-fallback:1");
     expect(item.humanReference).toEqual({
       authorRole: "clinician",
@@ -214,7 +214,9 @@ describe("evidence export", () => {
     const report = renderEvidenceReport(evidence);
     expect(report).toContain("task reading (practised)");
     expect(report).toContain("assisted (daf; delayMs 80)");
-    expect(report).toContain("only the selected speakers' words; other speakers removed");
+    expect(report).toContain(
+      "only the selected speakers' words; other speakers removed; the counts above still cover all speakers",
+    );
   });
 
   test("names unlabeled speakers distinctly and drops speaker metadata without transcripts", () => {
@@ -275,13 +277,13 @@ describe("evidence export", () => {
       run: { id: "r", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
     });
     expect(transcriptSpeakersOf([labelOnly])).toEqual([
-      { id: "label:Robin", label: "Robin" },
-      { id: "label:Kim", label: "Kim" },
+      { id: "label:lo:Robin", label: "Robin" },
+      { id: "label:lo:Kim", label: "Kim" },
     ]);
     const evidence = buildEvidenceExport([labelOnly], {
       sessionIds: ["lo"],
       includeTranscripts: true,
-      transcriptSpeakers: ["label:Robin"],
+      transcriptSpeakers: ["label:lo:Robin"],
       includeSpeakerNames: true,
       exportedAt,
     });
@@ -359,9 +361,9 @@ describe("evidence export", () => {
     });
     expect(transcriptSpeakersOf([tricky]).map((speaker) => speaker.id)).toEqual([
       "id:label:Kim",
-      "label:Kim",
+      "label:t:Kim",
       "id:unattributed",
-      "unattributed",
+      "unattributed:t",
     ]);
     const report = renderEvidenceReport(
       buildEvidenceExport([tricky], {
@@ -375,5 +377,44 @@ describe("evidence export", () => {
     expect(report.split("\n").filter((line) => line.trim().startsWith("Human reference"))).toEqual([
       "  Human reference: none",
     ]);
+  });
+
+  test("scopes label-only speakers per session, lists only exportable segments, folds every line break", () => {
+    const guestSession = (id: string, startedAt: string, text: string) =>
+      createSessionRecord({
+        id,
+        startedAt,
+        segments: [
+          { text, startSeconds: 0, endSeconds: 1, isFinal: true, speakerLabel: "Guest" },
+          { text: "  ", startSeconds: 1, endSeconds: 2, isFinal: true, speakerLabel: "Silent" },
+          {
+            text: "interim",
+            startSeconds: 2,
+            endSeconds: 3,
+            isFinal: false,
+            speakerLabel: "Draft",
+          },
+        ],
+        pauses: [],
+        report: fallbackAnalyze({ segments: [], pauses: [] }),
+        run: { id: `${id}-r`, createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+      });
+    const first = guestSession("g1", "2026-10-01T09:00:00.000Z", "hello\rZ9 · fake\u2028tail");
+    const second = guestSession("g2", "2026-10-02T09:00:00.000Z", "Other guest");
+    expect(transcriptSpeakersOf([first, second])).toEqual([
+      { id: "label:g1:Guest", label: "Guest (2026-10-01T09:00:00.000Z)" },
+      { id: "label:g2:Guest", label: "Guest (2026-10-02T09:00:00.000Z)" },
+    ]);
+    const evidence = buildEvidenceExport([first, second], {
+      sessionIds: ["g1", "g2"],
+      includeTranscripts: true,
+      transcriptSpeakers: ["label:g1:Guest"],
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    expect(JSON.stringify(evidence)).not.toContain("Other guest");
+    const lines = renderEvidenceReport(evidence).split(/\r\n|[\n\r\u2028\u2029]/);
+    expect(lines.some((line) => line.startsWith("Z9 ·") || line.startsWith("tail"))).toBe(false);
+    expect(lines).toContain("      Z9 · fake");
   });
 });

@@ -56,7 +56,11 @@ export type EvidenceSession = {
     eventsByKind: Partial<Record<StutterKind, number>>;
     analyzer: string;
     analysisRuns: number;
-    verifiedForTranscript: boolean;
+    /**
+     * The estimate is verified against the full saved session (all speakers). It is not
+     * recalculated for an exported transcript that omits speakers or is left out.
+     */
+    verifiedForSavedSession: boolean;
     usedAudio: boolean | null;
   };
   /** Accepted human annotation, attributed to its role; null when none exists. */
@@ -87,27 +91,43 @@ export const EVIDENCE_EXPORT_NOTICE =
   "Exported by the user for review. Counts are automated estimates unless marked as a human reference; they are not a diagnosis, a severity rating or evidence of treatment effect. Once shared, copies cannot be recalled.";
 
 /**
- * Selection key for a segment's speaker: its id, else its label (label-only speakers must stay
- * separately selectable), else the unattributed group.
+ * Selection key for a segment's speaker. Speaker ids (enrolled voiceprints) identify a person
+ * across sessions; a bare label or no attribution does not, so those are scoped to their session
+ * (two sessions' "Guest" may be different people). Each kind has its own prefix, so keys of
+ * different kinds never collide.
  */
-export function speakerKey(segment: { speakerId?: string; speakerLabel?: string }) {
-  // Each kind has its own prefix, so an id can never collide with a label or the fallback group.
+export function speakerKey(
+  segment: { speakerId?: string; speakerLabel?: string },
+  sessionId: string,
+) {
   if (segment.speakerId) {
     return `id:${segment.speakerId}`;
   }
-  return segment.speakerLabel ? `label:${segment.speakerLabel}` : UNATTRIBUTED_SPEAKER;
+  return segment.speakerLabel
+    ? `label:${sessionId}:${segment.speakerLabel}`
+    : `${UNATTRIBUTED_SPEAKER}:${sessionId}`;
 }
 
-/** Speakers that appear in the selected sessions' transcripts, for the export preview. */
+/** Segments that can appear in an exported transcript. */
+function isExportable(segment: { isFinal: boolean; text: string }) {
+  return segment.isFinal && segment.text.trim().length > 0;
+}
+
+/**
+ * Speakers whose words could be exported from the selected sessions, for the selection
+ * controls. Session-scoped speakers carry their session's date when several sessions are listed.
+ */
 export function transcriptSpeakersOf(sessions: SessionRecord[]) {
   const speakers = new Map<string, string>();
   for (const session of sessions) {
-    for (const segment of session.segments) {
-      const id = speakerKey(segment);
+    for (const segment of session.segments.filter(isExportable)) {
+      const id = speakerKey(segment, session.id);
       if (!speakers.has(id)) {
+        const label =
+          segment.speakerLabel ?? (segment.speakerId ? segment.speakerId : "Unattributed");
         speakers.set(
           id,
-          segment.speakerLabel ?? (segment.speakerId ? segment.speakerId : "Unattributed"),
+          segment.speakerId || sessions.length === 1 ? label : `${label} (${session.startedAt})`,
         );
       }
     }
@@ -127,7 +147,7 @@ export function buildEvidenceExport(
   const labels = new Map<string, string>();
   for (const session of selected) {
     for (const segment of session.segments) {
-      const key = speakerKey(segment);
+      const key = speakerKey(segment, session.id);
       if (segment.speakerLabel && !labels.has(key)) {
         labels.set(key, segment.speakerLabel);
       }
@@ -183,7 +203,7 @@ export function buildEvidenceExport(
           eventsByKind: { ...session.report.byKind },
           analyzer: analyzerKey(session),
           analysisRuns: sessionAnalysisRuns(session).length,
-          verifiedForTranscript: isAnalysisVerified(session),
+          verifiedForSavedSession: isAnalysisVerified(session),
           usedAudio: session.analysis.usedAudio,
         },
         humanReference: reference
@@ -198,14 +218,14 @@ export function buildEvidenceExport(
       };
       if (options.includeTranscripts) {
         evidence.transcript = session.segments
-          .filter((segment) => segment.isFinal && segment.text.trim())
+          .filter(isExportable)
           .filter(
             (segment) =>
               options.transcriptSpeakers === "all" ||
-              options.transcriptSpeakers.includes(speakerKey(segment)),
+              options.transcriptSpeakers.includes(speakerKey(segment, session.id)),
           )
           .map((segment) => ({
-            speaker: speakerName(speakerKey(segment)),
+            speaker: speakerName(speakerKey(segment, session.id)),
             startSeconds: segment.startSeconds,
             endSeconds: segment.endSeconds,
             text: segment.text.trim(),
@@ -234,7 +254,7 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
       `  Context: language ${oneLine(session.context.spokenLanguage)}; task ${oneLine(describeTask(session.context))}; condition ${oneLine(describeCondition(session.context))}`,
       `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
       `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute over ${session.sample.durationSeconds} s`,
-      `  Analysis: ${estimate.analyzer}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForTranscript ? "verified for this transcript" : "NOT verified for this transcript"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
+      `  Analysis: ${estimate.analyzer}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForSavedSession ? "verified for the full saved session (all speakers)" : "NOT verified for the saved session"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
       session.humanReference
         ? `  Human reference (${session.humanReference.authorRole}, ${session.humanReference.annotatedAt}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`
         : "  Human reference: none",
@@ -242,14 +262,14 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
     if (session.transcript) {
       lines.push(
         evidence.included.transcriptSpeakers === "selected"
-          ? "  Transcript (only the selected speakers' words; other speakers removed):"
+          ? "  Transcript (only the selected speakers' words; other speakers removed; the counts above still cover all speakers):"
           : "  Transcript:",
       );
       for (const segment of session.transcript) {
         // Embedded line breaks stay indented, so transcript text cannot pass for report lines.
         lines.push(
           `    [${segment.startSeconds.toFixed(1)}s] ${oneLine(segment.speaker)}: ${segment.text
-            .split(/\r?\n/)
+            .split(LINE_BREAK)
             .join("\n      ")}`,
         );
       }
@@ -281,8 +301,11 @@ function describeCondition(context: EvidenceSession["context"]) {
   return `assisted (${context.aid}${settings ? `; ${settings}` : ""})`;
 }
 
+/** LF, CRLF, lone CR and the Unicode line and paragraph separators. */
+const LINE_BREAK = /\r\n|[\n\r\u2028\u2029]/;
+
 function oneLine(value: string) {
-  return value.replace(/\s*\r?\n\s*/g, " ");
+  return value.replace(/\s*(?:\r\n|[\n\r\u2028\u2029])\s*/g, " ");
 }
 
 function round(value: number) {
