@@ -336,6 +336,39 @@ describe("speaker deletion", () => {
     expect((await responseJson<{ speakers: SpeakerProfile[] }>(listed)).speakers).toEqual([]);
   });
 
+  it("refuses deletes from arbitrary websites in loopback mode", async () => {
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: fakeWorker(),
+    });
+    await putSpeakers(handler, [speaker("a", "Alpha")]);
+    const fromWebsite = await handler(
+      new Request("http://server/speakers", {
+        method: "DELETE",
+        headers: { origin: "https://evil.example.com" },
+      }),
+    );
+    expect(fromWebsite.status).toBe(403);
+    const preflight = await handler(
+      new Request("http://server/speakers", {
+        method: "OPTIONS",
+        headers: {
+          origin: "https://evil.example.com",
+          "access-control-request-method": "DELETE",
+        },
+      }),
+    );
+    expect(preflight.status).toBe(403);
+    const fromLocalApp = await handler(
+      new Request("http://server/speakers/a", {
+        method: "DELETE",
+        headers: { origin: "http://127.0.0.1:1421" },
+      }),
+    );
+    expect(fromLocalApp.status).toBe(200);
+  });
+
   it("requires authorization to delete in public-ready mode and allows DELETE in CORS", async () => {
     const response = await publicHandler()(
       new Request("http://server/speakers/a", {

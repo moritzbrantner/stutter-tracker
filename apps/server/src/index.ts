@@ -323,6 +323,14 @@ function identifySpeaker(body: {
   return { bestMatch: matches[0], matches, isMatch: Boolean(matches[0]) };
 }
 
+function isLoopbackOrigin(origin: string) {
+  try {
+    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function corsHeaders(config: ServerConfig, request: Request): ResponseHeaders | Response {
   const origin = request.headers.get("origin");
   const headers = {
@@ -341,6 +349,21 @@ function corsHeaders(config: ServerConfig, request: Request): ResponseHeaders | 
     (!config.publicReady && config.allowedOrigins.length === 0);
   if (!allowed) {
     return errorResponse("forbidden_origin", "origin is not allowed", 403, headers);
+  }
+  // Loopback mode accepts any origin without a token, so destructive requests from a browser must
+  // come from a loopback page or an explicitly allowed origin; any website could otherwise erase
+  // the stored voiceprints. Non-browser clients send no Origin and are unaffected.
+  const destructive =
+    request.method === "DELETE" ||
+    (request.method === "OPTIONS" &&
+      request.headers.get("access-control-request-method")?.toUpperCase() === "DELETE");
+  if (destructive && !config.allowedOrigins.includes(origin) && !isLoopbackOrigin(origin)) {
+    return errorResponse(
+      "forbidden_origin",
+      "deleting requires a loopback or explicitly allowed origin",
+      403,
+      headers,
+    );
   }
 
   return {
