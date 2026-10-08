@@ -786,7 +786,10 @@ export function App() {
         return "unchanged" as const;
       }
       const updated = reanalyzeSession(latest, run, savedReport);
-      loadedSessionRef.current = updated;
+      // The user may have opened another session while this save waited in the queue.
+      if (loadedSessionRef.current?.id === updated.id) {
+        loadedSessionRef.current = updated;
+      }
       persistSessions(
         sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
       );

@@ -143,6 +143,19 @@ describe("local storage helpers", () => {
     expect(loadSessionsFromStorage(storage)).toEqual([]);
   });
 
+  it("recovers quarantined sessions even when the primary store is corrupt, keeping its raw value", () => {
+    const storage = memoryStorage({
+      [STORE_KEY]: "{",
+      [UNREADABLE_SESSIONS_KEY]: JSON.stringify([legacySession]),
+    });
+
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
+    expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([
+      { unreadableStore: "{" },
+    ]);
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
+  });
+
   it("migrates legacy stored sessions to the canonical schema", () => {
     const storage = memoryStorage({ [STORE_KEY]: JSON.stringify([legacySession]) });
 

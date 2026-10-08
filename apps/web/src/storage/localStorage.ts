@@ -128,15 +128,22 @@ export function saveRemoteConsent(
  * that can read them restores them.
  */
 export function loadSessionsFromStorage(storage: Storage = localStorage): SavedSession[] {
-  const stored = readJsonArray(storage, STORE_KEY);
   const quarantined = readJsonArray(storage, UNREADABLE_SESSIONS_KEY);
-  if (!stored) {
-    return [];
-  }
   const sessions: SavedSession[] = [];
   const ids = new Set<string>();
   const unreadable: unknown[] = [];
   let recovered = false;
+  let stored = readJsonArray(storage, STORE_KEY);
+  if (!stored) {
+    // A corrupt primary store must not hide recoverable quarantined sessions. Its raw value is
+    // kept in quarantine so the rewrite below cannot lose it.
+    const raw = readRaw(storage, STORE_KEY);
+    if (raw !== null) {
+      unreadable.push({ unreadableStore: raw });
+      recovered = true;
+    }
+    stored = [];
+  }
   for (const [candidate, fromQuarantine] of [
     ...stored.map((entry) => [entry, false] as const),
     ...(quarantined ?? []).map((entry) => [entry, true] as const),
@@ -170,6 +177,14 @@ export function loadSessionsFromStorage(storage: Storage = localStorage): SavedS
     }
   }
   return sessions;
+}
+
+function readRaw(storage: Storage, key: string) {
+  try {
+    return storage.getItem(key);
+  } catch {
+    return null;
+  }
 }
 
 function readJsonArray(storage: Storage, key: string): unknown[] | null {
