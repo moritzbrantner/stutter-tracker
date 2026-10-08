@@ -855,6 +855,9 @@ export function App() {
               )
             : [...latest, result];
         const saved = await savePersistedSpeakerProfiles(next);
+        if (saved.some((speaker) => speaker.id === result.id)) {
+          removedSpeakerIdsRef.current.delete(result.id);
+        }
         speakersRef.current = saved;
         return saved;
       });

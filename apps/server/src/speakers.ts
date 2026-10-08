@@ -150,14 +150,21 @@ class FileSpeakerStore implements SpeakerStore {
   }
 
   deleteAll(): Promise<number> {
-    return this.mutate(async (existing) => ({ next: [], result: existing.length }));
+    // Erasure must not depend on parsing the bytes being erased. Writes still fail
+    // normally; only the reported previous count is best effort.
+    return this.mutate(async (existing) => ({ next: [], result: existing.length }), true);
   }
 
   private mutate<T>(
     change: (existing: SpeakerProfile[]) => Promise<{ next?: SpeakerProfile[]; result: T }>,
+    bestEffortRead = false,
   ): Promise<T> {
     const operation = this.tail.then(async () => {
-      const { next, result } = await change(await this.list());
+      const existing = await this.list().catch((error: unknown) => {
+        if (bestEffortRead) return [];
+        throw error;
+      });
+      const { next, result } = await change(existing);
       if (next) {
         await this.write(next);
       }

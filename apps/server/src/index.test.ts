@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, mock } from "bun:test";
-import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -271,6 +271,23 @@ describe("worker route timeouts", () => {
 });
 
 describe("speaker deletion", () => {
+  it("erases a malformed file store through delete-all", async () => {
+    const dir = await tempDir();
+    const filePath = join(dir, "speakers.json");
+    await writeFile(filePath, '{"voiceprint":"sensitive truncated bytes');
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: createSpeakerStore({ filePath }),
+      nativeWorker: fakeWorker(),
+    });
+    const response = await handler(
+      new Request("http://server/speakers?all=1", { method: "DELETE" }),
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ deleted: 0 });
+    expect(JSON.parse(await readFile(filePath, "utf8"))).toEqual([]);
+  });
+
   it("deletes one and then all voiceprints from the file store", async () => {
     const dir = await tempDir();
     const handler = createComputeRequestHandler({
