@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   loadRemoteConsent,
   loadSessionsFromStorage,
+  replaceStoredSessions,
   normalizeSpeakerProfiles,
   saveRemoteConsent,
   STORE_KEY,
@@ -76,6 +77,13 @@ describe("local storage helpers", () => {
     ).toEqual(["legacy-1", "recoverable"]);
     // The readable duplicate is dropped so it cannot come back after the visible copy is deleted.
     expect(JSON.parse(storage.getItem(UNREADABLE_SESSIONS_KEY) ?? "[]")).toEqual([stillUnreadable]);
+  });
+
+  it("clears quarantined sessions when a restore replaces all sessions", () => {
+    const storage = memoryStorage({ [UNREADABLE_SESSIONS_KEY]: JSON.stringify([{ id: "old" }]) });
+    replaceStoredSessions([migrateSessionRecord(legacySession)], storage);
+    expect(storage.getItem(UNREADABLE_SESSIONS_KEY)).toBeNull();
+    expect(loadSessionsFromStorage(storage).map((session) => session.id)).toEqual(["legacy-1"]);
   });
 
   it("filters invalid speaker profile records", () => {

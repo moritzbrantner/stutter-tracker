@@ -116,7 +116,22 @@ function isSessionContext(value: unknown) {
     (value.condition === null ||
       (isRecord(value.condition) &&
         (value.condition.kind === "unassisted" ||
-          (value.condition.kind === "assisted" && typeof value.condition.aidId === "string"))))
+          (value.condition.kind === "assisted" &&
+            typeof value.condition.aidId === "string" &&
+            isAssistanceSettings(value.condition.settings)))))
+  );
+}
+
+function isAssistanceSettings(value: unknown) {
+  return (
+    value === undefined ||
+    (isRecord(value) &&
+      Object.values(value).every(
+        (setting) =>
+          typeof setting === "string" ||
+          typeof setting === "boolean" ||
+          (typeof setting === "number" && Number.isFinite(setting)),
+      ))
   );
 }
 

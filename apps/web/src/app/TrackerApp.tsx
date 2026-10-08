@@ -750,6 +750,8 @@ export function App() {
     const next = [session, ...sessionsRef.current].slice(0, 50);
     persistSessions(next);
     activeSessionIdRef.current = session.id;
+    // Later saves of this workspace append runs to this record instead of creating copies.
+    loadedSessionRef.current = session;
     try {
       const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(session));
       setCorpusAnalysis(corpus);
@@ -1162,6 +1164,9 @@ export function App() {
           setReportRun(session.analysis);
           sessionLanguageRef.current = session.context.spokenLanguage;
           loadedSessionRef.current = session;
+          // Audio is not stored with sessions; keeping the last recording's PCM would analyze
+          // this session against someone else's audio.
+          samplesRef.current = [];
         }}
         onSessionDelete={(session) => void deleteSession(session)}
       />

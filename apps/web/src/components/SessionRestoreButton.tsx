@@ -1,6 +1,6 @@
 import { Upload } from "lucide-react";
 import { useRef, useState } from "react";
-import { STORE_KEY } from "../storage/localStorage";
+import { replaceStoredSessions } from "../storage/localStorage";
 import { parseSessionBackup } from "../storage/sessionBackup";
 import { buttonClass, mutedTextClass } from "./styles";
 
@@ -17,7 +17,7 @@ export function SessionRestoreButton({ disabled = false }: { disabled?: boolean 
       if (!confirmed) {
         return;
       }
-      localStorage.setItem(STORE_KEY, JSON.stringify(sessions));
+      replaceStoredSessions(sessions);
       window.location.reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not restore this backup.");

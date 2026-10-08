@@ -178,6 +178,22 @@ describe("session backup", () => {
     );
   });
 
+  test("validates assisted-condition settings", () => {
+    const withSettings = (settings: unknown) => ({
+      ...session,
+      context: { ...session.context, condition: { kind: "assisted", aidId: "daf", settings } },
+    });
+    expect(
+      parseSessionBackup({ sessions: [withSettings({ delayMs: 100, on: true })] }),
+    ).toHaveLength(1);
+    expect(parseSessionBackup({ sessions: [withSettings(undefined)] })).toHaveLength(1);
+    for (const bad of [{ delayMs: [] }, "fast", { delayMs: Number.NaN }]) {
+      expect(() => parseSessionBackup({ sessions: [withSettings(bad)] })).toThrow(
+        "Backup session 1 is invalid.",
+      );
+    }
+  });
+
   test("imports nothing when any session is unreadable", () => {
     expect(() =>
       parseSessionBackup({

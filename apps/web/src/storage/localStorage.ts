@@ -103,6 +103,12 @@ function dedupe(entries: unknown[]) {
   });
 }
 
+/** A restore replaces everything, including quarantined entries it was meant to remove. */
+export function replaceStoredSessions(sessions: SavedSession[], storage: Storage = localStorage) {
+  storage.setItem(STORE_KEY, JSON.stringify(sessions));
+  storage.removeItem(UNREADABLE_SESSIONS_KEY);
+}
+
 export function saveSessionsToStorage(sessions: SavedSession[], storage: Storage = localStorage) {
   storage.setItem(STORE_KEY, JSON.stringify(sessions));
 }
