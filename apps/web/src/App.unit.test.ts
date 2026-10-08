@@ -10,7 +10,6 @@ import {
   resampleSamples,
   staticModelStatuses,
   summarizeTranscriptionChunks,
-  withUnverifiedNote,
 } from "./App";
 
 describe("fallbackAnalyze", () => {
@@ -298,23 +297,5 @@ describe("desktop analyzer identity", () => {
       version: "1",
     });
     expect(desktopAnalyzer(undefined).version).toBeNull();
-  });
-});
-
-describe("corpus provenance note", () => {
-  it("flags unverified sessions in any corpus summary, desktop or local", () => {
-    const legacy = migrateSessionRecord({
-      id: "legacy",
-      startedAt: "2026-05-19T10:00:00.000Z",
-      segments: [],
-      pauses: [],
-      report: fallbackAnalyze({ segments: [], pauses: [] }),
-    });
-    const corpus = { summary: ["From Rust"] } as Parameters<typeof withUnverifiedNote>[0];
-    expect(withUnverifiedNote(corpus, [legacy]).summary).toEqual([
-      "From Rust",
-      "1 of 1 sessions have an analysis that is not verified for their transcript; reanalyze them before comparing.",
-    ]);
-    expect(withUnverifiedNote(corpus, [])).toBe(corpus);
   });
 });

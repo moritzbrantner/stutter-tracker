@@ -299,6 +299,9 @@ describe("App integration", () => {
     localStorage.setItem(STORE_KEY, JSON.stringify([legacy]));
     renderApp();
 
+    expect(
+      await screen.findByText(/1 saved session has an analysis that is not verified/),
+    ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /Reanalyze saved session from/ }));
 
     expect(await screen.findByText("Reanalysis added to the session")).toBeInTheDocument();
@@ -309,6 +312,7 @@ describe("App integration", () => {
     expect(stored.priorAnalyses.map((run) => run.id)).toEqual(["session-re:legacy"]);
     expect(stored.analysis.analyzer?.producer).toBe("onDevice");
     expect(screen.getByText(/2 analysis runs/)).toBeInTheDocument();
+    expect(screen.queryByText(/has an analysis that is not verified/)).not.toBeInTheDocument();
   });
 
   it("keeps external-server transcription settings in web mode", async () => {

@@ -447,11 +447,11 @@ export function App() {
     };
   }, [isNative]);
 
-  // The unverified-analysis note is added at display time so it covers both the local corpus and
-  // the desktop corpus, whose summary comes from Rust.
-  const displayedCorpus = useMemo(
-    () => withUnverifiedNote(corpusAnalysis, sessions),
-    [corpusAnalysis, sessions],
+  // Sessions whose saved analysis is not verified for their transcript, flagged next to the corpus
+  // (local or desktop) instead of being counted silently.
+  const unverifiedSessionCount = useMemo(
+    () => sessions.filter((session) => !isAnalysisVerified(session)).length,
+    [sessions],
   );
 
   const todayStats = useMemo(() => {
@@ -1353,7 +1353,8 @@ export function App() {
           selectedModel={transcription.model}
           selectedModelStatus={selectedModelStatus}
           modelStatuses={modelStatuses}
-          corpusAnalysis={displayedCorpus}
+          corpusAnalysis={corpusAnalysis}
+          unverifiedSessionCount={unverifiedSessionCount}
           speakers={speakers}
           speakerLabel={speakerLabel}
           canEnroll={samplesRef.current.length > 0}
@@ -2087,23 +2088,6 @@ function localSpeechCorpusExport(sessions: SavedSession[]) {
       stutterCount: session.report.stutterCount,
       stuttersPerMinute: session.report.stuttersPerMinute,
     })),
-  };
-}
-
-export function withUnverifiedNote(
-  corpus: SpeechCorpusAnalysis,
-  sessions: SavedSession[],
-): SpeechCorpusAnalysis {
-  const unverified = sessions.filter((session) => !isAnalysisVerified(session)).length;
-  if (unverified === 0) {
-    return corpus;
-  }
-  return {
-    ...corpus,
-    summary: [
-      ...corpus.summary,
-      `${unverified} of ${sessions.length} sessions have an analysis that is not verified for their transcript; reanalyze them before comparing.`,
-    ],
   };
 }
 
