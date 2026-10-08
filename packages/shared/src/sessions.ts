@@ -165,8 +165,8 @@ export function sessionAnalysisRuns(record: SessionRecord): AnalysisRun[] {
 }
 
 /**
- * Deterministic identity of the stored observation (final text, timing, speaker attribution and
- * pauses). Equal fingerprints mean runs analyzed the same transcript evidence.
+ * Deterministic identity of the stored observation: every segment and pause field an analyzer
+ * can read. Equal fingerprints mean runs analyzed the same transcript evidence.
  */
 export function observationFingerprint(segments: TranscriptSegment[], pauses: PauseSpan[]) {
   const canonical = JSON.stringify([
@@ -175,9 +175,12 @@ export function observationFingerprint(segments: TranscriptSegment[], pauses: Pa
       segment.startSeconds,
       segment.endSeconds,
       segment.isFinal,
+      segment.confidence ?? null,
       segment.speakerId ?? null,
+      segment.speakerLabel ?? null,
+      segment.speakerScore ?? null,
     ]),
-    pauses.map((pause) => [pause.startSeconds, pause.endSeconds]),
+    pauses.map((pause) => [pause.startSeconds, pause.endSeconds, pause.afterText ?? null]),
   ]);
   return `obs-${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x050c5d1f)}`;
 }

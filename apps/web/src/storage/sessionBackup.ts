@@ -106,9 +106,45 @@ function isRecordingDescriptor(value: unknown) {
     isRecord(value) &&
     typeof value.sessionId === "string" &&
     typeof value.runId === "string" &&
+    (value.origin === "browser" ||
+      value.origin === "mobile" ||
+      value.origin === "desktop" ||
+      value.origin === "import") &&
     (value.role === "appInput" || value.role === "interventionOutput") &&
     isNonNegativeNumber(value.sampleRate) &&
-    isNonNegativeNumber(value.channelCount)
+    isNonNegativeNumber(value.channelCount) &&
+    isOptionalString(value.deviceRoute) &&
+    isFiniteNumber(value.startOffsetSeconds) &&
+    isRecord(value.preprocessing) &&
+    isPreprocessingSetting(value.preprocessing.echoCancellation) &&
+    isPreprocessingSetting(value.preprocessing.noiseSuppression) &&
+    isPreprocessingSetting(value.preprocessing.autoGainControl) &&
+    Array.isArray(value.discontinuities) &&
+    value.discontinuities.every(isCaptureInterval) &&
+    (value.speakerAssessment === "singleSpeakerDeclared" ||
+      value.speakerAssessment === "unknown" ||
+      value.speakerAssessment === "overlapDetected")
+  );
+}
+
+function isPreprocessingSetting(value: unknown) {
+  return (
+    isRecord(value) &&
+    (value.requested === undefined || typeof value.requested === "boolean") &&
+    (value.applied === undefined || typeof value.applied === "boolean")
+  );
+}
+
+function isCaptureInterval(value: unknown) {
+  return (
+    isRecord(value) &&
+    isFiniteNumber(value.startSeconds) &&
+    isFiniteNumber(value.endSeconds) &&
+    value.endSeconds >= value.startSeconds &&
+    (value.reason === "dropout" ||
+      value.reason === "interrupted" ||
+      value.reason === "routeChange" ||
+      value.reason === "paused")
   );
 }
 

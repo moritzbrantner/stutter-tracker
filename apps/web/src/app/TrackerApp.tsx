@@ -169,6 +169,9 @@ export function App() {
   const transcriptionRef = useRef(transcription);
   const recordingTranscriptionRef = useRef<TranscriptionSettings | null>(null);
   const recordingLanguageRef = useRef(language);
+  // Language of the session in the workspace, fixed when recording starts or a session loads; the
+  // selector can change before Save without relabelling the finished recording.
+  const sessionLanguageRef = useRef<string | null>(null);
   const nextChunkStartSampleRef = useRef(0);
   const chunkIndexRef = useRef(0);
   const chunkTranscriptionTailRef = useRef<Promise<void>>(Promise.resolve());
@@ -444,6 +447,7 @@ export function App() {
       samplesRef.current = [];
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
+      sessionLanguageRef.current = language;
       resetChunkTranscription();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
@@ -719,7 +723,7 @@ export function App() {
         usedAudio: null,
       },
       context: {
-        spokenLanguage: canonicalSpokenLanguage(recordingLanguageRef.current),
+        spokenLanguage: canonicalSpokenLanguage(sessionLanguageRef.current),
         task: null,
         condition: null,
       },
@@ -754,6 +758,7 @@ export function App() {
           setPauses([]);
           setReport(emptyReport());
           setReportRun(null);
+          sessionLanguageRef.current = null;
           setInterimText("");
           setSpeakerMatch(null);
           resetChunkTranscription();
@@ -1112,6 +1117,7 @@ export function App() {
           setPauses(session.pauses);
           setReport(session.report);
           setReportRun(session.analysis);
+          sessionLanguageRef.current = session.context.spokenLanguage;
         }}
         onSessionDelete={(session) => void deleteSession(session)}
       />

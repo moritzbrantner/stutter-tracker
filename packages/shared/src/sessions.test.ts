@@ -133,5 +133,17 @@ describe("session records", () => {
       observationFingerprint(segments, pauses),
     );
     expect(observationFingerprint(segments, [])).not.toBe(observationFingerprint(segments, pauses));
+    for (const changed of [
+      { ...segments[0], confidence: 0.4 },
+      { ...segments[0], speakerScore: 0.9 },
+      { ...segments[0], speakerLabel: "Guest" },
+    ]) {
+      expect(observationFingerprint([changed], pauses)).not.toBe(
+        observationFingerprint(segments, pauses),
+      );
+    }
+    expect(observationFingerprint(segments, [{ ...pauses[0], afterText: "world" }])).not.toBe(
+      observationFingerprint(segments, pauses),
+    );
   });
 });

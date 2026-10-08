@@ -110,6 +110,32 @@ describe("session backup", () => {
     expect(restored.priorAnalyses).toEqual([{ ...session.analysis, report: session.report }]);
   });
 
+  test("accepts complete recording descriptors and rejects partial ones", () => {
+    const recording = {
+      sessionId: "session-1",
+      runId: "run-1",
+      origin: "browser",
+      role: "appInput",
+      sampleRate: 48_000,
+      channelCount: 1,
+      startOffsetSeconds: 0,
+      preprocessing: {
+        echoCancellation: { requested: true },
+        noiseSuppression: { requested: true, applied: true },
+        autoGainControl: { requested: false, applied: false },
+      },
+      discontinuities: [{ startSeconds: 1, endSeconds: 1.5, reason: "dropout" }],
+      speakerAssessment: "unknown",
+    };
+    expect(
+      parseSessionBackup({ sessions: [{ ...session, recordings: [recording] }] }),
+    ).toHaveLength(1);
+    const { discontinuities: _dropped, ...partial } = recording;
+    expect(() => parseSessionBackup({ sessions: [{ ...session, recordings: [partial] }] })).toThrow(
+      "Backup session 1 is invalid.",
+    );
+  });
+
   test("imports nothing when any session is unreadable", () => {
     expect(() =>
       parseSessionBackup({
