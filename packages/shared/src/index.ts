@@ -1102,3 +1102,4 @@ export * from "./capture";
 export * from "./outcomes";
 export * from "./sessions";
 export * from "./consent";
+export * from "./evidenceExport";

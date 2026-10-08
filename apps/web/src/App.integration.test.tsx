@@ -349,6 +349,51 @@ describe("App integration", () => {
     ).toBeDisabled();
   });
 
+  it("previews and exports only the sessions and content the user chooses", async () => {
+    const make = (id: string, startedAt: string, text: string) => ({
+      id,
+      startedAt,
+      segments: [{ text, startSeconds: 0, endSeconds: 2, confidence: 0.9, isFinal: true }],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 60,
+        wordCount: 4,
+        stutterCount: 1,
+        stuttersPerMinute: 1,
+        severity: "mild",
+        events: [],
+        byKind: {},
+      },
+    });
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify([
+        make("chosen", "2026-05-19T10:00:00.000Z", "Shared sentence here"),
+        make("other", "2026-05-20T10:00:00.000Z", "Private sentence elsewhere"),
+      ]),
+    );
+    renderApp();
+
+    await userEvent.click(screen.getByRole("button", { name: "Choose sessions" }));
+    const panel = screen.getByRole("region", { name: "Export for review" });
+    expect(within(panel).getByRole("button", { name: /Download report/ })).toBeDisabled();
+    const checkboxes = within(panel).getAllByRole("checkbox");
+    await userEvent.click(checkboxes[0]);
+    await userEvent.click(within(panel).getByRole("checkbox", { name: "Transcripts" }));
+
+    const preview = within(panel).getByLabelText("Export preview");
+    expect(preview).toHaveTextContent("Sessions: 1");
+    expect(preview).toHaveTextContent("Shared sentence here");
+    expect(preview).not.toHaveTextContent("Private sentence elsewhere");
+    expect(preview).toHaveTextContent("Automated estimate (model, not a judgment)");
+    await userEvent.click(within(panel).getByRole("checkbox", { name: /I consent to sharing/ }));
+    expect(within(panel).getByRole("button", { name: /Download report/ })).toBeEnabled();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "Data (JSON)" }));
+    expect(preview).toHaveTextContent('"schema": "vox-evidence-export"');
+    expect(preview).not.toHaveTextContent("Private sentence elsewhere");
+  });
+
   it("keeps external-server transcription settings in web mode", async () => {
     localStorage.setItem(
       TRANSCRIPTION_KEY,
@@ -413,4 +458,100 @@ describe("App integration", () => {
       await screen.findByText("Microphone recording is unavailable in this browser"),
     ).toBeInTheDocument();
   });
+});
+
+it("reuses the data preview across parent recording renders", async () => {
+  const { EvidenceExportPanel } = await import("./components/EvidenceExportPanel");
+  const { createSessionRecord } = await import("@stutter-tracker/shared");
+  const segments = Array.from({ length: 1000 }, (_, index) => ({
+    text: `Transcript ${index} ${"words ".repeat(100)}`,
+    startSeconds: index,
+    endSeconds: index + 1,
+    isFinal: true,
+  }));
+  const sessions = [
+    createSessionRecord({
+      id: "preview-test",
+      startedAt: "2026-10-01T09:00:00.000Z",
+      segments,
+      pauses: [],
+      report: fallbackAnalyze({ segments, pauses: [] }),
+      run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    }),
+  ];
+  const user = userEvent.setup();
+  const view = render(<EvidenceExportPanel sessions={sessions} />);
+  await user.click(screen.getByRole("button", { name: "Choose sessions" }));
+  await user.click(screen.getAllByRole("checkbox")[0]!);
+  await user.click(screen.getByRole("checkbox", { name: "Transcripts" }));
+  await user.click(screen.getByRole("button", { name: "Data (JSON)" }));
+  const previewText = screen.getByLabelText("Export preview").textContent;
+  expect(previewText).toContain("Transcript 999");
+  const stringify = vi.spyOn(JSON, "stringify");
+  try {
+    for (let frame = 0; frame < 10; frame++) {
+      view.rerender(<EvidenceExportPanel sessions={sessions} />);
+    }
+    const exports = stringify.mock.calls.filter(
+      ([value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "vox-evidence-export",
+    );
+    expect(exports).toHaveLength(0);
+    expect(screen.getByLabelText("Export preview").textContent).toBe(previewText);
+  } finally {
+    stringify.mockRestore();
+  }
+});
+
+it("requires saved clinician-sharing consent and rechecks withdrawal before download", async () => {
+  const { EvidenceExportPanel } = await import("./components/EvidenceExportPanel");
+  const { CONSENT_LEDGER_KEY, recordConsentDecision } = await import("./storage/localStorage");
+  const { createSessionRecord } = await import("@stutter-tracker/shared");
+  localStorage.removeItem(CONSENT_LEDGER_KEY);
+  const segments = [{ text: "evidence", startSeconds: 0, endSeconds: 1, isFinal: true }];
+  const saved = createSessionRecord({
+    id: "consent-test",
+    startedAt: "2026-10-01T09:00:00Z",
+    segments,
+    pauses: [],
+    report: fallbackAnalyze({ segments, pauses: [] }),
+    run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+  });
+  const view = render(
+    <EvidenceExportPanel sessions={[saved, { ...saved, id: "same-time-session" }]} />,
+  );
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Choose sessions" }));
+  await user.click(screen.getAllByRole("checkbox")[0]!);
+  expect(screen.getByRole("checkbox", { name: /Session 1/ })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: /Session 2/ })).toBeInTheDocument();
+  const button = screen.getByRole("button", { name: "Download report" });
+  expect(button).toBeDisabled();
+  await user.click(screen.getByRole("checkbox", { name: /I consent to sharing/ }));
+  expect(JSON.parse(localStorage.getItem(CONSENT_LEDGER_KEY)!)).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ purpose: "clinicianSharing", granted: true }),
+    ]),
+  );
+  expect(button).toBeEnabled();
+  recordConsentDecision({ purpose: "clinicianSharing", granted: false });
+  await user.click(button);
+  expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
+  expect(button).toBeDisabled();
+  const consent = screen.getByRole("checkbox", { name: /I consent to sharing/ });
+  await user.click(consent);
+  const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("Quota full");
+  });
+  await user.click(consent);
+  expect(localStorage.getItem(CONSENT_LEDGER_KEY)).toBeNull();
+  write.mockRestore();
+  view.unmount();
+  render(<EvidenceExportPanel sessions={[saved]} />);
+  await user.click(screen.getByRole("button", { name: "Choose sessions" }));
+  await user.click(screen.getByRole("checkbox", { name: /Session 1/ }));
+  expect(screen.getByRole("button", { name: "Download report" })).toBeDisabled();
 });
