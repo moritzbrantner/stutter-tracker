@@ -7,9 +7,11 @@ import { clampLabSettings } from "../audio/feedbackControls";
 export const FEEDBACK_SETTINGS_KEY = "stutter-tracker:auditory-feedback-settings";
 
 /** Restores the last lab settings exactly, clamped to the lab ranges; defaults when absent. */
-export function loadFeedbackSettings(storage: Storage = localStorage): AuditoryFeedbackSettings {
+export function loadFeedbackSettings(storage?: Storage): AuditoryFeedbackSettings {
   try {
-    const parsed = JSON.parse(storage.getItem(FEEDBACK_SETTINGS_KEY) ?? "null") as unknown;
+    // Resolved inside the guard: reading `localStorage` itself throws where storage is blocked.
+    const target = storage ?? localStorage;
+    const parsed = JSON.parse(target.getItem(FEEDBACK_SETTINGS_KEY) ?? "null") as unknown;
     if (typeof parsed !== "object" || parsed === null) {
       return DEFAULT_AUDITORY_FEEDBACK_SETTINGS;
     }
@@ -22,12 +24,9 @@ export function loadFeedbackSettings(storage: Storage = localStorage): AuditoryF
   }
 }
 
-export function saveFeedbackSettings(
-  settings: AuditoryFeedbackSettings,
-  storage: Storage = localStorage,
-) {
+export function saveFeedbackSettings(settings: AuditoryFeedbackSettings, storage?: Storage) {
   try {
-    storage.setItem(FEEDBACK_SETTINGS_KEY, JSON.stringify(settings));
+    (storage ?? localStorage).setItem(FEEDBACK_SETTINGS_KEY, JSON.stringify(settings));
   } catch {
     // Storage unavailable: settings last for this page only.
   }

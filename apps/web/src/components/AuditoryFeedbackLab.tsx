@@ -7,6 +7,7 @@ import {
   startAuditoryFeedbackSession,
 } from "../audio/auditoryFeedback";
 import {
+  clampDisplayValue,
   FEEDBACK_CONTROL_SPECS,
   type FeedbackControlKey,
   fromDisplayValue,
@@ -44,7 +45,10 @@ export function AuditoryFeedbackLab() {
   const mountedRef = useRef(true);
   const [isStarting, setIsStarting] = useState(false);
 
+  // Latest settings, so a session that finishes starting picks up edits made while it started.
+  const settingsRef = useRef(settings);
   useEffect(() => {
+    settingsRef.current = settings;
     sessionRef.current?.update(settings);
     saveFeedbackSettings(settings);
   }, [settings]);
@@ -89,6 +93,7 @@ export function AuditoryFeedbackLab() {
         return;
       }
       sessionRef.current = session;
+      session.update(settingsRef.current);
       setIsActive(true);
       setPitchSupport(session.capabilities.pitchShift ? "supported" : "unsupported");
       setStatus(
@@ -240,7 +245,7 @@ export function AuditoryFeedbackLab() {
               type="range"
               min="0"
               max="200"
-              step="5"
+              step="1"
               value={settings.delayMs}
               onChange={(event) =>
                 setSettings((current) => ({ ...current, delayMs: Number(event.target.value) }))
@@ -287,7 +292,7 @@ export function AuditoryFeedbackLab() {
               type="range"
               min="-4"
               max="4"
-              step="1"
+              step="0.5"
               value={settings.pitchShiftSemitones}
               disabled={!pitchApplied}
               onChange={(event) =>
@@ -317,7 +322,7 @@ export function AuditoryFeedbackLab() {
               type="range"
               min="0"
               max="1"
-              step="0.05"
+              step="0.01"
               value={settings.wetMix}
               onChange={(event) =>
                 setSettings((current) => ({ ...current, wetMix: Number(event.target.value) }))
@@ -343,7 +348,7 @@ export function AuditoryFeedbackLab() {
               type="range"
               min="0.15"
               max="0.8"
-              step="0.05"
+              step="0.01"
               value={settings.outputGain}
               onChange={(event) =>
                 setSettings((current) => ({ ...current, outputGain: Number(event.target.value) }))
@@ -496,6 +501,9 @@ function NumericField({
   const spec = FEEDBACK_CONTROL_SPECS[controlKey];
   const display = toDisplayValue(controlKey, value);
   const [draft, setDraft] = useState<string | null>(null);
+  // While typing, expose the value the draft would commit; omit it while the draft is invalid.
+  const draftValue = draft === null ? display : parseDisplayValue(draft);
+  const ariaValue = draftValue === null ? undefined : clampDisplayValue(controlKey, draftValue);
 
   const commit = (text: string) => {
     const parsed = parseDisplayValue(text);
@@ -515,7 +523,7 @@ function NumericField({
         aria-label={`${label} (${spec.unit})`}
         aria-valuemin={spec.min}
         aria-valuemax={spec.max}
-        aria-valuenow={display}
+        aria-valuenow={ariaValue}
         value={draft ?? String(display)}
         disabled={disabled}
         onChange={(event) => setDraft(event.target.value)}
