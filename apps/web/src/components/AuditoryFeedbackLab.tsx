@@ -6,6 +6,15 @@ import {
   type AuditoryFeedbackSettings,
   startAuditoryFeedbackSession,
 } from "../audio/auditoryFeedback";
+import {
+  FEEDBACK_CONTROL_SPECS,
+  type FeedbackControlKey,
+  fromDisplayValue,
+  parseDisplayValue,
+  stepDisplayValue,
+  toDisplayValue,
+} from "../audio/feedbackControls";
+import { loadFeedbackSettings, saveFeedbackSettings } from "../storage/feedbackSettings";
 
 type RecordingUrls = {
   raw: string | null;
@@ -17,9 +26,7 @@ type PitchSupport = "unknown" | "supported" | "unsupported";
 const DELAY_PRESETS = [0, 25, 50, 75, 100, 150, 200];
 
 export function AuditoryFeedbackLab() {
-  const [settings, setSettings] = useState<AuditoryFeedbackSettings>(
-    DEFAULT_AUDITORY_FEEDBACK_SETTINGS,
-  );
+  const [settings, setSettings] = useState<AuditoryFeedbackSettings>(() => loadFeedbackSettings());
   const [headphonesConfirmed, setHeadphonesConfirmed] = useState(false);
   const [isActive, setIsActive] = useState(false);
   const [isStopping, setIsStopping] = useState(false);
@@ -39,7 +46,13 @@ export function AuditoryFeedbackLab() {
 
   useEffect(() => {
     sessionRef.current?.update(settings);
+    saveFeedbackSettings(settings);
   }, [settings]);
+
+  const setControl = (key: FeedbackControlKey, value: number) =>
+    setSettings((current) => ({ ...current, [key]: value }));
+  // What the engine actually applies: pitch shifting needs the worklet.
+  const pitchApplied = pitchSupport !== "unsupported";
 
   useEffect(() => {
     recordingUrlsRef.current = recordingUrls;
@@ -78,9 +91,6 @@ export function AuditoryFeedbackLab() {
       sessionRef.current = session;
       setIsActive(true);
       setPitchSupport(session.capabilities.pitchShift ? "supported" : "unsupported");
-      if (!session.capabilities.pitchShift && settings.pitchShiftSemitones !== 0) {
-        setSettings((current) => ({ ...current, pitchShiftSemitones: 0 }));
-      }
       setStatus(
         session.capabilities.localCapture
           ? "Feedback is live. The raw and processed comparison stays only in this browser tab."
@@ -214,8 +224,15 @@ export function AuditoryFeedbackLab() {
         <div className="grid grid-cols-2 gap-x-8 gap-y-6 max-md:grid-cols-1">
           <Control
             label="Feedback delay"
-            value={`${settings.delayMs} ms`}
-            hint="The intentional delay added before the altered voice path. Wireless headphones may add their own latency."
+            field={
+              <NumericField
+                controlKey="delayMs"
+                label="Feedback delay"
+                value={settings.delayMs}
+                onCommit={(value) => setControl("delayMs", value)}
+              />
+            }
+            hint="The delay added to the altered voice path. The default is a starting point, not a recommended or clinically optimal setting. Wireless headphones add their own latency on top."
           >
             <input
               className="w-full accent-[#276749]"
@@ -249,11 +266,19 @@ export function AuditoryFeedbackLab() {
 
           <Control
             label="Pitch shift"
-            value={`${settings.pitchShiftSemitones > 0 ? "+" : ""}${settings.pitchShiftSemitones} st`}
+            field={
+              <NumericField
+                controlKey="pitchShiftSemitones"
+                label="Pitch shift"
+                value={settings.pitchShiftSemitones}
+                disabled={!pitchApplied}
+                onCommit={(value) => setControl("pitchShiftSemitones", value)}
+              />
+            }
             hint={
-              pitchSupport === "unsupported"
-                ? "This browser cannot load the real-time pitch processor, so pitch shifting is disabled."
-                : "Optional frequency-altered feedback. Pitch processing adds a small amount of processing latency."
+              pitchApplied
+                ? "Optional frequency-altered feedback. Pitch processing adds a small amount of processing latency."
+                : `This browser cannot load the real-time pitch processor, so pitch shifting is off. Your requested ${formatSemitones(settings.pitchShiftSemitones)} is kept but not applied.`
             }
           >
             <input
@@ -264,7 +289,7 @@ export function AuditoryFeedbackLab() {
               max="4"
               step="1"
               value={settings.pitchShiftSemitones}
-              disabled={pitchSupport === "unsupported"}
+              disabled={!pitchApplied}
               onChange={(event) =>
                 setSettings((current) => ({
                   ...current,
@@ -276,7 +301,14 @@ export function AuditoryFeedbackLab() {
 
           <Control
             label="Altered voice mix"
-            value={`${Math.round(settings.wetMix * 100)}%`}
+            field={
+              <NumericField
+                controlKey="wetMix"
+                label="Altered voice mix"
+                value={settings.wetMix}
+                onCommit={(value) => setControl("wetMix", value)}
+              />
+            }
             hint="0% is immediate microphone sidetone; 100% is only the delayed/pitch-shifted path."
           >
             <input
@@ -295,8 +327,15 @@ export function AuditoryFeedbackLab() {
 
           <Control
             label="Monitor level"
-            value={`${Math.round(settings.outputGain * 100)}%`}
-            hint="The output is capped below full-scale and passes through a fast limiter. Start low and raise only if comfortable."
+            field={
+              <NumericField
+                controlKey="outputGain"
+                label="Monitor level"
+                value={settings.outputGain}
+                onCommit={(value) => setControl("outputGain", value)}
+              />
+            }
+            hint="The signal is capped below full scale and passes a fast limiter. That limits the signal, not how loud your device and headphones play it: set device volume low first and raise the level only if comfortable."
           >
             <input
               className="w-full accent-[#276749]"
@@ -312,6 +351,28 @@ export function AuditoryFeedbackLab() {
             />
           </Control>
         </div>
+
+        <ul className="mt-6 list-disc space-y-1 pl-5 text-sm leading-5 text-[#536158]">
+          <li>Start only when you mean to: your microphone plays straight into your headphones.</li>
+          <li>Stop at once if it is uncomfortable, too loud, or makes speaking harder.</li>
+          <li>
+            Do not use it where you need to hear your surroundings, such as traffic or alarms.
+          </li>
+        </ul>
+
+        {isActive && (
+          <p
+            className="mt-4 rounded-xl bg-[#f3f7f4] px-3 py-2 text-sm text-[#2f4a3b]"
+            aria-label="Effective feedback settings"
+          >
+            Running now: {settings.delayMs} ms delay ·{" "}
+            {pitchApplied
+              ? `pitch shift ${formatSemitones(settings.pitchShiftSemitones)}`
+              : `pitch shift off (not available; requested ${formatSemitones(settings.pitchShiftSemitones)})`}{" "}
+            · {Math.round(settings.wetMix * 100)}% altered mix ·{" "}
+            {Math.round(settings.outputGain * 100)}% monitor level
+          </p>
+        )}
 
         <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-[#e5ebe7] pt-5">
           <button
@@ -367,20 +428,20 @@ export function AuditoryFeedbackLab() {
 
 function Control({
   label,
-  value,
+  field,
   hint,
   children,
 }: {
   label: string;
-  value: string;
+  field: React.ReactNode;
   hint: string;
   children: React.ReactNode;
 }) {
   return (
     <div>
       <div className="mb-2 flex items-baseline justify-between gap-3">
-        <label className="text-sm font-semibold">{label}</label>
-        <output className="text-sm tabular-nums text-[#4e5d54]">{value}</output>
+        <span className="text-sm font-semibold">{label}</span>
+        {field}
       </div>
       {children}
       <p className="mt-2 text-xs leading-5 text-[#6a756d]">{hint}</p>
@@ -413,4 +474,80 @@ function releaseRecordingUrls(urls: RecordingUrls) {
   if (urls.processed) {
     URL.revokeObjectURL(urls.processed);
   }
+}
+
+/**
+ * Exact numeric entry. Typing commits on Enter or blur (clamped to the lab range, invalid text
+ * reverts); arrow keys step by the fine step, Shift + arrow by the coarse step.
+ */
+function NumericField({
+  controlKey,
+  label,
+  value,
+  disabled = false,
+  onCommit,
+}: {
+  controlKey: FeedbackControlKey;
+  label: string;
+  value: number;
+  disabled?: boolean;
+  onCommit: (value: number) => void;
+}) {
+  const spec = FEEDBACK_CONTROL_SPECS[controlKey];
+  const display = toDisplayValue(controlKey, value);
+  const [draft, setDraft] = useState<string | null>(null);
+
+  const commit = (text: string) => {
+    const parsed = parseDisplayValue(text);
+    setDraft(null);
+    if (parsed !== null) {
+      onCommit(fromDisplayValue(controlKey, parsed));
+    }
+  };
+
+  return (
+    <span className="inline-flex items-center gap-1 text-sm tabular-nums text-[#4e5d54]">
+      <input
+        className="w-16 rounded-md border border-[#ccd7d0] px-1.5 py-0.5 text-right disabled:opacity-50"
+        type="text"
+        inputMode="decimal"
+        role="spinbutton"
+        aria-label={`${label} (${spec.unit})`}
+        aria-valuemin={spec.min}
+        aria-valuemax={spec.max}
+        aria-valuenow={display}
+        value={draft ?? String(display)}
+        disabled={disabled}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={(event) => commit(event.currentTarget.value)}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") {
+            commit(event.currentTarget.value);
+          } else if (event.key === "Escape") {
+            setDraft(null);
+          } else if (event.key === "ArrowUp" || event.key === "ArrowDown") {
+            event.preventDefault();
+            const base = parseDisplayValue(event.currentTarget.value) ?? display;
+            setDraft(null);
+            onCommit(
+              fromDisplayValue(
+                controlKey,
+                stepDisplayValue(
+                  controlKey,
+                  base,
+                  event.key === "ArrowUp" ? 1 : -1,
+                  event.shiftKey,
+                ),
+              ),
+            );
+          }
+        }}
+      />
+      <span aria-hidden="true">{spec.unit}</span>
+    </span>
+  );
+}
+
+function formatSemitones(semitones: number) {
+  return `${semitones > 0 ? "+" : ""}${semitones} st`;
 }

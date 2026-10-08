@@ -38,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
 });
 
 function startButton() {
@@ -140,5 +141,89 @@ describe("AuditoryFeedbackLab lifecycle", () => {
     expect(session.stop).toHaveBeenCalledTimes(1);
     expect(screen.getByText(/Audio devices changed/)).toBeInTheDocument();
     await waitFor(() => expect(startButton()).toBeEnabled());
+  });
+});
+
+describe("AuditoryFeedbackLab controls", () => {
+  function field(name: RegExp) {
+    return screen.getByRole("spinbutton", { name }) as HTMLInputElement;
+  }
+
+  function type(input: HTMLInputElement, text: string) {
+    fireEvent.change(input, { target: { value: text } });
+    fireEvent.blur(input);
+  }
+
+  it("accepts exact numeric entry, clamps to the range and reverts invalid text", () => {
+    render(<AuditoryFeedbackLab />);
+    const delay = field(/feedback delay \(ms\)/i);
+
+    type(delay, "137");
+    expect(delay.value).toBe("137");
+    expect(screen.getByRole("slider", { name: "Feedback delay" })).toHaveValue("137");
+
+    type(delay, "999");
+    expect(delay.value).toBe("200");
+    type(delay, "-5");
+    expect(delay.value).toBe("0");
+    type(delay, "abc");
+    expect(delay.value).toBe("0");
+  });
+
+  it("steps with the arrow keys, coarsely with Shift, within bounds", () => {
+    render(<AuditoryFeedbackLab />);
+    const mix = field(/altered voice mix \(%\)/i);
+    expect(mix.value).toBe("100");
+
+    fireEvent.keyDown(mix, { key: "ArrowDown" });
+    expect(mix.value).toBe("99");
+    fireEvent.keyDown(mix, { key: "ArrowDown", shiftKey: true });
+    expect(mix.value).toBe("89");
+    fireEvent.keyDown(mix, { key: "ArrowUp", shiftKey: true });
+    fireEvent.keyDown(mix, { key: "ArrowUp", shiftKey: true });
+    expect(mix.value).toBe("100");
+  });
+
+  it("restores exact settings after remounting", () => {
+    const { unmount } = render(<AuditoryFeedbackLab />);
+    type(field(/feedback delay \(ms\)/i), "137");
+    type(field(/pitch shift \(st\)/i), "-2.5");
+    type(field(/monitor level \(%\)/i), "42");
+    unmount();
+
+    render(<AuditoryFeedbackLab />);
+    expect(field(/feedback delay \(ms\)/i).value).toBe("137");
+    expect(field(/pitch shift \(st\)/i).value).toBe("-2.5");
+    expect(field(/monitor level \(%\)/i).value).toBe("42");
+  });
+
+  it("passes exact settings to the running engine", async () => {
+    const session = fakeSession(Promise.resolve(emptyRecording));
+    startSession.mockResolvedValue(session);
+    render(<AuditoryFeedbackLab />);
+    confirmHeadphonesAndStart();
+    await screen.findByRole("button", { name: /stop & compare/i });
+
+    type(field(/feedback delay \(ms\)/i), "137");
+
+    expect(session.update).toHaveBeenLastCalledWith(expect.objectContaining({ delayMs: 137 }));
+  });
+
+  it("keeps a requested pitch shift but shows it is not applied when unsupported", async () => {
+    const session = {
+      ...fakeSession(Promise.resolve(emptyRecording)),
+      capabilities: { pitchShift: false, localCapture: true },
+    };
+    startSession.mockResolvedValue(session);
+    render(<AuditoryFeedbackLab />);
+    type(field(/pitch shift \(st\)/i), "2");
+    confirmHeadphonesAndStart();
+    await screen.findByRole("button", { name: /stop & compare/i });
+
+    expect(field(/pitch shift \(st\)/i)).toBeDisabled();
+    expect(field(/pitch shift \(st\)/i).value).toBe("2");
+    expect(screen.getByLabelText("Effective feedback settings")).toHaveTextContent(
+      "pitch shift off (not available; requested +2 st)",
+    );
   });
 });
