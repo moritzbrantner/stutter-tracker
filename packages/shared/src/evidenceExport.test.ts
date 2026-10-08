@@ -399,8 +399,8 @@ describe("evidence export", () => {
     const first = guestSession("g1", "2026-10-01T09:00:00.000Z", "hello\rZ9 · fake\u2028tail");
     const second = guestSession("g2", "2026-10-02T09:00:00.000Z", "Other guest");
     expect(transcriptSpeakersOf([first, second])).toEqual([
-      { id: "label:g1:Guest", label: "Guest (Speaker 1) (2026-10-01T09:00:00.000Z)" },
-      { id: "label:g2:Guest", label: "Guest (Speaker 4) (2026-10-02T09:00:00.000Z)" },
+      { id: "label:g1:Guest", label: "Guest (Speaker 1)" },
+      { id: "label:g2:Guest", label: "Guest (Speaker 2)" },
     ]);
     const evidence = buildEvidenceExport([first, second], {
       sessionIds: ["g1", "g2"],
@@ -547,4 +547,26 @@ test("normalizes blank labels and reserves saved names against pseudonyms", () =
     "Speaker 2",
   ]);
   expect(transcriptSpeakersOf([saved]).every((item) => item.label.trim().length > 0)).toBe(true);
+});
+
+test("shared display names distinguish raw-ID collisions and whitespace-only IDs", () => {
+  const saved = session("restored-ids", chosen.startedAt, [
+    ["unnamed", "Alex", ""],
+    ["named", "other", "Alex"],
+    ["Robin words", " ", "Robin"],
+    ["Kim words", " ", "Kim"],
+  ]);
+  const controls = transcriptSpeakersOf([saved]);
+  expect(new Set(controls.map((item) => item.id)).size).toBe(4);
+  expect(new Set(controls.map((item) => item.label)).size).toBe(4);
+  const evidence = buildEvidenceExport([saved], {
+    sessionIds: [saved.id],
+    includeTranscripts: true,
+    transcriptSpeakers: "all",
+    includeSpeakerNames: true,
+    exportedAt,
+  });
+  expect(evidence.sessions[0]?.transcript?.map((item) => item.speaker)).toEqual(
+    controls.map((item) => item.label),
+  );
 });

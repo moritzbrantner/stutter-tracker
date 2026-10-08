@@ -103,8 +103,9 @@ export function speakerKey(
   segment: { speakerId?: string; speakerLabel?: string },
   sessionId: string,
 ) {
-  if (segment.speakerId) {
-    return `id:${segment.speakerId}`;
+  const id = segment.speakerId?.trim();
+  if (id) {
+    return `id:${id}`;
   }
   return segment.speakerLabel?.trim()
     ? `label:${speakerKeyPart(sessionId)}:${speakerKeyPart(segment.speakerLabel.trim())}`
@@ -122,7 +123,7 @@ function isExportable(segment: { isFinal: boolean; text: string }) {
 
 /**
  * Speakers whose words could be exported from the selected sessions, for the selection
- * controls. Session-scoped speakers carry their session's date when several sessions are listed.
+ * controls. Names and pseudonyms are resolved together to keep each identity distinct.
  */
 export function transcriptSpeakersOf(sessions: SessionRecord[]) {
   const labels = speakerLabels(sessions);
@@ -131,40 +132,50 @@ export function transcriptSpeakersOf(sessions: SessionRecord[]) {
     for (const segment of session.segments.filter(isExportable)) {
       const id = speakerKey(segment, session.id);
       if (!speakers.has(id)) {
-        const label = labels.get(id) ?? (segment.speakerId ? segment.speakerId : "Unattributed");
-        speakers.set(
-          id,
-          segment.speakerId || sessions.length === 1 ? label : `${label} (${session.startedAt})`,
-        );
+        speakers.set(id, labels.get(id) ?? "Unattributed");
       }
     }
   }
   return [...speakers].map(([id, label]) => ({ id, label }));
 }
 
-function speakerLabels(sessions: SessionRecord[]) {
-  const labels = new Map<string, string>();
+function speakerLabels(sessions: SessionRecord[], includeNames = true) {
   const ordered = [...sessions].sort(
     (left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt),
   );
+  const labels = new Map<string, string>();
   for (const session of ordered) {
-    for (const segment of session.segments) {
+    for (const segment of session.segments.filter(isExportable)) {
       const key = speakerKey(segment, session.id);
-      const label = segment.speakerLabel?.trim();
-      if (label && !labels.has(key)) labels.set(key, label);
+      if (!labels.has(key)) labels.set(key, "");
+    }
+  }
+  if (includeNames) {
+    for (const session of ordered) {
+      for (const segment of session.segments) {
+        const key = speakerKey(segment, session.id);
+        const label = segment.speakerLabel?.trim();
+        if (labels.has(key) && !labels.get(key) && label) labels.set(key, label);
+      }
     }
   }
   const counts = new Map<string, number>();
-  for (const label of labels.values()) counts.set(label, (counts.get(label) ?? 0) + 1);
-  const used = new Set(labels.values());
+  for (const label of labels.values()) if (label) counts.set(label, (counts.get(label) ?? 0) + 1);
+  const used = new Set([...labels.values()].filter(Boolean));
   let ordinal = 0;
   for (const [key, label] of labels) {
     ordinal += 1;
-    if ((counts.get(label) ?? 0) > 1) {
-      let distinct = `${label} (Speaker ${ordinal})`;
-      while (used.has(distinct)) distinct += "*";
-      labels.set(key, distinct);
-      used.add(distinct);
+    if (!label) {
+      let number = ordinal;
+      let name = `Speaker ${number}`;
+      while (used.has(name)) name = `Speaker ${++number}`;
+      labels.set(key, name);
+      used.add(name);
+    } else if ((counts.get(label) ?? 0) > 1) {
+      let name = `${label} (Speaker ${ordinal})`;
+      while (used.has(name)) name += "*";
+      labels.set(key, name);
+      used.add(name);
     }
   }
   return labels;
@@ -179,24 +190,8 @@ export function buildEvidenceExport(
     .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
   // One display name per speaker, resolved before mapping, so a speaker whose label appears on
   // only some segments is not split into two.
-  const labels = speakerLabels(selected);
-  const pseudonyms = new Map<string, string>();
-  const usedNames = new Set(options.includeSpeakerNames ? labels.values() : []);
-  let nextPseudonym = 1;
-  const speakerName = (id: string) => {
-    // A missing label still needs a distinct name, or separate speakers would merge.
-    const label = labels.get(id);
-    if (options.includeSpeakerNames && label) {
-      return label;
-    }
-    if (!pseudonyms.has(id)) {
-      let name = `Speaker ${nextPseudonym++}`;
-      while (usedNames.has(name)) name = `Speaker ${nextPseudonym++}`;
-      pseudonyms.set(id, name);
-      usedNames.add(name);
-    }
-    return pseudonyms.get(id) as string;
-  };
+  const labels = speakerLabels(selected, options.includeSpeakerNames);
+  const speakerName = (id: string) => labels.get(id) ?? "Unattributed";
   return {
     schema: EVIDENCE_EXPORT_SCHEMA,
     version: EVIDENCE_EXPORT_VERSION,
