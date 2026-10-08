@@ -2458,7 +2458,7 @@ function removeLocalSpeakerCopy(id: string) {
           candidate !== null &&
           "id" in candidate &&
           typeof candidate.id === "string" &&
-          candidate.id.trim() === id.trim()
+          candidate.id.trim().slice(0, 120) === id.trim().slice(0, 120)
         ),
     );
     if (kept.length !== stored.length) {
@@ -2567,7 +2567,7 @@ function normalizeSpeakerProfiles(speakers: SpeakerProfile[]) {
       Array.isArray(speaker.embeddings) &&
       speaker.embeddings.length > 0
     ) {
-      const id = speaker.id.trim();
+      const id = speaker.id.trim().slice(0, 120);
       normalized.set(id, { ...speaker, id, label: speaker.label.trim() });
     }
   }

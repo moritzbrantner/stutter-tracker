@@ -794,21 +794,47 @@ it("reloads server-only profiles after a failed local removal during hydration",
   expect(deleted).not.toHaveBeenCalled();
 }, 15000);
 
-it("uses a canonical ID when removing before startup hydration finishes", async () => {
+it.each([" alex ", `alex${"x".repeat(126)}`])(
+  "uses a canonical ID when removing before startup hydration finishes: %s",
+  async (storedId) => {
+    localStorage.setItem(
+      "stutter-tracker:speakers",
+      JSON.stringify([
+        { id: storedId, label: "Alex", embeddings: [[1, 0]], sampleRate: 16000, sampleCount: 1 },
+      ]),
+    );
+    listSpeakersHook = () => new Promise(() => undefined);
+    const deleted = vi.fn(async () => "deleted" as const);
+    deleteSpeakerHook = deleted;
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+    fireEvent.click(
+      await screen.findByRole("button", { name: "Remove speaker Alex" }, { timeout: 6500 }),
+    );
+    await waitFor(() => expect(deleted).toHaveBeenCalledWith(storedId.trim().slice(0, 120)));
+    expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
+  },
+  15000,
+);
+
+it("removes canonical server IDs from overlong persisted profiles", async () => {
+  const profile = {
+    id: "a".repeat(120),
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
   localStorage.setItem(
     "stutter-tracker:speakers",
-    JSON.stringify([
-      { id: " alex ", label: "Alex", embeddings: [[1, 0]], sampleRate: 16000, sampleCount: 1 },
-    ]),
+    JSON.stringify([{ ...profile, id: "a".repeat(130) }]),
   );
-  listSpeakersHook = () => new Promise(() => undefined);
+  listSpeakersHook = async () => [profile];
   const deleted = vi.fn(async () => "deleted" as const);
   deleteSpeakerHook = deleted;
   vi.spyOn(window, "confirm").mockReturnValue(true);
   renderApp();
-  fireEvent.click(
-    await screen.findByRole("button", { name: "Remove speaker Alex" }, { timeout: 6500 }),
-  );
-  await waitFor(() => expect(deleted).toHaveBeenCalledWith("alex"));
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith(profile.id));
   expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
-}, 15000);
+});
