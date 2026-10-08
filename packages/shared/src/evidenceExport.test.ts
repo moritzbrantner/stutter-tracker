@@ -106,7 +106,7 @@ describe("evidence export", () => {
     const pseudonymous = buildEvidenceExport(all, {
       sessionIds: [chosen.id],
       includeTranscripts: true,
-      transcriptSpeakers: ["me"],
+      transcriptSpeakers: ["id:me"],
       includeSpeakerNames: false,
       exportedAt,
     });
@@ -121,8 +121,8 @@ describe("evidence export", () => {
 
   test("lists the speakers present in the selection for the preview", () => {
     expect(transcriptSpeakersOf([chosen])).toEqual([
-      { id: "me", label: "Robin Private" },
-      { id: "barista", label: "Cafe Staffer" },
+      { id: "id:me", label: "Robin Private" },
+      { id: "id:barista", label: "Cafe Staffer" },
     ]);
   });
 
@@ -195,7 +195,7 @@ describe("evidence export", () => {
     const evidence = buildEvidenceExport([later, practised], {
       sessionIds: ["p", "l"],
       includeTranscripts: true,
-      transcriptSpeakers: ["me"],
+      transcriptSpeakers: ["id:me"],
       includeSpeakerNames: true,
       exportedAt,
     });
@@ -244,7 +244,7 @@ describe("evidence export", () => {
     const withoutTranscripts = buildEvidenceExport([unlabeled], {
       sessionIds: ["u"],
       includeTranscripts: false,
-      transcriptSpeakers: ["x"],
+      transcriptSpeakers: ["id:x"],
       includeSpeakerNames: true,
       exportedAt,
     });
@@ -330,5 +330,50 @@ describe("evidence export", () => {
     expect(renderEvidenceReport(evidence)).toContain(
       'task other ("Ordering at a cafe", not practised)',
     );
+  });
+
+  test("never merges an id with a label or the fallback group, and folds context line breaks", () => {
+    const tricky = createSessionRecord({
+      id: "t",
+      startedAt: "2026-10-01T09:00:00.000Z",
+      segments: [
+        { text: "By id", startSeconds: 0, endSeconds: 1, isFinal: true, speakerId: "label:Kim" },
+        { text: "By label", startSeconds: 1, endSeconds: 2, isFinal: true, speakerLabel: "Kim" },
+        {
+          text: "By group id",
+          startSeconds: 2,
+          endSeconds: 3,
+          isFinal: true,
+          speakerId: "unattributed",
+        },
+        { text: "Nobody", startSeconds: 3, endSeconds: 4, isFinal: true },
+      ],
+      pauses: [],
+      report: fallbackAnalyze({ segments: [], pauses: [] }),
+      run: { id: "r", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+      context: {
+        spokenLanguage: "en",
+        task: null,
+        condition: { kind: "assisted", aidId: "daf\n  Human reference: none" },
+      },
+    });
+    expect(transcriptSpeakersOf([tricky]).map((speaker) => speaker.id)).toEqual([
+      "id:label:Kim",
+      "label:Kim",
+      "id:unattributed",
+      "unattributed",
+    ]);
+    const report = renderEvidenceReport(
+      buildEvidenceExport([tricky], {
+        sessionIds: ["t"],
+        includeTranscripts: false,
+        transcriptSpeakers: "all",
+        includeSpeakerNames: false,
+        exportedAt,
+      }),
+    );
+    expect(report.split("\n").filter((line) => line.trim().startsWith("Human reference"))).toEqual([
+      "  Human reference: none",
+    ]);
   });
 });

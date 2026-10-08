@@ -91,8 +91,9 @@ export const EVIDENCE_EXPORT_NOTICE =
  * separately selectable), else the unattributed group.
  */
 export function speakerKey(segment: { speakerId?: string; speakerLabel?: string }) {
+  // Each kind has its own prefix, so an id can never collide with a label or the fallback group.
   if (segment.speakerId) {
-    return segment.speakerId;
+    return `id:${segment.speakerId}`;
   }
   return segment.speakerLabel ? `label:${segment.speakerLabel}` : UNATTRIBUTED_SPEAKER;
 }
@@ -230,7 +231,7 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
     lines.push(
       "",
       `${session.ref} · ${session.startedAt}`,
-      `  Context: language ${session.context.spokenLanguage}; task ${describeTask(session.context)}; condition ${describeCondition(session.context)}`,
+      `  Context: language ${oneLine(session.context.spokenLanguage)}; task ${oneLine(describeTask(session.context))}; condition ${oneLine(describeCondition(session.context))}`,
       `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
       `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute over ${session.sample.durationSeconds} s`,
       `  Analysis: ${estimate.analyzer}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForTranscript ? "verified for this transcript" : "NOT verified for this transcript"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
