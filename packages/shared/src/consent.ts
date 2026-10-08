@@ -44,6 +44,9 @@ export function recordConsent(
   if (!CONSENT_PURPOSES.includes(decision.purpose)) {
     throw new Error(`Unknown consent purpose ${String(decision.purpose)}.`);
   }
+  if (!isValidScope(decision.purpose, decision.scope ?? "")) {
+    throw new Error(`Remote analysis consent needs an http(s) server URL as its scope.`);
+  }
   return [
     ...ledger,
     {
@@ -125,6 +128,20 @@ function isConsentDecision(entry: unknown): entry is ConsentDecision {
     typeof (entry as ConsentDecision).granted === "boolean" &&
     typeof (entry as ConsentDecision).at === "string" &&
     Number.isFinite(Date.parse((entry as ConsentDecision).at)) &&
-    typeof (entry as ConsentDecision).scope === "string"
+    typeof (entry as ConsentDecision).scope === "string" &&
+    isValidScope((entry as ConsentDecision).purpose, (entry as ConsentDecision).scope)
   );
+}
+
+/** Remote analysis is always scoped to one http(s) server; a blank scope is corruption. */
+function isValidScope(purpose: ConsentPurpose, scope: string) {
+  if (purpose !== "remoteAnalysis") {
+    return true;
+  }
+  try {
+    const url = new URL(scope);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }

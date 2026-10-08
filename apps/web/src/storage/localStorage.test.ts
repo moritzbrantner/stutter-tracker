@@ -49,6 +49,11 @@ describe("local storage helpers", () => {
 
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
     expect(storage.getItem(CONSENT_LEDGER_KEY)).toBe("{");
+
+    // Granting another server replaces the corrupt ledger; the old legacy grant stays retired.
+    saveRemoteConsent("https://b.example.com", true, storage);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+    expect(loadRemoteConsent("https://b.example.com", storage)).toBe(true);
   });
 
   it("migrates a legacy remote-analysis grant into the ledger once", () => {

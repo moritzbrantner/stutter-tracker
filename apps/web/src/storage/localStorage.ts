@@ -42,7 +42,13 @@ export function loadConsentLedger(storage: Storage = localStorage): ConsentLedge
     } catch {
       // Storage unavailable.
     }
-    // A legacy grant must not be revived on top of a ledger whose later decisions are unknown.
+    // A legacy grant must not be revived on top of a ledger whose later decisions are unknown,
+    // now or after the next write replaces the corrupt ledger, so it is retired here.
+    try {
+      storage.removeItem(REMOTE_CONSENT_KEY);
+    } catch {
+      // Storage unavailable.
+    }
     return EMPTY_CONSENT_LEDGER;
   }
   try {

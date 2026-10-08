@@ -75,6 +75,13 @@ describe("consent ledger", () => {
     for (const corrupt of [
       { purpose: "remoteAnalysis", granted: false, at: "not a date", scope: server },
       { purpose: "remoteAnalysis", granted: false, at: "2026-10-02T00:00:00.000Z" },
+      { purpose: "remoteAnalysis", granted: false, at: "2026-10-02T00:00:00.000Z", scope: "" },
+      {
+        purpose: "remoteAnalysis",
+        granted: false,
+        at: "2026-10-02T00:00:00.000Z",
+        scope: "ftp://x",
+      },
       { purpose: "everything", granted: true, at: "2026-10-01T00:00:00.000Z", scope: "" },
       { purpose: "modelTraining", granted: "yes", at: "2026-10-01T00:00:00.000Z", scope: "" },
       null,
@@ -88,14 +95,27 @@ describe("consent ledger", () => {
     let ledger = recordConsent(EMPTY_CONSENT_LEDGER, {
       purpose: "remoteAnalysis",
       granted: true,
-      scope: "a",
+      scope: "https://a.example.com",
     });
-    ledger = recordConsent(ledger, { purpose: "clinicianSharing", granted: true, scope: "a" });
-    const moved = withdrawOtherScopes(ledger, "remoteAnalysis", "b");
+    ledger = recordConsent(ledger, {
+      purpose: "clinicianSharing",
+      granted: true,
+      scope: "https://a.example.com",
+    });
+    const moved = withdrawOtherScopes(ledger, "remoteAnalysis", "https://b.example.com");
 
-    expect(hasConsent(moved, "remoteAnalysis", "a")).toBe(false);
-    expect(hasConsent(moved, "clinicianSharing", "a")).toBe(true);
-    expect(withdrawOtherScopes(moved, "remoteAnalysis", "b")).toBe(moved);
+    expect(hasConsent(moved, "remoteAnalysis", "https://a.example.com")).toBe(false);
+    expect(hasConsent(moved, "clinicianSharing", "https://a.example.com")).toBe(true);
+    expect(withdrawOtherScopes(moved, "remoteAnalysis", "https://b.example.com")).toBe(moved);
+  });
+
+  test("requires an http(s) server URL as the remote-analysis scope", () => {
+    expect(() =>
+      recordConsent(EMPTY_CONSENT_LEDGER, { purpose: "remoteAnalysis", granted: true }),
+    ).toThrow("http(s) server URL");
+    expect(() =>
+      recordConsent(EMPTY_CONSENT_LEDGER, { purpose: "modelTraining", granted: false }),
+    ).not.toThrow();
   });
 
   test("rejects recording an unknown purpose", () => {
