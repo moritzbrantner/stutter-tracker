@@ -805,20 +805,28 @@ export function App() {
         samplesRef.current.slice(-sampleRateRef.current * 12),
         sampleRateRef.current,
       );
-      const next = existing
-        ? speakersRef.current.map((speaker) =>
-            speaker.id === existing.id
-              ? {
-                  ...speaker,
-                  label: result.label,
-                  embeddings: [...speaker.embeddings, ...result.embeddings],
-                  sampleCount: speaker.sampleCount + result.sampleCount,
-                  sampleRate: result.sampleRate,
-                }
-              : speaker,
-          )
-        : [...speakersRef.current, result];
-      const persisted = await savePersistedSpeakerProfiles(next);
+      // Same queue as removals, built from the latest list when it runs, so an enrollment
+      // cannot write back a profile removed while it was being created.
+      const persisted = await queueSpeakerMutation(async () => {
+        const latest = speakersRef.current;
+        const next =
+          existing && latest.some((speaker) => speaker.id === existing.id)
+            ? latest.map((speaker) =>
+                speaker.id === existing.id
+                  ? {
+                      ...speaker,
+                      label: result.label,
+                      embeddings: [...speaker.embeddings, ...result.embeddings],
+                      sampleCount: speaker.sampleCount + result.sampleCount,
+                      sampleRate: result.sampleRate,
+                    }
+                  : speaker,
+              )
+            : [...latest, result];
+        const saved = await savePersistedSpeakerProfiles(next);
+        speakersRef.current = saved;
+        return saved;
+      });
       setSpeakers(persisted);
       setSpeakerLabel("");
       setMessage(`${result.label} enrolled`);
@@ -1076,44 +1084,55 @@ export function App() {
       return Promise.resolve();
     }
     speakerRemovalsRef.current += 1;
-    const operation = speakerMutationTailRef.current.then(() => runSpeakerRemoval(speaker));
+    return queueSpeakerMutation(() => removeSpeakerLocally(speaker)).then((removed) =>
+      // The server deletion runs outside the queue: a stalled server must not hold up later
+      // local changes.
+      removed ? deleteSpeakerRemotely(speaker) : undefined,
+    );
+  }
+
+  function queueSpeakerMutation<T>(mutation: () => Promise<T>): Promise<T> {
+    const operation = speakerMutationTailRef.current.then(mutation);
     speakerMutationTailRef.current = operation.catch(() => undefined);
     return operation;
   }
 
-  async function runSpeakerRemoval(speaker: SpeakerProfile) {
+  /** Removes the local copies; resolves true when the speaker is gone locally. */
+  async function removeSpeakerLocally(speaker: SpeakerProfile): Promise<boolean> {
     const remaining = speakersRef.current.filter((candidate) => candidate.id !== speaker.id);
-    const forgetMatch = () => {
-      speakersRef.current = remaining;
-      if (speakerMatchRef.current?.speakerId === speaker.id) {
-        speakerMatchRef.current = null;
-        setSpeakerMatch(null);
-      }
-    };
-    if (isDesktopApp()) {
-      try {
-        const saved = await invoke<SpeakerProfile[]>("save_speaker_profiles", {
-          speakers: remaining,
-        });
-        setSpeakers(saved);
-        forgetMatch();
-        // The browser-storage copies a desktop profile was migrated from must go too, or the
-        // next start would migrate the voiceprint back.
-        removeLocalSpeakerCopy(speaker.id);
-        setMessage(`Removed ${speaker.label}`);
-      } catch (error) {
-        setMessage(`Could not remove ${speaker.label}: ${errorMessage(error)}`);
-      }
-      return;
-    }
+    // Browser-storage copies go first (on desktop they are what the profile was migrated from),
+    // so a failure leaves the profile listed and removable.
     try {
       removeLocalSpeakerCopy(speaker.id);
     } catch (error) {
       setMessage(`Could not remove ${speaker.label} from this browser: ${errorMessage(error)}`);
+      return false;
+    }
+    let next = remaining;
+    if (isDesktopApp()) {
+      try {
+        next = await invoke<SpeakerProfile[]>("save_speaker_profiles", { speakers: remaining });
+      } catch (error) {
+        setMessage(`Could not remove ${speaker.label}: ${errorMessage(error)}`);
+        return false;
+      }
+    }
+    speakersRef.current = next;
+    setSpeakers(next);
+    if (speakerMatchRef.current?.speakerId === speaker.id) {
+      speakerMatchRef.current = null;
+      setSpeakerMatch(null);
+    }
+    if (isDesktopApp()) {
+      setMessage(`Removed ${speaker.label}`);
+    }
+    return true;
+  }
+
+  async function deleteSpeakerRemotely(speaker: SpeakerProfile) {
+    if (isDesktopApp()) {
       return;
     }
-    setSpeakers(remaining);
-    forgetMatch();
     try {
       const result = await computeClient.deleteSpeakerProfile(speaker.id);
       setMessage(

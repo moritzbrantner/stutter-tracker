@@ -324,7 +324,11 @@ function identifySpeaker(body: {
 
 function isLoopbackOrigin(origin: string) {
   try {
-    return ["localhost", "127.0.0.1", "[::1]", "::1"].includes(new URL(origin).hostname);
+    const host = new URL(origin).hostname;
+    // The whole 127.0.0.0/8 range is loopback, as in the client's local-companion policy.
+    return (
+      host === "localhost" || host === "[::1]" || host === "::1" || /^127(\.\d{1,3}){3}$/.test(host)
+    );
   } catch {
     return false;
   }

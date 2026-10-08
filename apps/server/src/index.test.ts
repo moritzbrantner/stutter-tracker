@@ -368,6 +368,14 @@ describe("speaker deletion", () => {
       }),
     );
     expect(fromLocalApp.status).toBe(200);
+    await putSpeakers(handler, [speaker("b", "Beta")]);
+    const fromOtherLoopback = await handler(
+      new Request("http://server/speakers?id=b", {
+        method: "DELETE",
+        headers: { origin: "http://127.0.0.2:1421" },
+      }),
+    );
+    expect(fromOtherLoopback.status).toBe(200);
   });
 
   it("requires authorization to delete in public-ready mode and allows DELETE in CORS", async () => {
