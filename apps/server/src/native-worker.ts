@@ -9,17 +9,28 @@ import type {
 import type { ServerConfig } from "./config";
 import { HttpError } from "./http";
 
+// `signal` aborts the job: the worker process is killed and the call rejects.
 export type NativeWorker = {
-  transcriptionModels(provider: TranscriptionEngineId): Promise<{
+  transcriptionModels(
+    provider: TranscriptionEngineId,
+    signal?: AbortSignal,
+  ): Promise<{
     provider: TranscriptionEngineId;
     models: TranscriptionModelStatus[];
   }>;
   downloadTranscriptionModel(
     provider: TranscriptionEngineId,
     model: string,
+    signal?: AbortSignal,
   ): Promise<TranscriptionModelStatus>;
-  transcribeAudio(request: TranscribeAudioRequest): Promise<TranscribeAudioResult>;
-  transcribeAudioFile(request: TranscribeAudioFileRequest): Promise<TranscribeAudioResult>;
+  transcribeAudio(
+    request: TranscribeAudioRequest,
+    signal?: AbortSignal,
+  ): Promise<TranscribeAudioResult>;
+  transcribeAudioFile(
+    request: TranscribeAudioFileRequest,
+    signal?: AbortSignal,
+  ): Promise<TranscribeAudioResult>;
 };
 
 export type TranscribeAudioFileRequest = {
@@ -52,34 +63,33 @@ const rootDir = resolve(dirname(fileURLToPath(import.meta.url)), "../../..");
 
 export function createNativeWorker(config: ServerConfig): NativeWorker {
   return {
-    transcriptionModels(provider) {
-      return runWorker(config, {
-        command: "transcription-models",
-        request: { provider },
-      });
+    transcriptionModels(provider, signal) {
+      return runWorker(config, { command: "transcription-models", request: { provider } }, signal);
     },
-    downloadTranscriptionModel(provider, model) {
-      return runWorker(config, {
-        command: "download-transcription-model",
-        request: { provider, model },
-      });
+    downloadTranscriptionModel(provider, model, signal) {
+      return runWorker(
+        config,
+        { command: "download-transcription-model", request: { provider, model } },
+        signal,
+      );
     },
-    transcribeAudio(request) {
-      return runWorker(config, {
-        command: "transcribe-audio",
-        request,
-      });
+    transcribeAudio(request, signal) {
+      return runWorker(config, { command: "transcribe-audio", request }, signal);
     },
-    transcribeAudioFile(request) {
-      return runWorker(config, {
-        command: "transcribe-audio-file",
-        request,
-      });
+    transcribeAudioFile(request, signal) {
+      return runWorker(config, { command: "transcribe-audio-file", request }, signal);
     },
   };
 }
 
-async function runWorker<T>(config: ServerConfig, command: WorkerCommand): Promise<T> {
+async function runWorker<T>(
+  config: ServerConfig,
+  command: WorkerCommand,
+  signal?: AbortSignal,
+): Promise<T> {
+  if (signal?.aborted) {
+    throw cancelledError();
+  }
   const cmd = workerCommand(config);
   const process = Bun.spawn({
     cmd,
@@ -106,6 +116,17 @@ async function runWorker<T>(config: ServerConfig, command: WorkerCommand): Promi
     }, timeoutMs);
     process.exited.finally(() => clearTimeout(timer));
   });
+  const cancelled = new Promise<never>((_, reject) => {
+    if (!signal) {
+      return;
+    }
+    const onAbort = () => {
+      process.kill();
+      reject(cancelledError());
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+    process.exited.finally(() => signal.removeEventListener("abort", onAbort));
+  });
 
   const result = await Promise.race([
     Promise.all([
@@ -114,6 +135,7 @@ async function runWorker<T>(config: ServerConfig, command: WorkerCommand): Promi
       process.exited,
     ]),
     timeout,
+    cancelled,
   ]);
   const [stdout, stderr, exitCode] = result;
   if (exitCode !== 0) {
@@ -121,7 +143,7 @@ async function runWorker<T>(config: ServerConfig, command: WorkerCommand): Promi
       command.command === "transcribe-audio" || command.command === "transcribe-audio-file";
     throw new HttpError(
       isTranscription ? "transcription_failed" : "native_worker_unavailable",
-      publicWorkerMessage(stderr),
+      workerFailureMessage(config, stderr),
       isTranscription ? 422 : 503,
     );
   }
@@ -153,7 +175,12 @@ function workerCommand(config: ServerConfig) {
   ];
 }
 
-function publicWorkerMessage(stderr: string) {
-  const message = stderr.trim().split("\n").at(-1)?.trim();
+// Worker stderr can echo request details, so public-ready clients only get a generic message.
+function workerFailureMessage(config: ServerConfig, stderr: string) {
+  const message = config.publicReady ? undefined : stderr.trim().split("\n").at(-1)?.trim();
   return message || "native transcription worker failed";
+}
+
+function cancelledError() {
+  return new HttpError("request_cancelled", "request was cancelled", 499);
 }

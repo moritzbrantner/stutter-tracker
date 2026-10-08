@@ -1,12 +1,12 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import type { SpeakerProfile, TranscribeAudioRequest } from "@stutter-tracker/shared";
 import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
 import { createComputeRequestHandler } from "./index";
-import type { NativeWorker } from "./native-worker";
+import { createNativeWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 
 const tempDirs: string[] = [];
@@ -47,6 +47,16 @@ describe("config", () => {
         STUTTER_MAX_AUDIO_BYTES: "1kb",
       }).maxAudioBytes,
     ).toBe(1024);
+  });
+
+  it("parses STUTTER_MAX_CONCURRENT_JOBS and rejects non-positive values", () => {
+    expect(parseServerConfig({ HOST: "127.0.0.1" }).maxConcurrentJobs).toBe(2);
+    expect(
+      parseServerConfig({ HOST: "127.0.0.1", STUTTER_MAX_CONCURRENT_JOBS: "4" }).maxConcurrentJobs,
+    ).toBe(4);
+    expect(() =>
+      parseServerConfig({ HOST: "127.0.0.1", STUTTER_MAX_CONCURRENT_JOBS: "0" }),
+    ).toThrow("STUTTER_MAX_CONCURRENT_JOBS");
   });
 });
 
@@ -307,6 +317,77 @@ describe("transcription worker routes", () => {
     expect(await readdir(uploadTmpDir)).toEqual([]);
   });
 
+  it("rejects worker jobs beyond the concurrency limit and frees the slot afterwards", async () => {
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = createComputeRequestHandler({
+      config: localConfig({ maxConcurrentJobs: 1 }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        async transcribeAudio(request) {
+          await blocked;
+          return fakeWorker().transcribeAudio(request);
+        },
+      },
+    });
+    const body = {
+      provider: "whisperCpp",
+      model: "tiny.en",
+      samples: [0, 0],
+      sampleRate: 16_000,
+    } satisfies TranscribeAudioRequest;
+
+    const first = postJson(handler, "/transcriptions", body);
+    const busy = await postJson(handler, "/transcriptions/models", { provider: "whisperCpp" });
+    expect(busy.status).toBe(503);
+    expect((await responseJson<{ error: { code: string } }>(busy)).error.code).toBe("server_busy");
+
+    release();
+    expect((await first).status).toBe(200);
+    const after = await postJson(handler, "/transcriptions/models", { provider: "whisperCpp" });
+    expect(after.status).toBe(200);
+  });
+
+  it("passes cancellation to the worker and cleans temp files", async () => {
+    const uploadTmpDir = await tempDir();
+    const controller = new AbortController();
+    let workerSignal: AbortSignal | undefined;
+    const handler = createComputeRequestHandler({
+      config: localConfig({ uploadTmpDir }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        transcribeAudioFile(_request, signal) {
+          workerSignal = signal;
+          return new Promise((_, reject) => {
+            signal?.addEventListener("abort", () =>
+              reject(new HttpError("request_cancelled", "request was cancelled", 499)),
+            );
+            controller.abort();
+          });
+        },
+      },
+    });
+    const form = new FormData();
+    form.append("audio", new File(["audio"], "input.wav", { type: "audio/wav" }));
+    form.append("provider", "whisperCpp");
+    form.append("model", "tiny.en");
+    const response = await handler(
+      new Request("http://server/transcriptions/file", {
+        method: "POST",
+        body: form,
+        signal: controller.signal,
+      }),
+    );
+
+    expect(workerSignal?.aborted).toBe(true);
+    expect(response.status).toBe(499);
+    expect(await readdir(uploadTmpDir)).toEqual([]);
+  });
+
   it("maps worker failures to structured errors", async () => {
     const handler = createComputeRequestHandler({
       config: localConfig(),
@@ -328,6 +409,52 @@ describe("transcription worker routes", () => {
     );
   });
 });
+
+describe("native worker process", () => {
+  it("kills the worker process when the request is cancelled", async () => {
+    const dir = await tempDir();
+    const marker = join(dir, "finished");
+    const worker = createNativeWorker(
+      localConfig({ nativeWorker: await workerScript(dir, `sleep 5; touch ${marker}`) }),
+    );
+    const controller = new AbortController();
+    const pending = worker.transcriptionModels("whisperCpp", controller.signal);
+    setTimeout(() => controller.abort(), 50);
+
+    const started = Date.now();
+    await expect(pending).rejects.toMatchObject({ code: "request_cancelled" });
+    expect(Date.now() - started).toBeLessThan(2_000);
+    expect(await readdir(dir)).not.toContain("finished");
+  });
+
+  it("does not echo worker stderr to public-ready clients", async () => {
+    const dir = await tempDir();
+    const script = await workerScript(
+      dir,
+      "echo 'failed on transcript: private words' >&2; exit 1",
+    );
+
+    await expect(
+      createNativeWorker(localConfig({ nativeWorker: script })).transcribeAudio(transcribeBody()),
+    ).rejects.toMatchObject({ message: "failed on transcript: private words" });
+    await expect(
+      createNativeWorker(localConfig({ nativeWorker: script, publicReady: true })).transcribeAudio(
+        transcribeBody(),
+      ),
+    ).rejects.toMatchObject({ message: "native transcription worker failed" });
+  });
+});
+
+async function workerScript(dir: string, body: string) {
+  const path = join(dir, "worker.sh");
+  await writeFile(path, `#!/bin/sh\ncat > /dev/null\n${body}\n`);
+  await chmod(path, 0o755);
+  return path;
+}
+
+function transcribeBody(): TranscribeAudioRequest {
+  return { provider: "whisperCpp", model: "tiny.en", samples: [0, 0], sampleRate: 16_000 };
+}
 
 function publicHandler() {
   return createComputeRequestHandler({
@@ -351,6 +478,7 @@ function localConfig(patch: Partial<ServerConfig> = {}): ServerConfig {
     allowedOrigins: [],
     maxBodyBytes: 25 * 1024 * 1024,
     maxAudioBytes: 50 * 1024 * 1024,
+    maxConcurrentJobs: 2,
     uploadTmpDir: tmpdir(),
     ffmpegBin: "ffmpeg",
     speakerStorePath: ".stutter-tracker/server-speakers.json",

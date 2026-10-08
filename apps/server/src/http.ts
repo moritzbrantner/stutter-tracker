@@ -3,6 +3,8 @@ export type ErrorCode =
   | "forbidden_origin"
   | "request_too_large"
   | "invalid_request"
+  | "server_busy"
+  | "request_cancelled"
   | "native_worker_unavailable"
   | "transcription_failed"
   | "not_found"

@@ -9,6 +9,7 @@ export type ServerConfig = {
   allowedOrigins: string[];
   maxBodyBytes: number;
   maxAudioBytes: number;
+  maxConcurrentJobs: number;
   uploadTmpDir: string;
   ffmpegBin: string;
   nativeWorker?: string;
@@ -31,6 +32,10 @@ export function parseServerConfig(env: EnvLike = Bun.env): ServerConfig {
   const maxAudioBytes = parseByteSize(
     env.STUTTER_MAX_AUDIO_BYTES ?? "50mb",
     "STUTTER_MAX_AUDIO_BYTES",
+  );
+  const maxConcurrentJobs = positiveInteger(
+    env.STUTTER_MAX_CONCURRENT_JOBS ?? "2",
+    "STUTTER_MAX_CONCURRENT_JOBS",
   );
   const uploadTmpDir = env.STUTTER_UPLOAD_TMP_DIR?.trim() || tmpdir();
   const ffmpegBin = env.STUTTER_FFMPEG_BIN?.trim() || "ffmpeg";
@@ -62,6 +67,7 @@ export function parseServerConfig(env: EnvLike = Bun.env): ServerConfig {
     allowedOrigins,
     maxBodyBytes,
     maxAudioBytes,
+    maxConcurrentJobs,
     uploadTmpDir,
     ffmpegBin,
     nativeWorker,
@@ -80,6 +86,14 @@ function positivePort(value: string) {
     throw new Error(`invalid PORT \`${value}\``);
   }
   return port;
+}
+
+function positiveInteger(value: string, envName: string) {
+  const number = Number(value.trim());
+  if (!Number.isInteger(number) || number <= 0) {
+    throw new Error(`invalid ${envName} \`${value}\``);
+  }
+  return number;
 }
 
 function parseOrigins(value?: string) {

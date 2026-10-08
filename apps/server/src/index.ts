@@ -33,6 +33,8 @@ import {
   validateTranscriptionModelsRequest,
 } from "./validation";
 
+const MULTIPART_OVERHEAD_BYTES = 64 * 1024;
+
 export type ComputeServerDeps = {
   config: ServerConfig;
   speakerStore: SpeakerStore;
@@ -40,6 +42,7 @@ export type ComputeServerDeps = {
 };
 
 export function createComputeRequestHandler(deps: ComputeServerDeps) {
+  const jobs = createJobLimiter(deps.config.maxConcurrentJobs);
   return async function fetch(request: Request): Promise<Response> {
     const cors = corsHeaders(deps.config, request);
     if (cors instanceof Response) {
@@ -105,7 +108,13 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
             cors,
           );
         }
-        return jsonResponse(await deps.nativeWorker.transcriptionModels(body.provider), 200, cors);
+        return jsonResponse(
+          await jobs.run(() =>
+            deps.nativeWorker.transcriptionModels(body.provider, request.signal),
+          ),
+          200,
+          cors,
+        );
       }
 
       if (request.method === "POST" && url.pathname === "/transcriptions") {
@@ -113,31 +122,37 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
           await readJson(request, deps.config.maxBodyBytes),
           Math.floor(deps.config.maxBodyBytes / 4),
         );
-        return jsonResponse(await deps.nativeWorker.transcribeAudio(body), 200, cors);
+        return jsonResponse(
+          await jobs.run(() => deps.nativeWorker.transcribeAudio(body, request.signal)),
+          200,
+          cors,
+        );
       }
 
       if (request.method === "POST" && url.pathname === "/transcriptions/file") {
         const form = validateTranscribeAudioFileForm(
           await readFormDataWithLimit(request, deps.config.maxAudioBytes),
         );
-        const uploadDir = await mkdtemp(join(deps.config.uploadTmpDir, "stutter-upload-"));
-        const uploadPath = join(uploadDir, safeUploadName(form.audio.name));
-        try {
-          await writeFile(uploadPath, Buffer.from(await form.audio.arrayBuffer()));
-          return jsonResponse(
-            await deps.nativeWorker.transcribeAudioFile({
-              path: uploadPath,
-              provider: form.provider,
-              model: form.model,
-              language: form.language,
-              ffmpegBin: deps.config.ffmpegBin,
-            }),
-            200,
-            cors,
-          );
-        } finally {
-          await rm(uploadDir, { recursive: true, force: true });
-        }
+        const result = await jobs.run(async () => {
+          const uploadDir = await mkdtemp(join(deps.config.uploadTmpDir, "stutter-upload-"));
+          const uploadPath = join(uploadDir, safeUploadName(form.audio.name));
+          try {
+            await writeFile(uploadPath, Buffer.from(await form.audio.arrayBuffer()));
+            return await deps.nativeWorker.transcribeAudioFile(
+              {
+                path: uploadPath,
+                provider: form.provider,
+                model: form.model,
+                language: form.language,
+                ffmpegBin: deps.config.ffmpegBin,
+              },
+              request.signal,
+            );
+          } finally {
+            await rm(uploadDir, { recursive: true, force: true });
+          }
+        });
+        return jsonResponse(result, 200, cors);
       }
 
       if (request.method === "POST" && url.pathname === "/transcriptions/models/download") {
@@ -145,7 +160,9 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
           await readJson(request, deps.config.maxBodyBytes),
         );
         return jsonResponse(
-          await deps.nativeWorker.downloadTranscriptionModel(body.provider, body.model),
+          await jobs.run(() =>
+            deps.nativeWorker.downloadTranscriptionModel(body.provider, body.model, request.signal),
+          ),
           200,
           cors,
         );
@@ -155,6 +172,25 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
     } catch (error) {
       return handleError(deps.config, error, cors);
     }
+  };
+}
+
+// Every route that spawns a native worker shares one bound, so a client cannot queue
+// unbounded processes; excess requests fail fast instead of waiting.
+function createJobLimiter(maxConcurrentJobs: number) {
+  let active = 0;
+  return {
+    async run<T>(job: () => Promise<T>): Promise<T> {
+      if (active >= maxConcurrentJobs) {
+        throw new HttpError("server_busy", "compute server is busy; retry later", 503);
+      }
+      active += 1;
+      try {
+        return await job();
+      } finally {
+        active -= 1;
+      }
+    },
   };
 }
 
@@ -176,6 +212,9 @@ export function startComputeServer(config = parseServerConfig()) {
   const server = Bun.serve({
     hostname: config.host,
     port: config.port,
+    // Reject oversized bodies while streaming, before the handler buffers them.
+    maxRequestBodySize:
+      Math.max(config.maxBodyBytes, config.maxAudioBytes) + MULTIPART_OVERHEAD_BYTES,
     fetch: createComputeRequestHandler({ config, speakerStore, nativeWorker }),
   });
   console.log(`stutter-tracker compute server listening on http://${config.host}:${server.port}`);

@@ -100,11 +100,19 @@ bun run server
 
 Clients send the token as `Authorization: Bearer <token>`. The web app reads `VITE_STUTTER_API_TOKEN`; the mobile app has an API token field in the UI. A `VITE_*` value is bundled into the web app and visible to anyone who loads it, so it is not a secret and cannot secure a shared multi-user service; treat it as protection for a single trusted user only. Public-ready CORS uses the configured origin allowlist and never emits wildcard origins.
 
+Deployment boundary:
+
+- **One token is one trust domain.** The server has no user accounts or per-user resource isolation: every holder of the token can read and overwrite every stored speaker profile (voiceprint) and use the transcription worker. Run one server per trusted user; a shared multi-user public service needs real per-user authentication and isolation, which this server does not provide.
+- **Transport.** The server speaks plain HTTP. Off the loopback interface, put it behind a TLS-terminating reverse proxy; never send the token or audio over plain HTTP across a network.
+- **Limits.** JSON bodies are capped by `STUTTER_MAX_BODY_BYTES` and uploads by `STUTTER_MAX_AUDIO_BYTES`; the HTTP listener rejects larger bodies while streaming. At most `STUTTER_MAX_CONCURRENT_JOBS` (default 2) native worker processes run at once; further worker requests fail with `server_busy` (503) instead of queueing. Worker jobs time out (10 seconds for model listing, 10 minutes for transcription, 1 hour for model downloads), and a client disconnect kills the job's worker process.
+- **What the server keeps.** Uploaded audio exists only in a per-request temporary directory under `STUTTER_UPLOAD_TMP_DIR`, removed after success, failure or cancellation (a crash or `SIGKILL` can leave a `stutter-upload-*` directory behind; clean that directory on restart). Transcripts and analysis results are returned, not stored. Speaker profiles are persisted in Postgres or the JSON speaker store until the operator removes them; the API has no delete endpoint yet. The server logs only its startup configuration, never request contents, and public-ready error responses do not echo worker output.
+
 Optional server settings:
 
 ```sh
 STUTTER_MAX_BODY_BYTES=25mb
 STUTTER_MAX_AUDIO_BYTES=50mb
+STUTTER_MAX_CONCURRENT_JOBS=2
 STUTTER_UPLOAD_TMP_DIR=/tmp
 STUTTER_FFMPEG_BIN=ffmpeg
 STUTTER_SPEAKER_STORE_PATH=/var/lib/stutter-tracker/speakers.json
@@ -113,8 +121,8 @@ DATABASE_URL=postgres://user:pass@host:5432/db
 
 Mobile and other non-browser clients can upload recorded audio with
 `POST /transcriptions/file`. The server stores uploads in a temporary directory,
-delegates to the native worker, and deletes the temporary file after success or
-failure. Non-WAV uploads for `whisperCpp` are normalized with `ffmpeg`; set
+delegates to the native worker, and deletes the temporary file after success,
+failure or cancellation. Non-WAV uploads for `whisperCpp` are normalized with `ffmpeg`; set
 `STUTTER_FFMPEG_BIN` if the binary is not on `PATH`.
 
 ## Desktop Rust Dependencies
