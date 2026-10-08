@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
 import { App } from "./App";
+import * as recorderModule from "./audio/browserRecorder";
 
 type AnalyzeRun =
   import("@stutter-tracker/compute-client").ComputeClient["analyzeSpeechSessionRun"];
@@ -12,6 +13,9 @@ let analysisHook: AnalyzeRun | null = null;
 type DeleteSpeaker =
   import("@stutter-tracker/compute-client").ComputeClient["deleteSpeakerProfile"];
 let deleteSpeakerHook: DeleteSpeaker | null = null;
+type CreateSpeaker =
+  import("@stutter-tracker/compute-client").ComputeClient["createSpeakerProfile"];
+let createSpeakerHook: CreateSpeaker | null = null;
 
 vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@stutter-tracker/compute-client")>();
@@ -23,6 +27,8 @@ vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
         ...client,
         analyzeSpeechSessionRun: (request: Parameters<AnalyzeRun>[0]) =>
           analysisHook ? analysisHook(request) : client.analyzeSpeechSessionRun(request),
+        createSpeakerProfile: (request: Parameters<CreateSpeaker>[0]) =>
+          createSpeakerHook ? createSpeakerHook(request) : client.createSpeakerProfile(request),
         deleteSpeakerProfile: (id: string) =>
           deleteSpeakerHook ? deleteSpeakerHook(id) : client.deleteSpeakerProfile(id),
       };
@@ -53,6 +59,7 @@ function renderApp() {
 afterEach(() => {
   analysisHook = null;
   deleteSpeakerHook = null;
+  createSpeakerHook = null;
   localStorage.clear();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "mediaDevices", {
@@ -510,5 +517,53 @@ describe("App integration", () => {
     expect(
       await screen.findByText("Microphone recording is unavailable in this browser"),
     ).toBeInTheDocument();
+  });
+});
+
+it("does not restore a removed voiceprint from a pending re-enrollment", async () => {
+  const profile = {
+    id: "speaker-a",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 16000,
+  };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([profile]));
+  let capture: recorderModule.BrowserRecorderOptions | undefined;
+  vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+    capture = options;
+    return { sampleRate: 16000, stop: async () => {} };
+  });
+  let finishEnrollment: ((value: typeof profile) => void) | undefined;
+  createSpeakerHook = () =>
+    new Promise((resolve) => {
+      finishEnrollment = resolve;
+    });
+  let finishDeletion: (() => void) | undefined;
+  deleteSpeakerHook = () =>
+    new Promise((resolve) => {
+      finishDeletion = () => resolve("deleted");
+    });
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  const user = userEvent.setup();
+  renderApp();
+  await screen.findByRole("button", { name: "Remove speaker Alex" });
+  await user.click(screen.getByRole("button", { name: /record/i }));
+  act(() => {
+    capture!.onSamples(new Float32Array(16000));
+    capture!.onLevel(0.1);
+  });
+  await user.type(screen.getByRole("textbox", { name: "Speaker label" }), "Alex");
+  await user.click(screen.getAllByRole("button", { name: "Enroll" }).at(-1)!);
+  await waitFor(() => expect(finishEnrollment).toBeDefined());
+  await user.click(screen.getByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(finishDeletion).toBeDefined());
+  await act(async () => {
+    finishEnrollment!(profile);
+  });
+  expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers") ?? "[]")).toEqual([]);
+  await act(async () => {
+    finishDeletion!();
   });
 });

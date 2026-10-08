@@ -809,6 +809,11 @@ export function App() {
       // cannot write back a profile removed while it was being created.
       const persisted = await queueSpeakerMutation(async () => {
         const latest = speakersRef.current;
+        if (existing && !latest.some((speaker) => speaker.id === existing.id)) {
+          throw new Error(
+            "This voiceprint was removed while enrollment was pending. Enroll again to create a new profile.",
+          );
+        }
         const next =
           existing && latest.some((speaker) => speaker.id === existing.id)
             ? latest.map((speaker) =>
