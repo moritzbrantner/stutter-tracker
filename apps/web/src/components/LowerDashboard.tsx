@@ -8,6 +8,7 @@ import {
   TrendingUp,
   Waves,
 } from "lucide-react";
+import { isReplayable } from "@stutter-tracker/shared";
 import type { ReactNode } from "react";
 import {
   buildSessionHistory,
@@ -470,7 +471,8 @@ function SessionsPanel({
                     disabled={
                       sessionLoadDisabled ||
                       deletingSessionId === session.id ||
-                      reanalyzingSessionIds.includes(session.id)
+                      reanalyzingSessionIds.includes(session.id) ||
+                      !isReplayable(session)
                     }
                     onClick={() => onSessionReanalyze(session)}
                   >

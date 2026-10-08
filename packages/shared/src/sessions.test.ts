@@ -6,6 +6,7 @@ import {
   analysisSource,
   analyzerKey,
   isAnalysisVerified,
+  isReplayable,
   annotateSession,
   audioFingerprint,
   currentAnnotations,
@@ -261,6 +262,8 @@ describe("analysis comparability", () => {
     expect(analyzerKey(legacyRecord)).toBe("unknown");
     expect(isAnalysisVerified(legacyRecord)).toBe(false);
     expect(analysisSource(legacyRecord)).toBe("automated");
+    expect(isReplayable(legacyRecord)).toBe(true);
+    expect(isReplayable({ ...legacyRecord, segments: [], pauses: [] })).toBe(false);
 
     const rerun = reanalyzeSession(
       legacyRecord,

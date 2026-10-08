@@ -1,4 +1,8 @@
-import { migrateSessionRecord, reanalyzeSession } from "@stutter-tracker/shared";
+import {
+  migrateSessionRecord,
+  observationFingerprint,
+  reanalyzeSession,
+} from "@stutter-tracker/shared";
 import { analysisProvenanceLabel } from "./components/LowerDashboard";
 import { describe, expect, it } from "vitest";
 import {
@@ -10,6 +14,7 @@ import {
   resampleSamples,
   staticModelStatuses,
   summarizeTranscriptionChunks,
+  countUnverifiedCorpusSessions,
 } from "./App";
 
 describe("fallbackAnalyze", () => {
@@ -297,5 +302,21 @@ describe("desktop analyzer identity", () => {
       version: "1",
     });
     expect(desktopAnalyzer(undefined).version).toBeNull();
+  });
+});
+
+describe("desktop corpus verification count", () => {
+  it("counts sessions without provenance or whose fingerprint does not match the kept observation", () => {
+    const observedSegments = [{ text: "hi", startSeconds: 0, endSeconds: 1, isFinal: true }];
+    const verified = {
+      observedSegments,
+      pauses: [],
+      analysis: { inputId: observationFingerprint(observedSegments, []) },
+    };
+    const mismatched = { ...verified, analysis: { inputId: "obs-other" } };
+    const legacy = { id: "old" };
+    expect(countUnverifiedCorpusSessions({ sessions: [verified, mismatched, legacy] })).toBe(2);
+    expect(countUnverifiedCorpusSessions({ sessions: [verified] })).toBe(0);
+    expect(countUnverifiedCorpusSessions(null)).toBe(0);
   });
 });

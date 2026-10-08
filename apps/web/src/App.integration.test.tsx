@@ -315,6 +315,40 @@ describe("App integration", () => {
     expect(screen.queryByText(/has an analysis that is not verified/)).not.toBeInTheDocument();
   });
 
+  it("does not offer reanalysis for a session with no saved transcript", async () => {
+    const acousticOnly = {
+      id: "session-acoustic",
+      startedAt: "2026-05-19T10:00:00.000Z",
+      segments: [],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 3,
+        wordCount: 0,
+        stutterCount: 1,
+        stuttersPerMinute: 20,
+        severity: "high",
+        events: [
+          {
+            kind: "block",
+            startSeconds: 1,
+            endSeconds: 2,
+            text: "",
+            detail: "Acoustic block",
+            confidence: 0.6,
+            source: "acoustic",
+          },
+        ],
+        byKind: { block: 1 },
+      },
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify([acousticOnly]));
+    renderApp();
+
+    expect(
+      await screen.findByRole("button", { name: /Reanalyze saved session from/ }),
+    ).toBeDisabled();
+  });
+
   it("keeps external-server transcription settings in web mode", async () => {
     localStorage.setItem(
       TRANSCRIPTION_KEY,

@@ -11,6 +11,7 @@ import {
   canonicalSpokenLanguage,
   createSessionRecord,
   isAnalysisVerified,
+  isReplayable,
   reanalyzeSession,
   fallbackAnalyze as sharedFallbackAnalyze,
   observationFingerprint,
@@ -449,10 +450,35 @@ export function App() {
 
   // Sessions whose saved analysis is not verified for their transcript, flagged next to the corpus
   // (local or desktop) instead of being counted silently.
-  const unverifiedSessionCount = useMemo(
+  const localUnverifiedCount = useMemo(
     () => sessions.filter((session) => !isAnalysisVerified(session)).length,
     [sessions],
   );
+  // The desktop corpus keeps sessions the browser history has pruned, so in the desktop app the
+  // warning is counted over the corpus actually shown.
+  const [desktopUnverifiedCount, setDesktopUnverifiedCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isNative) {
+      setDesktopUnverifiedCount(null);
+      return;
+    }
+    let cancelled = false;
+    void invoke<unknown>("export_speech_corpus")
+      .then((exported) => {
+        if (!cancelled) {
+          setDesktopUnverifiedCount(countUnverifiedCorpusSessions(exported));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDesktopUnverifiedCount(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isNative, corpusAnalysis]);
+  const unverifiedSessionCount = desktopUnverifiedCount ?? localUnverifiedCount;
 
   const todayStats = useMemo(() => {
     const now = new Date().toDateString();
@@ -936,6 +962,12 @@ export function App() {
       setMessage("Stop recording and let transcription finish before reanalyzing");
       return;
     }
+    // Audio is not stored, so a session without transcript or pauses has nothing to replay;
+    // analyzing empty input would replace an acoustic-only result with nothing.
+    if (!isReplayable(session)) {
+      setMessage("This session has no saved transcript to reanalyze");
+      return;
+    }
     // One run per session at a time, so runs are appended in the order they were started.
     if (reanalyzingRef.current.has(session.id)) {
       return;
@@ -990,17 +1022,22 @@ export function App() {
       }
       try {
         setCorpusAnalysis(await saveSpeechCorpusSession(updated));
+        return "saved" as const;
       } catch {
         setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+        return "local" as const;
       }
-      return "saved" as const;
     });
     setMessage(
       outcome === "saved"
         ? "Reanalysis added to the session"
-        : outcome === "deleted"
-          ? "Session was deleted; nothing reanalyzed"
-          : "Could not save the reanalysis: browser storage is full or unavailable",
+        : outcome === "local"
+          ? isDesktopApp()
+            ? "Reanalysis saved locally; the desktop corpus still has the earlier analysis"
+            : "Reanalysis added to the session"
+          : outcome === "deleted"
+            ? "Session was deleted; nothing reanalyzed"
+            : "Could not save the reanalysis: browser storage is full or unavailable",
     );
   }
 
@@ -1626,6 +1663,33 @@ async function loadSpeechCorpus(): Promise<SpeechCorpusAnalysis> {
     throw new Error("desktop corpus is only available in the Tauri app");
   }
   return invoke<SpeechCorpusAnalysis>("load_speech_corpus");
+}
+
+/**
+ * Counts desktop-corpus sessions whose analysis is not verified for their transcript: those
+ * without stored provenance, and those whose `analysis.inputId` does not match the untouched
+ * observation (`observedSegments` and `pauses`) the corpus keeps.
+ */
+export function countUnverifiedCorpusSessions(exported: unknown): number {
+  const sessions =
+    exported &&
+    typeof exported === "object" &&
+    Array.isArray((exported as { sessions?: unknown }).sessions)
+      ? ((exported as { sessions: unknown[] }).sessions as Record<string, unknown>[])
+      : [];
+  return sessions.filter((session) => {
+    const analysis = session.analysis as { inputId?: unknown } | undefined;
+    if (!analysis || !Array.isArray(session.observedSegments) || !Array.isArray(session.pauses)) {
+      return true;
+    }
+    return (
+      analysis.inputId !==
+      observationFingerprint(
+        session.observedSegments as TranscriptSegment[],
+        session.pauses as PauseSpan[],
+      )
+    );
+  }).length;
 }
 
 async function loadSpeechCorpusExport(sessions: SavedSession[]) {
