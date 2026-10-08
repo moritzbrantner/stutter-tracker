@@ -35,5 +35,8 @@ describe("mobile recording helpers", () => {
     expect(mobileErrorMessage(new Error("native_worker_unavailable: missing"))).toBe(
       "Compute server has no native transcription worker configured",
     );
+    expect(mobileErrorMessage(new Error("server_busy: retry later"))).toBe(
+      "Compute server is busy; try again shortly",
+    );
   });
 });
