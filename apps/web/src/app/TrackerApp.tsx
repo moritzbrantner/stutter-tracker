@@ -10,6 +10,8 @@ import {
   type AnalyzerIdentity,
   canonicalSpokenLanguage,
   createSessionRecord,
+  isAnalysisVerified,
+  isReplayable,
   reanalyzeSession,
   fallbackAnalyze as sharedFallbackAnalyze,
   observationFingerprint,
@@ -187,6 +189,8 @@ export function App() {
   // analysis: live analysis does not run, and a late result never replaces it. The ref is set
   // synchronously so a result that lands before React applies the load is still ignored.
   const [viewedSession, setViewedSessionState] = useState<SavedSession | null>(null);
+  const reanalyzingRef = useRef(new Set<string>());
+  const [reanalyzingSessionIds, setReanalyzingSessionIds] = useState<string[]>([]);
   const viewedSessionRef = useRef<SavedSession | null>(null);
   const setViewedSession = (session: SavedSession | null) => {
     viewedSessionRef.current = session;
@@ -444,6 +448,39 @@ export function App() {
     };
   }, [isNative]);
 
+  // Sessions whose saved analysis is not verified for their transcript, flagged next to the corpus
+  // (local or desktop) instead of being counted silently.
+  const localUnverifiedCount = useMemo(
+    () => sessions.filter((session) => !isAnalysisVerified(session)).length,
+    [sessions],
+  );
+  // The desktop corpus keeps sessions the browser history has pruned, so in the desktop app the
+  // warning is counted over the corpus actually shown.
+  const [desktopUnverifiedCount, setDesktopUnverifiedCount] = useState<number | null>(null);
+  useEffect(() => {
+    if (!isNative) {
+      setDesktopUnverifiedCount(null);
+      return;
+    }
+    let cancelled = false;
+    // A small payload (inputId and observation per session), not the full store.
+    void invoke<unknown>("speech_corpus_observations")
+      .then((exported) => {
+        if (!cancelled) {
+          setDesktopUnverifiedCount(countUnverifiedCorpusSessions(exported));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDesktopUnverifiedCount(null);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isNative, corpusAnalysis]);
+  const unverifiedSessionCount = desktopUnverifiedCount ?? localUnverifiedCount;
+
   const todayStats = useMemo(() => {
     const now = new Date().toDateString();
     const todays = sessions.filter((session) => new Date(session.startedAt).toDateString() === now);
@@ -452,7 +489,8 @@ export function App() {
       (sum, session) => sum + session.report.totalDurationSeconds / 60,
       0,
     );
-    return { count: todays.length, totalEvents, totalMinutes };
+    const unverified = todays.filter((session) => !isAnalysisVerified(session)).length;
+    return { count: todays.length, totalEvents, totalMinutes, unverified };
   }, [sessions]);
 
   async function startRecording() {
@@ -918,6 +956,92 @@ export function App() {
     );
   }
 
+  // Explicit reanalysis of a saved transcript (no stored audio): appends a run, keeping the
+  // earlier ones, and shows the new result if that session is on screen.
+  async function reanalyzeSavedSession(session: SavedSession) {
+    if (captureInProgress) {
+      setMessage("Stop recording and let transcription finish before reanalyzing");
+      return;
+    }
+    // Audio is not stored, so a session without transcript or pauses has nothing to replay;
+    // analyzing empty input would replace an acoustic-only result with nothing.
+    if (!isReplayable(session)) {
+      setMessage("This session has no saved transcript to reanalyze");
+      return;
+    }
+    // One run per session at a time, so runs are appended in the order they were started.
+    if (reanalyzingRef.current.has(session.id)) {
+      return;
+    }
+    reanalyzingRef.current.add(session.id);
+    setReanalyzingSessionIds([...reanalyzingRef.current]);
+    try {
+      await runReanalysis(session);
+    } finally {
+      reanalyzingRef.current.delete(session.id);
+      setReanalyzingSessionIds([...reanalyzingRef.current]);
+    }
+  }
+
+  async function runReanalysis(session: SavedSession) {
+    setMessage("Reanalyzing saved session");
+    const analysis = await analyzeWithFallback({
+      segments: session.segments,
+      pauses: session.pauses,
+      sessionStartedAt: session.startedAt,
+    });
+    const outcome = await serializeSessionMutation(async () => {
+      const latest = sessionsRef.current.find((candidate) => candidate.id === session.id);
+      if (!latest) {
+        return "deleted" as const;
+      }
+      const updated = reanalyzeSession(
+        latest,
+        {
+          id: analysis.runId,
+          createdAt: analysis.createdAt,
+          analyzer: analysis.analyzer,
+          usedAudio: false,
+          audioId: null,
+        },
+        analysis.report,
+      );
+      try {
+        persistSessions(
+          sessionsRef.current.map((candidate) =>
+            candidate.id === updated.id ? updated : candidate,
+          ),
+        );
+      } catch {
+        return "failed" as const;
+      }
+      if (viewedSessionRef.current?.id === updated.id) {
+        loadedSessionRef.current = updated;
+        setViewedSession(updated);
+        setReport(updated.report);
+        setReportRun(updated.analysis);
+      }
+      try {
+        setCorpusAnalysis(await saveSpeechCorpusSession(updated));
+        return "saved" as const;
+      } catch {
+        setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+        return "local" as const;
+      }
+    });
+    setMessage(
+      outcome === "saved"
+        ? "Reanalysis added to the session"
+        : outcome === "local"
+          ? isDesktopApp()
+            ? "Reanalysis saved locally; the desktop corpus still has the earlier analysis"
+            : "Reanalysis added to the session"
+          : outcome === "deleted"
+            ? "Session was deleted; nothing reanalyzed"
+            : "Could not save the reanalysis: browser storage is full or unavailable",
+    );
+  }
+
   async function deleteSession(session: SavedSession) {
     setDeletingSessionId(session.id);
     try {
@@ -1268,6 +1392,7 @@ export function App() {
           selectedModelStatus={selectedModelStatus}
           modelStatuses={modelStatuses}
           corpusAnalysis={corpusAnalysis}
+          unverifiedSessionCount={unverifiedSessionCount}
           speakers={speakers}
           speakerLabel={speakerLabel}
           canEnroll={samplesRef.current.length > 0}
@@ -1311,6 +1436,8 @@ export function App() {
           samplesRef.current = [];
         }}
         onSessionDelete={(session) => void deleteSession(session)}
+        onSessionReanalyze={(session) => void reanalyzeSavedSession(session)}
+        reanalyzingSessionIds={reanalyzingSessionIds}
       />
     </main>
   );
@@ -1537,6 +1664,33 @@ async function loadSpeechCorpus(): Promise<SpeechCorpusAnalysis> {
     throw new Error("desktop corpus is only available in the Tauri app");
   }
   return invoke<SpeechCorpusAnalysis>("load_speech_corpus");
+}
+
+/**
+ * Counts desktop-corpus sessions whose analysis is not verified for their transcript: those
+ * without stored provenance, and those whose `analysis.inputId` does not match the untouched
+ * observation (`observedSegments` and `pauses`) the corpus keeps.
+ */
+export function countUnverifiedCorpusSessions(exported: unknown): number {
+  const sessions =
+    exported &&
+    typeof exported === "object" &&
+    Array.isArray((exported as { sessions?: unknown }).sessions)
+      ? ((exported as { sessions: unknown[] }).sessions as Record<string, unknown>[])
+      : [];
+  return sessions.filter((session) => {
+    const analysis = session.analysis as { inputId?: unknown } | undefined;
+    if (!analysis || !Array.isArray(session.observedSegments) || !Array.isArray(session.pauses)) {
+      return true;
+    }
+    return (
+      analysis.inputId !==
+      observationFingerprint(
+        session.observedSegments as TranscriptSegment[],
+        session.pauses as PauseSpan[],
+      )
+    );
+  }).length;
 }
 
 async function loadSpeechCorpusExport(sessions: SavedSession[]) {

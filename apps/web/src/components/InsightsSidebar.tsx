@@ -17,10 +17,14 @@ type TodayStats = {
   count: number;
   totalEvents: number;
   totalMinutes: number;
+  /** Sessions whose saved analysis is not verified for their transcript; counted, but flagged. */
+  unverified: number;
 };
 
 type InsightsSidebarProps = {
   todayStats: TodayStats;
+  /** Saved sessions whose analysis is not verified for their transcript; flagged at the corpus. */
+  unverifiedSessionCount?: number;
   report: AnalysisReport;
   speechStats: AnalysisReport["speechStats"];
   blockerStats: BlockerStats;
@@ -45,6 +49,7 @@ type InsightsSidebarProps = {
 
 export function InsightsSidebar({
   todayStats,
+  unverifiedSessionCount = 0,
   report,
   speechStats,
   blockerStats,
@@ -73,6 +78,9 @@ export function InsightsSidebar({
           <MiniStat>{todayStats.count} sessions</MiniStat>
           <MiniStat>{todayStats.totalEvents} events</MiniStat>
           <MiniStat>{todayStats.totalMinutes.toFixed(1)} min</MiniStat>
+          {todayStats.unverified > 0 && (
+            <MiniStat>{todayStats.unverified} with unverified analysis</MiniStat>
+          )}
         </div>
       </PanelBlock>
 
@@ -122,6 +130,17 @@ export function InsightsSidebar({
           <Download size={16} />
           Download JSON
         </button>
+        {unverifiedSessionCount > 0 && (
+          <p
+            role="note"
+            className="mt-3 mb-0 rounded-lg bg-[#fdf8ec] px-3 py-2 text-sm text-[#6b5520]"
+          >
+            {unverifiedSessionCount} corpus session
+            {unverifiedSessionCount === 1 ? " has" : "s have"} an analysis that is not verified for
+            its transcript; the totals include {unverifiedSessionCount === 1 ? "it" : "them"}.
+            Sessions still in your saved list can be reanalyzed there.
+          </p>
+        )}
         {corpusAnalysis.topTerms.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
             {corpusAnalysis.topTerms.slice(0, 6).map((term) => (

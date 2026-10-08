@@ -250,6 +250,34 @@ export function acceptedAnnotation(record: SessionRecord): AnnotationRevision | 
   return accepted.at(-1) ?? null;
 }
 
+export type AnalysisSource = "automated" | "humanReference";
+
+/**
+ * Identifies the analyzer behind the current report; "unknown" when it or its version was never
+ * recorded (an unreported version could hide an upgrade, so it is not one shared version).
+ */
+export function analyzerKey(record: SessionRecord): string {
+  const analyzer = record.analysis.analyzer;
+  return analyzer && analyzer.version !== null
+    ? `${analyzer.producer}:${analyzer.algorithm}:${analyzer.version}`
+    : "unknown";
+}
+
+/** True when the current report is known to be the analysis of exactly the saved observation. */
+export function isAnalysisVerified(record: SessionRecord): boolean {
+  return record.analysis.inputId === observationFingerprint(record.segments, record.pauses);
+}
+
+/** Saved transcript evidence a reanalysis can replay (audio is not stored with sessions). */
+export function isReplayable(record: SessionRecord): boolean {
+  return record.segments.length > 0 || record.pauses.length > 0;
+}
+
+/** Whether an accepted human annotation exists to compare against, or only automated analysis. */
+export function analysisSource(record: SessionRecord): AnalysisSource {
+  return acceptedAnnotation(record) ? "humanReference" : "automated";
+}
+
 /** Every run, oldest first, ending with the current one. */
 export function sessionAnalysisRuns(record: SessionRecord): AnalysisRun[] {
   return [...record.priorAnalyses, { ...record.analysis, report: record.report }];

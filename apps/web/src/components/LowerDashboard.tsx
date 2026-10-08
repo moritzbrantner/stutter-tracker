@@ -3,12 +3,18 @@ import {
   BrainCircuit,
   ListChecks,
   PlayCircle,
+  RefreshCw,
   Trash2,
   TrendingUp,
   Waves,
 } from "lucide-react";
+import { isReplayable } from "@stutter-tracker/shared";
 import type { ReactNode } from "react";
-import { buildSessionHistory, type SessionHistoryPoint } from "../storage/sessionHistory";
+import {
+  buildSessionHistory,
+  progressComparability,
+  type SessionHistoryPoint,
+} from "../storage/sessionHistory";
 import type {
   AnalysisReport,
   BlockerStats,
@@ -37,6 +43,10 @@ type LowerDashboardProps = {
   /** Loading waits until capture and transcription have finished. */
   sessionLoadDisabled?: boolean;
   onSessionDelete: (session: SavedSession) => void;
+  /** Appends a fresh analysis run of the saved transcript; earlier runs stay in the history. */
+  onSessionReanalyze?: (session: SavedSession) => void;
+  /** Sessions with a reanalysis in flight; their action is disabled until it lands. */
+  reanalyzingSessionIds?: string[];
   deletingSessionId: string | null;
 };
 
@@ -50,6 +60,8 @@ export function LowerDashboard({
   onSessionLoad,
   sessionLoadDisabled = false,
   onSessionDelete,
+  onSessionReanalyze,
+  reanalyzingSessionIds = [],
   deletingSessionId,
 }: LowerDashboardProps) {
   return (
@@ -64,6 +76,8 @@ export function LowerDashboard({
         onSessionLoad={onSessionLoad}
         sessionLoadDisabled={sessionLoadDisabled}
         onSessionDelete={onSessionDelete}
+        onSessionReanalyze={onSessionReanalyze}
+        reanalyzingSessionIds={reanalyzingSessionIds}
         deletingSessionId={deletingSessionId}
       />
     </section>
@@ -256,6 +270,7 @@ function ChunkAnalysisPanel({
 
 function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
   const history = buildSessionHistory(sessions);
+  const comparability = progressComparability(history);
 
   return (
     <div className={`${panelClass} min-w-0 flex-[1.2_1_28rem] max-lg:w-full`}>
@@ -275,6 +290,18 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
           />
         ) : (
           <>
+            {!comparability.comparable && (
+              <p
+                role="note"
+                className="m-0 border-b border-[#f0e2c4] bg-[#fdf8ec] px-4 py-3 text-sm text-[#6b5520]"
+              >
+                Not directly comparable: {comparability.reasons.join("; ")}.
+                {comparability.reanalysisHelps &&
+                  " Reanalyzing the affected sessions brings their analysis onto equal terms (a reanalysis uses the saved transcript only, without audio)."}
+                {comparability.contextDiffers &&
+                  " Compare sessions recorded in the same language, task and condition."}
+              </p>
+            )}
             <TrendMetric
               label="Fluency"
               hint="Computed fluency percentage"
@@ -299,6 +326,15 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
             />
             <p className={`m-0 px-4 py-3 text-xs ${mutedTextClass}`}>
               Tracking metrics are for personal review and are not diagnostic scores.
+              {(comparability.taskUnrecorded || comparability.conditionUnrecorded) &&
+                ` ${[
+                  comparability.taskUnrecorded && "Speaking task",
+                  comparability.conditionUnrecorded && "Assistance condition",
+                ]
+                  .filter(Boolean)
+                  .join(" and ")} ${
+                  comparability.taskUnrecorded && comparability.conditionUnrecorded ? "are" : "is"
+                } not recorded yet, so sessions may differ in ways this view cannot show.`}
             </p>
           </>
         )}
@@ -372,12 +408,18 @@ function SessionsPanel({
   onSessionLoad,
   sessionLoadDisabled = false,
   onSessionDelete,
+  onSessionReanalyze,
+  reanalyzingSessionIds = [],
   deletingSessionId,
 }: {
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
   sessionLoadDisabled?: boolean;
   onSessionDelete: (session: SavedSession) => void;
+  /** Appends a fresh analysis run of the saved transcript; earlier runs stay in the history. */
+  onSessionReanalyze?: (session: SavedSession) => void;
+  /** Sessions with a reanalysis in flight; their action is disabled until it lands. */
+  reanalyzingSessionIds?: string[];
   deletingSessionId: string | null;
 }) {
   const historyById = new Map(
@@ -432,6 +474,23 @@ function SessionsPanel({
                   </span>
                   <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
                 </button>
+                {onSessionReanalyze && (
+                  <button
+                    type="button"
+                    className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#355e47] hover:bg-[#f2f7f4] disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label={`Reanalyze saved session from ${new Date(session.startedAt).toLocaleString()}`}
+                    title="Reanalyze: add a new analysis run; earlier runs stay in the history"
+                    disabled={
+                      sessionLoadDisabled ||
+                      deletingSessionId === session.id ||
+                      reanalyzingSessionIds.includes(session.id) ||
+                      !isReplayable(session)
+                    }
+                    onClick={() => onSessionReanalyze(session)}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                )}
                 <button
                   type="button"
                   className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#a33b3b] hover:bg-[#fff4f4] disabled:cursor-wait disabled:opacity-50"

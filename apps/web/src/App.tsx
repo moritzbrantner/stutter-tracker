@@ -2,6 +2,7 @@ import { App as TrackerApp } from "./app/TrackerApp";
 import { AuditoryFeedbackLab } from "./components/AuditoryFeedbackLab";
 
 export {
+  countUnverifiedCorpusSessions,
   desktopAnalyzer,
   fallbackAnalyze,
   fallbackPredictSpeakerIntent,
