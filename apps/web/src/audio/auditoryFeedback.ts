@@ -21,6 +21,15 @@ export type AuditoryFeedbackSession = {
   stop: () => Promise<AuditoryFeedbackRecording>;
 };
 
+export type AuditoryFeedbackSessionOptions = {
+  // Aborting before the session is returned releases everything acquired so far.
+  signal?: AbortSignal;
+  // Called once when the session stops itself (input ended, audio devices changed).
+  onInterrupted?: (reason: string) => void;
+  // Upper bound for recorder finalization after Stop; output is already silent by then.
+  finalizeTimeoutMs?: number;
+};
+
 export const DEFAULT_AUDITORY_FEEDBACK_SETTINGS: AuditoryFeedbackSettings = {
   delayMs: 100,
   pitchShiftSemitones: 0,
@@ -32,6 +41,7 @@ const MAX_DELAY_MS = 200;
 const MAX_PITCH_SHIFT_SEMITONES = 6;
 const MAX_OUTPUT_GAIN = 0.8;
 const PITCH_SHIFT_PROCESSOR_NAME = "stutter-tracker-pitch-shift";
+const DEFAULT_FINALIZE_TIMEOUT_MS = 2_000;
 
 export function normalizeAuditoryFeedbackSettings(
   settings: AuditoryFeedbackSettings,
@@ -62,7 +72,11 @@ export function semitonesToPlaybackRatio(semitones: number) {
 
 export async function startAuditoryFeedbackSession(
   initialSettings: AuditoryFeedbackSettings,
+  options: AuditoryFeedbackSessionOptions = {},
 ): Promise<AuditoryFeedbackSession> {
+  const { signal, onInterrupted } = options;
+  const finalizeTimeoutMs = options.finalizeTimeoutMs ?? DEFAULT_FINALIZE_TIMEOUT_MS;
+  throwIfAborted(signal);
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("Microphone capture is unavailable in this browser");
   }
@@ -81,17 +95,23 @@ export async function startAuditoryFeedbackSession(
 
   let context: AudioContext;
   try {
+    throwIfAborted(signal);
     context = new AudioContext({ latencyHint: "interactive" });
   } catch (error) {
     stopStream(stream);
     throw error;
   }
+  const abandon = async (error: unknown): Promise<never> => {
+    stopStream(stream);
+    await closeContext(context);
+    throw error;
+  };
+
   try {
     await context.resume();
+    throwIfAborted(signal);
   } catch (error) {
-    stopStream(stream);
-    await context.close().catch(() => undefined);
-    throw error;
+    return abandon(error);
   }
 
   const source = context.createMediaStreamSource(stream);
@@ -122,6 +142,9 @@ export async function startAuditoryFeedbackSession(
   } catch {
     pitchShiftNode = null;
   }
+  if (signal?.aborted) {
+    return abandon(abortError());
+  }
 
   source.connect(dryGain);
   source.connect(delay);
@@ -139,8 +162,8 @@ export async function startAuditoryFeedbackSession(
 
   const rawCapture = createRecorderCapture(stream);
   const processedCapture = createRecorderCapture(captureDestination.stream);
-  rawCapture?.recorder.start(250);
-  processedCapture?.recorder.start(250);
+  startRecorderCapture(rawCapture);
+  startRecorderCapture(processedCapture);
 
   let stopped = false;
   let stopPromise: Promise<AuditoryFeedbackRecording> | null = null;
@@ -161,6 +184,68 @@ export async function startAuditoryFeedbackSession(
       ?.setTargetAtTime(normalized.pitchShiftSemitones, now, 0.01);
   };
 
+  // Runs synchronously on Stop, before any recorder work, so nothing stays audible.
+  const silenceOutput = () => {
+    try {
+      outputGain.gain.cancelScheduledValues(0);
+      outputGain.gain.value = 0;
+    } catch {
+      // Disconnecting below still silences the output.
+    }
+    safely(() => outputGain.disconnect(context.destination));
+  };
+
+  const teardown = async () => {
+    for (const node of [source, dryGain, delay, pitchShiftNode, wetGain, limiter, outputGain]) {
+      safely(() => node?.disconnect());
+    }
+    for (const track of stream.getTracks()) {
+      track.removeEventListener("ended", onTrackEnded);
+    }
+    navigator.mediaDevices.removeEventListener?.("devicechange", onDeviceChange);
+    stopStream(stream);
+    await closeContext(context);
+  };
+
+  const stop = () => {
+    if (stopPromise) {
+      return stopPromise;
+    }
+    stopped = true;
+    silenceOutput();
+    stopPromise = (async () => {
+      try {
+        const [raw, processed] = await Promise.all([
+          stopRecorderCapture(rawCapture, finalizeTimeoutMs),
+          stopRecorderCapture(processedCapture, finalizeTimeoutMs),
+        ]);
+        return { raw, processed };
+      } finally {
+        await teardown();
+      }
+    })();
+    return stopPromise;
+  };
+
+  const interrupt = (reason: string) => {
+    if (stopped) {
+      return;
+    }
+    void stop();
+    onInterrupted?.(reason);
+  };
+  function onTrackEnded() {
+    interrupt("Microphone input ended, so feedback stopped.");
+  }
+  // A device change can move output from headphones to a loudspeaker; stop rather than guess.
+  function onDeviceChange() {
+    interrupt("Audio devices changed, so feedback stopped. Check your headphones and start again.");
+  }
+  for (const track of stream.getTracks()) {
+    track.addEventListener("ended", onTrackEnded);
+  }
+  navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
+
   applySettings(initialSettings);
 
   return {
@@ -169,38 +254,7 @@ export async function startAuditoryFeedbackSession(
       localCapture: rawCapture !== null && processedCapture !== null,
     },
     update: applySettings,
-    stop: () => {
-      if (stopPromise) {
-        return stopPromise;
-      }
-      stopped = true;
-      stopPromise = Promise.all([
-        stopRecorderCapture(rawCapture),
-        stopRecorderCapture(processedCapture),
-      ])
-        .then(async ([raw, processed]) => {
-          source.disconnect();
-          dryGain.disconnect();
-          delay.disconnect();
-          pitchShiftNode?.disconnect();
-          wetGain.disconnect();
-          limiter.disconnect();
-          outputGain.disconnect();
-          stopStream(stream);
-          if (context.state !== "closed") {
-            await context.close();
-          }
-          return { raw, processed };
-        })
-        .catch(async (error) => {
-          stopStream(stream);
-          if (context.state !== "closed") {
-            await context.close().catch(() => undefined);
-          }
-          throw error;
-        });
-      return stopPromise;
-    },
+    stop,
   };
 }
 
@@ -228,23 +282,43 @@ function createRecorderCapture(stream: MediaStream): RecorderCapture | null {
   }
 }
 
-function stopRecorderCapture(capture: RecorderCapture | null): Promise<Blob | null> {
+function startRecorderCapture(capture: RecorderCapture | null) {
+  try {
+    capture?.recorder.start(250);
+  } catch {
+    // An unstartable recorder yields an empty capture instead of failing the session.
+  }
+}
+
+// Resolves with whatever was captured once the recorder stops, errors or times out; never rejects.
+function stopRecorderCapture(
+  capture: RecorderCapture | null,
+  timeoutMs: number,
+): Promise<Blob | null> {
   if (!capture) {
     return Promise.resolve(null);
   }
   const { recorder, chunks } = capture;
+  const collected = () =>
+    chunks.length ? new Blob(chunks, { type: recorder.mimeType || "audio/webm" }) : null;
   if (recorder.state === "inactive") {
-    return Promise.resolve(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
+    return Promise.resolve(collected());
   }
   return new Promise((resolve) => {
-    recorder.addEventListener(
-      "stop",
-      () => {
-        resolve(new Blob(chunks, { type: recorder.mimeType || "audio/webm" }));
-      },
-      { once: true },
-    );
-    recorder.stop();
+    const finish = () => {
+      clearTimeout(timer);
+      recorder.removeEventListener("stop", finish);
+      recorder.removeEventListener("error", finish);
+      resolve(collected());
+    };
+    const timer = setTimeout(finish, timeoutMs);
+    recorder.addEventListener("stop", finish);
+    recorder.addEventListener("error", finish);
+    try {
+      recorder.stop();
+    } catch {
+      finish();
+    }
   });
 }
 
@@ -257,6 +331,30 @@ function stopStream(stream: MediaStream) {
   for (const track of stream.getTracks()) {
     track.stop();
   }
+}
+
+async function closeContext(context: AudioContext) {
+  if (context.state !== "closed") {
+    await context.close().catch(() => undefined);
+  }
+}
+
+function safely(action: () => void) {
+  try {
+    action();
+  } catch {
+    // Already disconnected or released.
+  }
+}
+
+function throwIfAborted(signal?: AbortSignal) {
+  if (signal?.aborted) {
+    throw abortError();
+  }
+}
+
+function abortError() {
+  return new DOMException("Live audio feedback start was cancelled", "AbortError");
 }
 
 function clamp(value: number, min: number, max: number) {
