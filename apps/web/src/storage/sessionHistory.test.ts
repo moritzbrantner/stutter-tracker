@@ -46,6 +46,9 @@ describe("buildSessionHistory", () => {
         analyzerKey: "unknown",
         verified: false,
         usedAudio: null,
+        spokenLanguage: "unknown",
+        task: "unknown",
+        condition: "unknown",
       },
     ]);
   });
@@ -92,6 +95,17 @@ describe("buildSessionHistory", () => {
       "the analyzer version was not recorded for these sessions",
       "whether audio was analyzed was not recorded for these sessions",
       "1 session's analysis is not verified for the saved transcript",
+    ]);
+    const inGerman = { ...second, context: { ...second.context, spokenLanguage: "de" } };
+    expect(progressComparability(buildSessionHistory([first, inGerman])).reasons).toEqual([
+      "they span 2 different languages",
+    ]);
+    const assisted = {
+      ...second,
+      context: { ...second.context, condition: { kind: "assisted" as const, aidId: "daf" } },
+    };
+    expect(progressComparability(buildSessionHistory([first, assisted])).reasons).toEqual([
+      "they span 2 different assistance conditions",
     ]);
     const unknownAudio = (session: SavedSession) => ({
       ...session,

@@ -249,6 +249,41 @@ pub fn load_speech_corpus_impl(path: &Path) -> Result<SpeechCorpusAnalysis> {
     analyze_store(&store)
 }
 
+/// Per session, only what verifying its analysis needs (the analysis `inputId` and the untouched
+/// observation): a small payload instead of the full store with reports and history.
+pub fn speech_corpus_observations_impl(path: &Path) -> Result<serde_json::Value> {
+    let store = read_store(path)?;
+    let pick = |session: &SpeechCorpusSession, key: &str| {
+        session
+            .provenance
+            .fields
+            .get(key)
+            .cloned()
+            .unwrap_or(serde_json::Value::Null)
+    };
+    Ok(serde_json::json!({
+        "sessions": store
+            .sessions
+            .iter()
+            .map(|session| {
+                serde_json::json!({
+                    "analysis": {
+                        "inputId": session
+                            .provenance
+                            .fields
+                            .get("analysis")
+                            .and_then(|analysis| analysis.get("inputId"))
+                            .cloned()
+                            .unwrap_or(serde_json::Value::Null),
+                    },
+                    "observedSegments": pick(session, "observedSegments"),
+                    "pauses": pick(session, "pauses"),
+                })
+            })
+            .collect::<Vec<_>>(),
+    }))
+}
+
 pub fn export_speech_corpus_impl(path: &Path) -> Result<serde_json::Value> {
     let store = read_store(path)?;
     Ok(serde_json::to_value(store)?)
@@ -787,8 +822,17 @@ mod tests {
 
         save_speech_corpus_session_impl(&path, serde_json::from_value(input).unwrap()).unwrap();
         let exported = export_speech_corpus_impl(&path).unwrap();
+        let observations = speech_corpus_observations_impl(&path).unwrap();
         let _ = fs::remove_file(&path);
 
+        assert_eq!(
+            observations["sessions"][0],
+            serde_json::json!({
+                "analysis": { "inputId": provenance["analysis"]["inputId"] },
+                "observedSegments": observed,
+                "pauses": serde_json::Value::Null,
+            })
+        );
         let session = &exported["sessions"][0];
         // Fingerprints refer to the untouched segments, which are kept next to the normalized view.
         assert_eq!(session["observedSegments"], observed);

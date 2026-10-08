@@ -463,7 +463,8 @@ export function App() {
       return;
     }
     let cancelled = false;
-    void invoke<unknown>("export_speech_corpus")
+    // A small payload (inputId and observation per session), not the full store.
+    void invoke<unknown>("speech_corpus_observations")
       .then((exported) => {
         if (!cancelled) {
           setDesktopUnverifiedCount(countUnverifiedCorpusSessions(exported));

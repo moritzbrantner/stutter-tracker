@@ -15,6 +15,10 @@ export type SessionHistoryPoint = {
   verified: boolean;
   /** Whether captured audio fed the analysis (acoustic events); null when not recorded. */
   usedAudio: boolean | null;
+  /** Speaking context; sessions in different contexts are not directly comparable. */
+  spokenLanguage: string;
+  task: string;
+  condition: string;
 };
 
 export type ProgressComparability = {
@@ -53,6 +57,17 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
     reasons.push(
       `whether audio was analyzed was not recorded for ${audioUnknown === points.length ? "these sessions" : `${audioUnknown} of them`}`,
     );
+  }
+  // Same split as outcome comparisons: language, task and assistance condition.
+  for (const [field, label] of [
+    ["spokenLanguage", "languages"],
+    ["task", "speaking tasks"],
+    ["condition", "assistance conditions"],
+  ] as const) {
+    const values = new Set(points.map((point) => point[field]));
+    if (values.size > 1) {
+      reasons.push(`they span ${values.size} different ${label}`);
+    }
   }
   const unverified = points.filter((point) => !point.verified).length;
   if (unverified > 0) {
@@ -101,6 +116,15 @@ function toHistoryPoint(session: SavedSession): SessionHistoryPoint {
     analyzerKey: analyzerKey(session),
     verified: isAnalysisVerified(session),
     usedAudio: session.analysis.usedAudio,
+    spokenLanguage: session.context.spokenLanguage,
+    task: session.context.task
+      ? `${session.context.task.kind}:${session.context.task.trained ? "trained" : "untrained"}`
+      : "unknown",
+    condition: session.context.condition
+      ? session.context.condition.kind === "assisted"
+        ? `assisted:${session.context.condition.aidId}:${JSON.stringify(session.context.condition.settings ?? {})}`
+        : "unassisted"
+      : "unknown",
   };
 }
 
