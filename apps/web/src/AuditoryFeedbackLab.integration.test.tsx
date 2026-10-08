@@ -264,6 +264,20 @@ describe("AuditoryFeedbackLab controls", () => {
     }
   });
 
+  it("hides the effective-settings line as soon as stopping begins", async () => {
+    const finalizing = deferred<AuditoryFeedbackRecording>();
+    startSession.mockResolvedValue(fakeSession(finalizing.promise));
+    render(<AuditoryFeedbackLab />);
+    confirmHeadphonesAndStart();
+    const stop = await screen.findByRole("button", { name: /stop & compare/i });
+    expect(screen.getByLabelText("Effective feedback settings")).toBeInTheDocument();
+
+    fireEvent.click(stop);
+
+    expect(screen.queryByLabelText("Effective feedback settings")).not.toBeInTheDocument();
+    await act(async () => finalizing.resolve(emptyRecording));
+  });
+
   it("keeps a requested pitch shift but shows it is not applied when unsupported", async () => {
     const session = {
       ...fakeSession(Promise.resolve(emptyRecording)),

@@ -365,7 +365,8 @@ export function AuditoryFeedbackLab() {
           </li>
         </ul>
 
-        {isActive && (
+        {/* Output is silent from the moment Stop begins, so the line goes with it. */}
+        {isActive && !isStopping && (
           <p
             className="mt-4 rounded-xl bg-[#f3f7f4] px-3 py-2 text-sm text-[#2f4a3b]"
             aria-label="Effective feedback settings"
