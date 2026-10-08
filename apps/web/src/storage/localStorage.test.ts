@@ -4,6 +4,7 @@ import {
   loadConsentLedger,
   loadRemoteConsent,
   REMOTE_CONSENT_KEY,
+  UNREADABLE_CONSENT_LEDGER_KEY,
   loadSessionsFromStorage,
   normalizeSpeakerProfiles,
   saveRemoteConsent,
@@ -42,9 +43,23 @@ describe("local storage helpers", () => {
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
   });
 
-  it("treats a corrupt ledger as no consent", () => {
-    const storage = memoryStorage({ [CONSENT_LEDGER_KEY]: "{" });
+  it("treats a corrupt ledger as no consent and keeps the corrupt copy", () => {
+    const corrupt = JSON.stringify([
+      {
+        purpose: "remoteAnalysis",
+        granted: true,
+        at: "2026-10-01T00:00:00.000Z",
+        scope: "https://a.example.com",
+      },
+      { purpose: "remoteAnalysis", granted: false, at: "garbled", scope: "https://a.example.com" },
+    ]);
+    const storage = memoryStorage({ [CONSENT_LEDGER_KEY]: corrupt });
+
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+    expect(storage.getItem(UNREADABLE_CONSENT_LEDGER_KEY)).toBe(corrupt);
+    expect(
+      loadRemoteConsent("https://a.example.com", memoryStorage({ [CONSENT_LEDGER_KEY]: "{" })),
+    ).toBe(false);
   });
 
   it("falls back safely on invalid JSON", () => {

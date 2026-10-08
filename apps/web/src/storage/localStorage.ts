@@ -21,13 +21,26 @@ export const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 /** Pre-ledger storage: the one server URL that had remote-analysis consent. Migrated on read. */
 export const REMOTE_CONSENT_KEY = "stutter-tracker:remote-analysis-consent";
 export const CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger";
+export const UNREADABLE_CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger:unreadable";
 
 /** Loads the consent ledger, folding in a legacy remote-analysis grant once. */
 export function loadConsentLedger(storage: Storage = localStorage): ConsentLedger {
-  let ledger: ConsentLedger;
+  let ledger: ConsentLedger | null;
+  const raw = storage.getItem(CONSENT_LEDGER_KEY);
   try {
-    ledger = parseConsentLedger(JSON.parse(storage.getItem(CONSENT_LEDGER_KEY) ?? "[]"));
+    ledger = parseConsentLedger(JSON.parse(raw ?? "[]"));
   } catch {
+    ledger = null;
+  }
+  if (!ledger) {
+    // Unreadable means no consent. Keep the raw value so the next write cannot erase it.
+    try {
+      if (raw && !storage.getItem(UNREADABLE_CONSENT_LEDGER_KEY)) {
+        storage.setItem(UNREADABLE_CONSENT_LEDGER_KEY, raw);
+      }
+    } catch {
+      // Storage unavailable.
+    }
     ledger = EMPTY_CONSENT_LEDGER;
   }
   try {

@@ -81,19 +81,26 @@ export function requireConsent(ledger: ConsentLedger, purpose: ConsentPurpose, s
   }
 }
 
-/** Drops malformed entries from untrusted storage; unknown purposes are never treated as grants. */
-export function parseConsentLedger(value: unknown): ConsentLedger {
+/**
+ * Reads a ledger from untrusted storage. Any malformed entry makes the whole ledger unreadable
+ * (null): dropping just that entry could expose an older grant that a corrupted withdrawal
+ * superseded. Callers treat null as "no consent".
+ */
+export function parseConsentLedger(value: unknown): ConsentLedger | null {
   if (!Array.isArray(value)) {
-    return EMPTY_CONSENT_LEDGER;
+    return null;
   }
-  return value.filter(
-    (entry): entry is ConsentDecision =>
-      typeof entry === "object" &&
-      entry !== null &&
-      CONSENT_PURPOSES.includes((entry as ConsentDecision).purpose) &&
-      typeof (entry as ConsentDecision).granted === "boolean" &&
-      typeof (entry as ConsentDecision).at === "string" &&
-      Number.isFinite(Date.parse((entry as ConsentDecision).at)) &&
-      typeof (entry as ConsentDecision).scope === "string",
+  return value.every(isConsentDecision) ? value : null;
+}
+
+function isConsentDecision(entry: unknown): entry is ConsentDecision {
+  return (
+    typeof entry === "object" &&
+    entry !== null &&
+    CONSENT_PURPOSES.includes((entry as ConsentDecision).purpose) &&
+    typeof (entry as ConsentDecision).granted === "boolean" &&
+    typeof (entry as ConsentDecision).at === "string" &&
+    Number.isFinite(Date.parse((entry as ConsentDecision).at)) &&
+    typeof (entry as ConsentDecision).scope === "string"
   );
 }

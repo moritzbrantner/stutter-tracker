@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import {
   CONSENT_PURPOSES,
+  type ConsentDecision,
   ConsentRequiredError,
   currentConsent,
   EMPTY_CONSENT_LEDGER,
@@ -61,19 +62,25 @@ describe("consent ledger", () => {
     expect(() => requireConsent(ledger, "modelTraining")).toThrow("modelTraining needs consent");
   });
 
-  test("never treats malformed or unknown stored entries as grants", () => {
-    const ledger = parseConsentLedger([
-      { purpose: "remoteAnalysis", granted: true, at: "2026-10-01T00:00:00.000Z", scope: server },
+  test("rejects the whole ledger when any entry is malformed", () => {
+    const grant: ConsentDecision = {
+      purpose: "remoteAnalysis",
+      granted: true,
+      at: "2026-10-01T00:00:00.000Z",
+      scope: server,
+    };
+    expect(parseConsentLedger([grant])).toEqual([grant]);
+    // A corrupted withdrawal must not let the older grant resurface.
+    for (const corrupt of [
+      { purpose: "remoteAnalysis", granted: false, at: "not a date", scope: server },
+      { purpose: "remoteAnalysis", granted: false, at: "2026-10-02T00:00:00.000Z" },
       { purpose: "everything", granted: true, at: "2026-10-01T00:00:00.000Z", scope: "" },
       { purpose: "modelTraining", granted: "yes", at: "2026-10-01T00:00:00.000Z", scope: "" },
-      { purpose: "researchContribution", granted: true, at: "not a date", scope: "" },
       null,
-    ]);
-
-    expect(ledger).toHaveLength(1);
-    expect(hasConsent(ledger, "modelTraining")).toBe(false);
-    expect(hasConsent(ledger, "researchContribution")).toBe(false);
-    expect(parseConsentLedger({ not: "an array" })).toEqual([]);
+    ]) {
+      expect(parseConsentLedger([grant, corrupt])).toBeNull();
+    }
+    expect(parseConsentLedger({ not: "an array" })).toBeNull();
   });
 
   test("rejects recording an unknown purpose", () => {
