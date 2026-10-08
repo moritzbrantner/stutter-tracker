@@ -300,7 +300,7 @@ describe("App integration", () => {
     renderApp();
 
     expect(
-      await screen.findByText(/1 saved session has an analysis that is not verified/),
+      await screen.findByText(/1 corpus session has an analysis that is not verified/),
     ).toBeInTheDocument();
     await userEvent.click(screen.getByRole("button", { name: /Reanalyze saved session from/ }));
 

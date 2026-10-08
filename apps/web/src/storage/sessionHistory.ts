@@ -29,8 +29,10 @@ export type ProgressComparability = {
   reanalysisHelps: boolean;
   /** Some reasons concern the speaking context, which reanalysis cannot change. */
   contextDiffers: boolean;
-  /** No point records its speaking task or assistance condition (the app does not ask yet). */
-  contextUnrecorded: boolean;
+  /** No point records its speaking task (the app does not ask yet). */
+  taskUnrecorded: boolean;
+  /** No point records its assistance condition (the app does not ask yet). */
+  conditionUnrecorded: boolean;
 };
 
 /**
@@ -79,6 +81,14 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
       contextDiffers = true;
     }
   }
+  // Unlike task and condition, new sessions do record their language; an unknown one comes from
+  // older or imported records and is real missing provenance.
+  const languageUnknown = points.filter((point) => point.spokenLanguage === "unknown").length;
+  if (languageUnknown > 0 && !contextDiffers) {
+    reasons.push(
+      `the spoken language was not recorded for ${languageUnknown === points.length ? "these sessions" : `${languageUnknown} of them`}`,
+    );
+  }
   const unverified = points.filter((point) => !point.verified).length;
   if (unverified > 0) {
     reasons.push(
@@ -91,9 +101,9 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
     reanalysisHelps:
       known.size > 1 || unknown > 0 || audioUse.size > 1 || audioUnknown > 0 || unverified > 0,
     contextDiffers,
-    contextUnrecorded:
-      points.length > 0 &&
-      points.every((point) => point.task === "unknown" && point.condition === "unknown"),
+    taskUnrecorded: points.length > 0 && points.every((point) => point.task === "unknown"),
+    conditionUnrecorded:
+      points.length > 0 && points.every((point) => point.condition === "unknown"),
   };
 }
 
@@ -141,7 +151,7 @@ function toHistoryPoint(session: SavedSession): SessionHistoryPoint {
       : "unknown",
     condition: session.context.condition
       ? session.context.condition.kind === "assisted"
-        ? `assisted:${session.context.condition.aidId}:${JSON.stringify(session.context.condition.settings ?? {})}`
+        ? `assisted:${session.context.condition.aidId}:${canonicalSettings(session.context.condition.settings)}`
         : "unassisted"
       : "unknown",
   };
@@ -154,4 +164,11 @@ function nonNegativeNumber(value: number | null | undefined) {
 
 function finiteNumberOrNull(value: number | null | undefined) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+/** Settings key independent of property order, like the outcome comparisons. */
+function canonicalSettings(settings: Record<string, number | string | boolean> | undefined) {
+  return JSON.stringify(
+    Object.entries(settings ?? {}).sort(([left], [right]) => left.localeCompare(right)),
+  );
 }

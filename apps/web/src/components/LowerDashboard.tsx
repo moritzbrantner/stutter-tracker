@@ -297,7 +297,7 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
               >
                 Not directly comparable: {comparability.reasons.join("; ")}.
                 {comparability.reanalysisHelps &&
-                  " Reanalyze older sessions to compare their analysis on equal terms."}
+                  " Reanalyzing the affected sessions brings their analysis onto equal terms (a reanalysis uses the saved transcript only, without audio)."}
                 {comparability.contextDiffers &&
                   " Compare sessions recorded in the same language, task and condition."}
               </p>
@@ -326,8 +326,15 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
             />
             <p className={`m-0 px-4 py-3 text-xs ${mutedTextClass}`}>
               Tracking metrics are for personal review and are not diagnostic scores.
-              {comparability.contextUnrecorded &&
-                " Speaking task and assistance condition are not recorded yet, so sessions may differ in ways this view cannot show."}
+              {(comparability.taskUnrecorded || comparability.conditionUnrecorded) &&
+                ` ${[
+                  comparability.taskUnrecorded && "Speaking task",
+                  comparability.conditionUnrecorded && "Assistance condition",
+                ]
+                  .filter(Boolean)
+                  .join(" and ")} ${
+                  comparability.taskUnrecorded && comparability.conditionUnrecorded ? "are" : "is"
+                } not recorded yet, so sessions may differ in ways this view cannot show.`}
             </p>
           </>
         )}

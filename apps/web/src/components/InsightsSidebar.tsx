@@ -135,8 +135,10 @@ export function InsightsSidebar({
             role="note"
             className="mt-3 mb-0 rounded-lg bg-[#fdf8ec] px-3 py-2 text-sm text-[#6b5520]"
           >
-            {unverifiedSessionCount} saved session{unverifiedSessionCount === 1 ? " has" : "s have"}{" "}
-            an analysis that is not verified for its transcript. Reanalyze before comparing.
+            {unverifiedSessionCount} corpus session
+            {unverifiedSessionCount === 1 ? " has" : "s have"} an analysis that is not verified for
+            its transcript; the totals include {unverifiedSessionCount === 1 ? "it" : "them"}.
+            Sessions still in your saved list can be reanalyzed there.
           </p>
         )}
         {corpusAnalysis.topTerms.length > 0 && (

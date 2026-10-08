@@ -66,7 +66,7 @@ describe("buildSessionHistory", () => {
   it("marks progress with mixed analyzer versions as not directly comparable", () => {
     const verifiedRun = (session: SavedSession, version: string): SavedSession =>
       reanalyzeSession(
-        session,
+        { ...session, context: { ...session.context, spokenLanguage: "en" } },
         {
           id: `run-${version}-${session.id}`,
           createdAt: "2026-10-01T00:00:00.000Z",
@@ -85,7 +85,8 @@ describe("buildSessionHistory", () => {
       reasons: [],
       reanalysisHelps: false,
       contextDiffers: false,
-      contextUnrecorded: true,
+      taskUnrecorded: true,
+      conditionUnrecorded: true,
     });
     const variant = { ...second, context: { ...second.context, spokenLanguage: "en-US" } };
     const sameLanguage = progressComparability(
@@ -105,6 +106,7 @@ describe("buildSessionHistory", () => {
     expect(legacy.reasons).toEqual([
       "the analyzer version was not recorded for these sessions",
       "whether audio was analyzed was not recorded for these sessions",
+      "the spoken language was not recorded for these sessions",
       "1 session's analysis is not verified for the saved transcript",
     ]);
     const inGerman = { ...second, context: { ...second.context, spokenLanguage: "de" } };
@@ -119,6 +121,21 @@ describe("buildSessionHistory", () => {
     expect(progressComparability(buildSessionHistory([first, assisted])).reasons).toEqual([
       "they span 2 different assistance conditions",
     ]);
+    const withSettings = (session: SavedSession, settings: Record<string, number>) => ({
+      ...session,
+      context: {
+        ...session.context,
+        condition: { kind: "assisted" as const, aidId: "daf", settings },
+      },
+    });
+    expect(
+      progressComparability(
+        buildSessionHistory([
+          withSettings(first, { delayMs: 80, wetMix: 0.5 }),
+          withSettings(second, { wetMix: 0.5, delayMs: 80 }),
+        ]),
+      ).comparable,
+    ).toBe(true);
     const unknownAudio = (session: SavedSession) => ({
       ...session,
       analysis: { ...session.analysis, usedAudio: null },
