@@ -103,8 +103,8 @@ export function speakerKey(
   segment: { speakerId?: string; speakerLabel?: string },
   sessionId: string,
 ) {
-  const id = segment.speakerId?.trim();
-  if (id) {
+  const id = segment.speakerId;
+  if (id?.trim()) {
     return `id:${id}`;
   }
   return segment.speakerLabel?.trim()

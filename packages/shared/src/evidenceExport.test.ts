@@ -553,12 +553,14 @@ test("shared display names distinguish raw-ID collisions and whitespace-only IDs
   const saved = session("restored-ids", chosen.startedAt, [
     ["unnamed", "Alex", ""],
     ["named", "other", "Alex"],
+    ["separate", " Alex ", "Different person"],
     ["Robin words", " ", "Robin"],
     ["Kim words", " ", "Kim"],
   ]);
   const controls = transcriptSpeakersOf([saved]);
-  expect(new Set(controls.map((item) => item.id)).size).toBe(4);
-  expect(new Set(controls.map((item) => item.label)).size).toBe(4);
+  expect(new Set(controls.map((item) => item.id)).size).toBe(5);
+  expect(new Set(controls.map((item) => item.label)).size).toBe(5);
+  expect(controls.map((item) => item.id)).toContain("id: Alex ");
   const evidence = buildEvidenceExport([saved], {
     sessionIds: [saved.id],
     includeTranscripts: true,
