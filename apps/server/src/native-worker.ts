@@ -99,6 +99,8 @@ async function runWorker<T>(
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
+    // Own process group, so termination reaches ffmpeg/whisper children as well.
+    detached: true,
   });
   process.stdin.write(JSON.stringify(command));
   process.stdin.end();
@@ -117,8 +119,8 @@ async function runWorker<T>(
       return;
     }
     terminationError = error;
-    process.kill();
-    const forceKill = setTimeout(() => process.kill("SIGKILL"), WORKER_KILL_GRACE_MS);
+    killGroup(process.pid, "SIGTERM");
+    const forceKill = setTimeout(() => killGroup(process.pid, "SIGKILL"), WORKER_KILL_GRACE_MS);
     void process.exited.finally(() => clearTimeout(forceKill));
   };
   const timer = setTimeout(
@@ -134,10 +136,14 @@ async function runWorker<T>(
     clearTimeout(timer);
     signal?.removeEventListener("abort", onAbort);
   });
-  // Output pipes can outlive a killed worker (grandchildren), so termination settles on exit.
-  const terminated = process.exited.then(() =>
-    terminationError ? Promise.reject(terminationError) : new Promise<never>(() => undefined),
-  );
+  // Once the worker has exited, any descendant still in its group is killed before settling.
+  const terminated = process.exited.then(() => {
+    if (!terminationError) {
+      return new Promise<never>(() => undefined);
+    }
+    killGroup(process.pid, "SIGKILL");
+    return Promise.reject(terminationError);
+  });
 
   const result = await Promise.race([
     Promise.all([
@@ -192,6 +198,14 @@ function workerCommand(config: ServerConfig) {
 function workerFailureMessage(config: ServerConfig, stderr: string) {
   const message = config.publicReady ? undefined : stderr.trim().split("\n").at(-1)?.trim();
   return message || "native transcription worker failed";
+}
+
+function killGroup(pid: number, signal: NodeJS.Signals) {
+  try {
+    globalThis.process.kill(-pid, signal);
+  } catch {
+    // The group is already gone.
+  }
 }
 
 function cancelledError() {

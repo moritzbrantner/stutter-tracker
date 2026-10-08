@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import type { SpeakerProfile, TranscribeAudioRequest } from "@stutter-tracker/shared";
 import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
-import { createComputeRequestHandler, withWorkerRouteTimeouts } from "./index";
+import { createComputeRequestHandler, withWorkerTimeouts } from "./index";
 import { createNativeWorker, type NativeWorker } from "./native-worker";
 import { createSpeakerStore, type SpeakerStore } from "./speakers";
 
@@ -190,22 +190,79 @@ describe("streamed body limits", () => {
 });
 
 describe("worker route timeouts", () => {
-  it("disables the listener idle timeout only for worker routes", async () => {
-    const timeout = mock((_request: Request, _seconds: number) => undefined);
-    const fetch = withWorkerRouteTimeouts(async () => new Response("ok"));
-
-    await fetch(new Request("http://server/transcriptions/file", { method: "POST" }), { timeout });
-    await fetch(new Request("http://server/transcriptions/models/download", { method: "POST" }), {
-      timeout,
+  it("lifts the idle timeout only once a worker starts, after the body was read", async () => {
+    const events: string[] = [];
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        async transcribeAudio(request) {
+          events.push("worker");
+          return fakeWorker().transcribeAudio(request);
+        },
+      },
     });
-    await fetch(new Request("http://server/analysis", { method: "POST" }), { timeout });
-    await fetch(new Request("http://server/health"), { timeout });
+    const workerStarting = () => events.push("timeout lifted");
+    const post = (path: string, body: unknown) =>
+      handler(
+        new Request(`http://server${path}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+        { workerStarting },
+      );
 
-    expect(timeout.mock.calls.map(([request]) => new URL(request.url).pathname)).toEqual([
-      "/transcriptions/file",
-      "/transcriptions/models/download",
-    ]);
-    expect(timeout.mock.calls.every(([, seconds]) => seconds === 0)).toBe(true);
+    await post("/transcriptions", transcribeBody());
+    await post("/transcriptions", { provider: "whisperCpp" });
+    await post("/transcriptions/models", { provider: "browser" });
+    await post("/analysis", { segments: [], pauses: [] });
+
+    expect(events).toEqual(["timeout lifted", "worker"]);
+  });
+
+  it("wires the lift to Bun's per-request timeout", async () => {
+    const timeout = mock((_request: Request, _seconds: number) => undefined);
+    const request = new Request("http://server/transcriptions", { method: "POST" });
+    await withWorkerTimeouts(async (_request, hooks) => {
+      hooks.workerStarting?.();
+      return new Response("ok");
+    })(request, { timeout });
+
+    expect(timeout.mock.calls).toEqual([[request, 0]]);
+  });
+
+  it("rejects a busy worker route before reading its body", async () => {
+    let release = () => {};
+    const blocked = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const handler = createComputeRequestHandler({
+      config: localConfig({ maxConcurrentJobs: 1 }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        async transcribeAudio(request) {
+          await blocked;
+          return fakeWorker().transcribeAudio(request);
+        },
+      },
+    });
+    const first = postJson(handler, "/transcriptions", transcribeBody());
+
+    const busy = await handler(
+      new Request("http://server/transcriptions", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: chunkedBody(Number.POSITIVE_INFINITY, 512),
+        duplex: "half",
+      } as RequestInit),
+    );
+
+    expect(busy.status).toBe(503);
+    release();
+    expect((await first).status).toBe(200);
   });
 });
 
@@ -505,6 +562,41 @@ describe("native worker process", () => {
     const started = Date.now();
     await expect(pending).rejects.toMatchObject({ code: "request_cancelled" });
     expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
+  });
+
+  it("kills worker descendants when the job is cancelled", async () => {
+    const dir = await tempDir();
+    const childPid = join(dir, "child.pid");
+    const worker = createNativeWorker(
+      localConfig({
+        nativeWorker: await workerScript(dir, `sleep 30 & echo $! > ${childPid}; wait`),
+      }),
+    );
+    const controller = new AbortController();
+    const pending = worker.transcriptionModels("whisperCpp", controller.signal);
+    let pid = 0;
+    for (let attempt = 0; attempt < 100 && !pid; attempt += 1) {
+      await Bun.sleep(20);
+      pid = Number(
+        (
+          await Bun.file(childPid)
+            .text()
+            .catch(() => "")
+        ).trim(),
+      );
+    }
+    expect(pid).toBeGreaterThan(0);
+
+    controller.abort();
+    await expect(pending).rejects.toMatchObject({ code: "request_cancelled" });
+
+    // Gone, or a zombie awaiting its reaper: either way it no longer runs.
+    await Bun.sleep(100);
+    const state = await Bun.file(`/proc/${pid}/stat`)
+      .text()
+      .then((stat) => stat.slice(stat.lastIndexOf(")") + 2, stat.lastIndexOf(")") + 3))
+      .catch(() => "gone");
+    expect(["gone", "Z"]).toContain(state);
   });
 
   it("does not echo worker stderr to public-ready clients", async () => {
