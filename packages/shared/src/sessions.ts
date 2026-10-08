@@ -204,6 +204,9 @@ export function annotateSession(
   record: SessionRecord,
   revision: Omit<AnnotationRevision, "inputId">,
 ): SessionRecord {
+  if (!revision.id || !Number.isFinite(Date.parse(revision.createdAt))) {
+    throw new Error("Annotation revisions need a non-empty id and a valid createdAt timestamp.");
+  }
   if (record.annotations.some((existing) => existing.id === revision.id)) {
     throw new Error(`Annotation revision ${revision.id} is already recorded.`);
   }

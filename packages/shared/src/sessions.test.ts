@@ -242,6 +242,10 @@ describe("annotation revisions", () => {
     expect(() =>
       annotateSession(record, revision("a-4", { events: [{ ...event, endSeconds: -1 }] })),
     ).toThrow("end >= start");
+    expect(() => annotateSession(record, revision(""))).toThrow("non-empty id");
+    expect(() => annotateSession(record, revision("a-6", { createdAt: "soon" }))).toThrow(
+      "valid createdAt",
+    );
     expect(
       annotateSession(record, revision("a-5", { basedOnRunId: null })).annotations,
     ).toHaveLength(1);

@@ -1,6 +1,7 @@
 import {
   annotateSession,
   type LegacySessionRecord,
+  observationFingerprint,
   migrateSessionRecord,
   reanalyzeSession,
   SHARED_ANALYSIS_VERSION,
@@ -228,11 +229,14 @@ describe("session backup", () => {
       createdAt: "2026-10-08T10:00:00.000Z",
       author: { role: "clinician" },
       basedOnRunId: null,
-      inputId: "obs",
+      inputId: observationFingerprint(session.segments, session.pauses),
       events: [],
       status: "accepted",
       supersedes: null,
     };
+    expect(parseSessionBackup({ sessions: [{ ...session, annotations: [valid] }] })).toHaveLength(
+      1,
+    );
     for (const annotations of [
       [{ ...valid, author: { role: "robot" } }],
       [
@@ -243,6 +247,7 @@ describe("session backup", () => {
       ],
       [{ ...valid, supersedes: "missing" }],
       [{ ...valid, supersedes: "ann-1" }],
+      [{ ...valid, inputId: "another observation" }],
       [
         { ...valid, supersedes: "ann-2" },
         { ...valid, id: "ann-2", supersedes: null },

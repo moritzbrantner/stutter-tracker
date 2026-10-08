@@ -1,6 +1,7 @@
 import {
   type LegacySessionRecord,
   migrateSessionRecord,
+  observationFingerprint,
   SESSION_SCHEMA_VERSION,
 } from "@stutter-tracker/shared";
 import type { SavedSession } from "../types";
@@ -103,29 +104,41 @@ function isSessionProvenance(value: Record<string, unknown>) {
   return (
     value.recordings.every((recording) => recording.sessionId === value.id) &&
     new Set(runIds).size === runIds.length &&
-    isAnnotationHistory(value.annotations, runIds)
+    isAnnotationHistory(
+      value.annotations,
+      runIds,
+      observationFingerprint(
+        value.segments as SavedSession["segments"],
+        value.pauses as SavedSession["pauses"],
+      ),
+    )
   );
 }
 
 /** Optional on older version-2 records; when present, ids are unique and references resolve. */
-function isAnnotationHistory(value: unknown, runIds: string[]) {
+function isAnnotationHistory(value: unknown, runIds: string[], inputId: string) {
   if (value === undefined) {
     return true;
   }
   if (!Array.isArray(value) || !value.every(isAnnotationRevision)) {
     return false;
   }
-  const ids = value.map((revision) => revision.id as string);
-  return (
-    new Set(ids).size === ids.length &&
-    value.every(
-      (revision, index) =>
-        // Only an earlier revision can be replaced; self-references and cycles would hide all.
-        (revision.supersedes === null ||
-          ids.slice(0, index).includes(revision.supersedes as string)) &&
-        (revision.basedOnRunId === null || runIds.includes(revision.basedOnRunId as string)),
-    )
-  );
+  // One pass: ids are unique, only an earlier revision can be replaced (self-references and
+  // cycles would hide every revision), and each revision describes this session's observation.
+  const earlier = new Set<string>();
+  for (const revision of value) {
+    const id = revision.id as string;
+    if (
+      earlier.has(id) ||
+      (revision.supersedes !== null && !earlier.has(revision.supersedes as string)) ||
+      (revision.basedOnRunId !== null && !runIds.includes(revision.basedOnRunId as string)) ||
+      revision.inputId !== inputId
+    ) {
+      return false;
+    }
+    earlier.add(id);
+  }
+  return true;
 }
 
 function isAnnotationRevision(value: unknown): value is Record<string, unknown> {
