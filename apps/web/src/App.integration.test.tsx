@@ -1013,6 +1013,49 @@ it("hydrates server-only profiles after a successful removal during startup", as
   expect(screen.queryByRole("button", { name: "Remove speaker Alex" })).not.toBeInTheDocument();
 }, 15000);
 
+it.each(["deleted", "notFound"] as const)(
+  "reveals local profiles after the final server deletion is confirmed: %s",
+  async (result) => {
+    const alex = {
+      id: "alex",
+      label: "Server Alex",
+      embeddings: [[1, 0]],
+      sampleRate: 16000,
+      sampleCount: 1,
+    };
+    const blair = { ...alex, id: "blair", label: "Local Blair" };
+    localStorage.setItem("stutter-tracker:speakers", JSON.stringify([blair]));
+    let server = [alex];
+    let requests = 0;
+    let finishDeletion: (() => void) | undefined;
+    listSpeakersHook = async () => {
+      requests += 1;
+      return server;
+    };
+    deleteSpeakerHook = () =>
+      new Promise((resolve) => {
+        finishDeletion = () => {
+          server = [];
+          resolve(result);
+        };
+      });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+    fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Server Alex" }));
+    await waitFor(() => expect(requests).toBe(2));
+    expect(
+      screen.queryByRole("button", { name: "Remove speaker Local Blair" }),
+    ).not.toBeInTheDocument();
+    await act(async () => finishDeletion?.());
+    expect(
+      await screen.findByRole("button", { name: "Remove speaker Local Blair" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Remove speaker Server Alex" }),
+    ).not.toBeInTheDocument();
+  },
+);
+
 it("preserves distinct native profile IDs with the same long prefix", async () => {
   const prefix = "a".repeat(130);
   const alex = {
@@ -1089,7 +1132,7 @@ it("keeps unrelated server profiles when post-removal refresh fails", async () =
   vi.spyOn(window, "confirm").mockReturnValue(true);
   renderApp();
   fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
-  await waitFor(() => expect(requests).toBe(2));
+  await waitFor(() => expect(requests).toBe(3));
   await act(async () => {
     await Promise.resolve();
   });

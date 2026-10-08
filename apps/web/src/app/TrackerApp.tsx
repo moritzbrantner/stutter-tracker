@@ -1186,6 +1186,7 @@ export function App() {
         setFailedSpeakerDeletions((profiles) =>
           profiles.filter((profile) => profile.id !== speaker.id),
         );
+        reloadSpeakersRef.current?.();
       }
       setMessage(
         result === "noServer"
