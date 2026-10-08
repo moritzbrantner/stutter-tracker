@@ -42,6 +42,10 @@ const MAX_PITCH_SHIFT_SEMITONES = 6;
 const MAX_OUTPUT_GAIN = 0.8;
 const PITCH_SHIFT_PROCESSOR_NAME = "stutter-tracker-pitch-shift";
 const DEFAULT_FINALIZE_TIMEOUT_MS = 2_000;
+const TRACK_ENDED_REASON = "Microphone input ended, so feedback stopped.";
+// A device change can move output from headphones to a loudspeaker; stop rather than guess.
+const DEVICE_CHANGE_REASON =
+  "Audio devices changed, so feedback stopped. Check your headphones and start again.";
 
 export function normalizeAuditoryFeedbackSettings(
   settings: AuditoryFeedbackSettings,
@@ -84,24 +88,47 @@ export async function startAuditoryFeedbackSession(
     throw new Error("Live audio feedback is unavailable in this browser");
   }
 
-  const stream = await navigator.mediaDevices.getUserMedia({
-    audio: {
-      channelCount: 1,
-      echoCancellation: true,
-      noiseSuppression: true,
-      autoGainControl: false,
-    },
-  });
+  const stream = await acquireMicrophone(signal);
+
+  // Interruptions are watched from the moment the microphone is held. Until the session exists
+  // they only record why setup must not continue; afterwards they stop the session.
+  let interruption: string | null = null;
+  let onInterruption = (reason: string) => {
+    interruption ??= reason;
+  };
+  const onTrackEnded = () => onInterruption(TRACK_ENDED_REASON);
+  const onDeviceChange = () => onInterruption(DEVICE_CHANGE_REASON);
+  for (const track of stream.getTracks()) {
+    track.addEventListener("ended", onTrackEnded);
+  }
+  navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
+  const unwatch = () => {
+    for (const track of stream.getTracks()) {
+      track.removeEventListener("ended", onTrackEnded);
+    }
+    navigator.mediaDevices.removeEventListener?.("devicechange", onDeviceChange);
+  };
+  const assertUsable = () => {
+    throwIfAborted(signal);
+    if (stream.getTracks().some((track) => track.readyState === "ended")) {
+      interruption ??= TRACK_ENDED_REASON;
+    }
+    if (interruption) {
+      throw new Error(interruption);
+    }
+  };
 
   let context: AudioContext;
   try {
-    throwIfAborted(signal);
+    assertUsable();
     context = new AudioContext({ latencyHint: "interactive" });
   } catch (error) {
+    unwatch();
     stopStream(stream);
     throw error;
   }
   const abandon = async (error: unknown): Promise<never> => {
+    unwatch();
     stopStream(stream);
     await closeContext(context);
     throw error;
@@ -109,7 +136,7 @@ export async function startAuditoryFeedbackSession(
 
   try {
     await context.resume();
-    throwIfAborted(signal);
+    assertUsable();
   } catch (error) {
     return abandon(error);
   }
@@ -142,8 +169,10 @@ export async function startAuditoryFeedbackSession(
   } catch {
     pitchShiftNode = null;
   }
-  if (signal?.aborted) {
-    return abandon(abortError());
+  try {
+    assertUsable();
+  } catch (error) {
+    return abandon(error);
   }
 
   source.connect(dryGain);
@@ -199,11 +228,10 @@ export async function startAuditoryFeedbackSession(
     for (const node of [source, dryGain, delay, pitchShiftNode, wetGain, limiter, outputGain]) {
       safely(() => node?.disconnect());
     }
-    for (const track of stream.getTracks()) {
-      track.removeEventListener("ended", onTrackEnded);
-    }
-    navigator.mediaDevices.removeEventListener?.("devicechange", onDeviceChange);
+    unwatch();
     stopStream(stream);
+    // Closing the context does not end the destination track a recorder may still hold.
+    stopStream(captureDestination.stream);
     await closeContext(context);
   };
 
@@ -227,24 +255,13 @@ export async function startAuditoryFeedbackSession(
     return stopPromise;
   };
 
-  const interrupt = (reason: string) => {
+  onInterruption = (reason: string) => {
     if (stopped) {
       return;
     }
     void stop();
     onInterrupted?.(reason);
   };
-  function onTrackEnded() {
-    interrupt("Microphone input ended, so feedback stopped.");
-  }
-  // A device change can move output from headphones to a loudspeaker; stop rather than guess.
-  function onDeviceChange() {
-    interrupt("Audio devices changed, so feedback stopped. Check your headphones and start again.");
-  }
-  for (const track of stream.getTracks()) {
-    track.addEventListener("ended", onTrackEnded);
-  }
-  navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
 
   applySettings(initialSettings);
 
@@ -290,7 +307,8 @@ function startRecorderCapture(capture: RecorderCapture | null) {
   }
 }
 
-// Resolves with whatever was captured once the recorder stops, errors or times out; never rejects.
+// Resolves with whatever was captured once the recorder stops or times out; never rejects. An
+// error is followed by a final dataavailable and stop, so it does not finalize early.
 function stopRecorderCapture(
   capture: RecorderCapture | null,
   timeoutMs: number,
@@ -308,17 +326,56 @@ function stopRecorderCapture(
     const finish = () => {
       clearTimeout(timer);
       recorder.removeEventListener("stop", finish);
-      recorder.removeEventListener("error", finish);
       resolve(collected());
     };
     const timer = setTimeout(finish, timeoutMs);
     recorder.addEventListener("stop", finish);
-    recorder.addEventListener("error", finish);
     try {
       recorder.stop();
     } catch {
       finish();
     }
+  });
+}
+
+// A pending permission prompt cannot be cancelled, so an abort settles immediately and a stream
+// that is granted later is released at once.
+function acquireMicrophone(signal?: AbortSignal): Promise<MediaStream> {
+  const request = navigator.mediaDevices.getUserMedia({
+    audio: {
+      channelCount: 1,
+      echoCancellation: true,
+      noiseSuppression: true,
+      autoGainControl: false,
+    },
+  });
+  if (!signal) {
+    return request;
+  }
+  return new Promise((resolve, reject) => {
+    const onAbort = () => {
+      reject(abortError());
+      void request.then(stopStream, () => undefined);
+    };
+    if (signal.aborted) {
+      onAbort();
+      return;
+    }
+    signal.addEventListener("abort", onAbort, { once: true });
+    request.then(
+      (stream) => {
+        signal.removeEventListener("abort", onAbort);
+        if (signal.aborted) {
+          stopStream(stream);
+        } else {
+          resolve(stream);
+        }
+      },
+      (error: unknown) => {
+        signal.removeEventListener("abort", onAbort);
+        reject(error);
+      },
+    );
   });
 }
 

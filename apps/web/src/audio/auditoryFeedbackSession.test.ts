@@ -4,7 +4,7 @@ import {
   startAuditoryFeedbackSession,
 } from "./auditoryFeedback";
 
-type RecorderMode = "normal" | "hang" | "throw";
+type RecorderMode = "normal" | "hang" | "throw" | "errorThenStop";
 
 class FakeParam {
   constructor(public value = 1) {}
@@ -34,8 +34,10 @@ class FakeGain extends FakeNode {
 
 class FakeTrack extends EventTarget {
   stopped = false;
+  readyState: "live" | "ended" = "live";
   stop() {
     this.stopped = true;
+    this.readyState = "ended";
   }
 }
 
@@ -72,6 +74,20 @@ class FakeRecorder extends EventTarget {
     if (recorderMode === "hang") {
       return;
     }
+    if (recorderMode === "errorThenStop") {
+      // Spec order on an asynchronous failure: error, a final dataavailable, then stop.
+      queueMicrotask(() => {
+        this.dispatchEvent(new Event("error"));
+        setTimeout(() => {
+          const event = new Event("dataavailable") as Event & { data: Blob };
+          event.data = new Blob(["final"]);
+          this.dispatchEvent(event);
+          this.state = "inactive";
+          this.dispatchEvent(new Event("stop"));
+        }, 0);
+      });
+      return;
+    }
     this.state = "inactive";
     queueMicrotask(() => this.dispatchEvent(new Event("stop")));
   }
@@ -79,6 +95,7 @@ class FakeRecorder extends EventTarget {
 
 let context: FakeContext;
 let pitchWorklet = false;
+let duringWorkletLoad: () => void | Promise<void> = () => undefined;
 
 class FakeContext {
   state: "running" | "closed" = "running";
@@ -86,9 +103,15 @@ class FakeContext {
   readonly destination = new FakeNode();
   readonly gains: FakeGain[] = [];
   readonly nodes: FakeNode[] = [];
-  audioWorklet = pitchWorklet
-    ? { addModule: vi.fn().mockResolvedValue(undefined) }
-    : { addModule: vi.fn().mockRejectedValue(new Error("no worklet")) };
+  audioWorklet = {
+    addModule: vi.fn(async () => {
+      await duringWorkletLoad();
+      if (!pitchWorklet) {
+        throw new Error("no worklet");
+      }
+    }),
+  };
+  destinationStream = new FakeStream();
   constructor() {
     context = this;
   }
@@ -121,7 +144,7 @@ class FakeContext {
     });
   }
   createMediaStreamDestination() {
-    return Object.assign(this.track(new FakeNode()), { stream: new FakeStream([]) });
+    return Object.assign(this.track(new FakeNode()), { stream: this.destinationStream });
   }
   // The output gain is the last gain node created and the only one wired to the speakers.
   get output() {
@@ -145,6 +168,7 @@ beforeEach(() => {
   recorderMode = "normal";
   recorders.length = 0;
   pitchWorklet = false;
+  duringWorkletLoad = () => undefined;
   stream = new FakeStream();
   mediaDevices = Object.assign(new EventTarget(), {
     getUserMedia: vi.fn(async () => stream),
@@ -170,6 +194,7 @@ afterEach(() => {
 
 function expectReleased() {
   expect(stream.tracks.every((track) => track.stopped)).toBe(true);
+  expect(context.destinationStream.tracks.every((track) => track.stopped)).toBe(true);
   expect(context.state).toBe("closed");
   expect(context.nodes.every((node) => node.connections.size === 0)).toBe(true);
 }
@@ -210,6 +235,51 @@ describe("auditory feedback session lifecycle", () => {
 
     await expect(session.stop()).resolves.toMatchObject({ raw: expect.any(Blob) });
     expectReleased();
+  });
+
+  it("keeps the final chunk a recorder delivers after an error", async () => {
+    recorderMode = "errorThenStop";
+    const session = await startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS);
+
+    const recording = await session.stop();
+
+    expect(recording.raw?.size).toBe("chunkfinal".length);
+    expectReleased();
+  });
+
+  it("refuses to start when the microphone ends during setup", async () => {
+    duringWorkletLoad = () => {
+      stream.tracks[0].dispatchEvent(new Event("ended"));
+    };
+    const onInterrupted = vi.fn();
+
+    await expect(
+      startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS, { onInterrupted }),
+    ).rejects.toThrow(/input ended/);
+    expect(onInterrupted).not.toHaveBeenCalled();
+    expect(stream.tracks[0].stopped).toBe(true);
+    expect(context.state).toBe("closed");
+    expect(recorders).toHaveLength(0);
+  });
+
+  it("refuses to start when audio devices change during setup", async () => {
+    duringWorkletLoad = () => {
+      mediaDevices.dispatchEvent(new Event("devicechange"));
+    };
+
+    await expect(startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS)).rejects.toThrow(
+      /devices changed/,
+    );
+    expect(stream.tracks[0].stopped).toBe(true);
+    expect(recorders).toHaveLength(0);
+  });
+
+  it("refuses to start with an input track that already ended", async () => {
+    stream.tracks[0].readyState = "ended";
+
+    await expect(startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS)).rejects.toThrow(
+      /input ended/,
+    );
   });
 
   it("makes stop idempotent and ignores settings changes during teardown", async () => {
@@ -278,10 +348,11 @@ describe("auditory feedback session lifecycle", () => {
       signal: controller.signal,
     });
     controller.abort();
-    grant(stream);
 
+    // Settles while the permission prompt is still open.
     await expect(starting).rejects.toMatchObject({ name: "AbortError" });
-    expect(stream.tracks[0].stopped).toBe(true);
+    grant(stream);
+    await vi.waitFor(() => expect(stream.tracks[0].stopped).toBe(true));
     expect(recorders).toHaveLength(0);
   });
 
@@ -321,6 +392,7 @@ describe("auditory feedback session lifecycle", () => {
     await session.stop();
 
     pitchWorklet = true;
+    stream = new FakeStream();
     const withPitch = await startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS);
     expect(withPitch.capabilities.pitchShift).toBe(true);
     await withPitch.stop();

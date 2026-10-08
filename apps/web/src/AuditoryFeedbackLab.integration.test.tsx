@@ -91,6 +91,24 @@ describe("AuditoryFeedbackLab lifecycle", () => {
     expect(startButton()).toBeEnabled();
   });
 
+  it("re-enables start as soon as a cancelled start settles", async () => {
+    startSession.mockImplementation(
+      (_settings: unknown, options: AuditoryFeedbackSessionOptions) =>
+        new Promise((_, reject) => {
+          options.signal?.addEventListener("abort", () =>
+            reject(new DOMException("cancelled", "AbortError")),
+          );
+        }),
+    );
+    render(<AuditoryFeedbackLab />);
+    confirmHeadphonesAndStart();
+
+    fireEvent.click(screen.getByRole("button", { name: /cancel/i }));
+
+    await waitFor(() => expect(startButton()).toBeEnabled());
+    expect(screen.getByText("Feedback start was cancelled.")).toBeInTheDocument();
+  });
+
   it("calls session.stop once and stops the session on unmount while stopping", async () => {
     const finalizing = deferred<AuditoryFeedbackRecording>();
     const session = fakeSession(finalizing.promise);
