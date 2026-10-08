@@ -56,6 +56,22 @@ describe("local storage helpers", () => {
     expect(loadRemoteConsent("https://b.example.com", storage)).toBe(true);
   });
 
+  it("lets an existing ledger decision win over a legacy grant for another server", () => {
+    const storage = memoryStorage({});
+    saveRemoteConsent("https://a.example.com", true, storage);
+    storage.setItem(REMOTE_CONSENT_KEY, "https://b.example.com");
+
+    expect(loadRemoteConsent("https://b.example.com", storage)).toBe(false);
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(true);
+    expect(storage.getItem(REMOTE_CONSENT_KEY)).toBeNull();
+  });
+
+  it("drops a legacy grant whose URL is not http(s)", () => {
+    const storage = memoryStorage({ [REMOTE_CONSENT_KEY]: "not a url" });
+    expect(loadConsentLedger(storage)).toEqual([]);
+    expect(storage.getItem(REMOTE_CONSENT_KEY)).toBeNull();
+  });
+
   it("migrates a legacy remote-analysis grant into the ledger once", () => {
     const storage = memoryStorage({ [REMOTE_CONSENT_KEY]: "https://a.example.com" });
 

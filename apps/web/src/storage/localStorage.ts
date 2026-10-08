@@ -1,6 +1,5 @@
 import {
   type ConsentLedger,
-  currentConsent,
   EMPTY_CONSENT_LEDGER,
   hasConsent,
   parseConsentLedger,
@@ -54,7 +53,11 @@ export function loadConsentLedger(storage: Storage = localStorage): ConsentLedge
   try {
     const legacyUrl = storage.getItem(REMOTE_CONSENT_KEY);
     if (legacyUrl) {
-      if (!currentConsent(ledger, "remoteAnalysis", legacyUrl)) {
+      // The legacy key is only trusted while the ledger holds no remote-analysis decision at all;
+      // otherwise the ledger is authoritative and the legacy grant is dropped, never added beside
+      // another server's grant.
+      const ledgerDecides = ledger.some((entry) => entry.purpose === "remoteAnalysis");
+      if (!ledgerDecides && isHttpUrl(legacyUrl)) {
         ledger = recordConsent(ledger, {
           purpose: "remoteAnalysis",
           granted: true,
@@ -185,4 +188,13 @@ export function normalizeSpeakerProfiles(speakers: SpeakerProfile[]) {
       Array.isArray(speaker.embeddings) &&
       speaker.embeddings.length > 0,
   );
+}
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
