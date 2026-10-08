@@ -7,6 +7,10 @@ import { validateSpeakerProfile } from "./validation";
 export type SpeakerStore = {
   list(): Promise<SpeakerProfile[]>;
   upsertMany(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
+  /** Removes one voiceprint; resolves false when it did not exist. */
+  delete(id: string): Promise<boolean>;
+  /** Removes every stored voiceprint; resolves the number removed. */
+  deleteAll(): Promise<number>;
   deleteMissing?: false;
 };
 
@@ -28,13 +32,14 @@ export function createSpeakerStore(options: {
   return new FileSpeakerStore(options.filePath);
 }
 
-class PostgresSpeakerStore implements SpeakerStore {
+export class PostgresSpeakerStore implements SpeakerStore {
   deleteMissing = false as const;
   private sql: ReturnType<typeof postgres>;
   private schemaReady = false;
 
-  constructor(databaseUrl: string) {
-    this.sql = postgres(databaseUrl);
+  /** Takes a connection URL, or an existing client (tests pass a recording fake). */
+  constructor(connection: string | ReturnType<typeof postgres>) {
+    this.sql = typeof connection === "string" ? postgres(connection) : connection;
   }
 
   async list(): Promise<SpeakerProfile[]> {
@@ -72,6 +77,18 @@ class PostgresSpeakerStore implements SpeakerStore {
       }
     });
     return this.list();
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const db = await this.ensureSchema();
+    const rows = await db`delete from known_speakers where id = ${id} returning id`;
+    return rows.length > 0;
+  }
+
+  async deleteAll(): Promise<number> {
+    const db = await this.ensureSchema();
+    const rows = await db`delete from known_speakers returning id`;
+    return rows.length;
   }
 
   private async ensureSchema() {
@@ -118,11 +135,31 @@ class FileSpeakerStore implements SpeakerStore {
       byId.set(speaker.id, speaker);
     }
     const next = [...byId.values()].sort((left, right) => left.label.localeCompare(right.label));
+    await this.write(next);
+    return next;
+  }
+
+  async delete(id: string): Promise<boolean> {
+    const existing = await this.list();
+    const next = existing.filter((speaker) => speaker.id !== id);
+    if (next.length === existing.length) {
+      return false;
+    }
+    await this.write(next);
+    return true;
+  }
+
+  async deleteAll(): Promise<number> {
+    const existing = await this.list();
+    await this.write([]);
+    return existing.length;
+  }
+
+  private async write(speakers: SpeakerProfile[]) {
     await mkdir(dirname(this.filePath), { recursive: true });
     const tempPath = `${this.filePath}.${process.pid}.${Date.now()}.tmp`;
-    await writeFile(tempPath, JSON.stringify(next, null, 2), "utf8");
+    await writeFile(tempPath, JSON.stringify(speakers, null, 2), "utf8");
     await rename(tempPath, this.filePath);
-    return next;
   }
 }
 

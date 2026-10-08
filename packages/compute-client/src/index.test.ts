@@ -216,6 +216,27 @@ describe("processing policy", () => {
     expect(calls).toEqual(["http://127.0.0.1:8787/analysis"]);
   });
 
+  it("deletes a voiceprint on the permitted server only", async () => {
+    const { calls, fetchImpl } = countingFetch(() => json({ deleted: 1 }, 200));
+    const client = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl,
+    });
+    expect(await client.deleteSpeakerProfile("speaker 1")).toBe("deleted");
+    expect(calls).toEqual(["http://127.0.0.1:8787/speakers/speaker%201"]);
+
+    const gone = createComputeClient({
+      processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },
+      fetchImpl: countingFetch(() => json({ error: { code: "not_found" } }, 404)).fetchImpl,
+    });
+    expect(await gone.deleteSpeakerProfile("a")).toBe("notFound");
+
+    const onDevice = countingFetch();
+    const local = createComputeClient({ fetchImpl: onDevice.fetchImpl });
+    expect(await local.deleteSpeakerProfile("a")).toBe("noServer");
+    expect(onDevice.calls).toEqual([]);
+  });
+
   it("reports which analyzer produced the report", async () => {
     const failing = createComputeClient({
       processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },

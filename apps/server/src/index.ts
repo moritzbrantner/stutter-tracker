@@ -97,6 +97,21 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
         return jsonResponse({ speakers: await deps.speakerStore.upsertMany(speakers) }, 200, cors);
       }
 
+      if (request.method === "DELETE" && url.pathname === "/speakers") {
+        return jsonResponse({ deleted: await deps.speakerStore.deleteAll() }, 200, cors);
+      }
+
+      if (request.method === "DELETE" && url.pathname.startsWith("/speakers/")) {
+        const id = decodeURIComponent(url.pathname.slice("/speakers/".length));
+        if (!id || id.includes("/")) {
+          throw new HttpError("invalid_request", "speaker id is required", 400);
+        }
+        if (!(await deps.speakerStore.delete(id))) {
+          return errorResponse("not_found", "speaker profile not found", 404, cors);
+        }
+        return jsonResponse({ deleted: 1 }, 200, cors);
+      }
+
       if (request.method === "POST" && url.pathname === "/speakers/profile") {
         const body = validateCreateSpeakerProfileRequest(
           await readJson(request, deps.config.maxBodyBytes),
@@ -308,7 +323,7 @@ function identifySpeaker(body: {
 function corsHeaders(config: ServerConfig, request: Request): ResponseHeaders | Response {
   const origin = request.headers.get("origin");
   const headers = {
-    "access-control-allow-methods": "GET, POST, PUT, OPTIONS",
+    "access-control-allow-methods": "GET, POST, PUT, DELETE, OPTIONS",
     "access-control-allow-headers": "authorization, content-type",
     "access-control-expose-headers": `${ANALYZER_ALGORITHM_HEADER}, ${ANALYZER_VERSION_HEADER}`,
     vary: "Origin",

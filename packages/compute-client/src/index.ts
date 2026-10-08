@@ -136,6 +136,11 @@ export type ComputeClient = {
   analyzeSpeechSessionRun(request: AnalyzeSpeechRequest): Promise<AnalyzedSpeech>;
   listSpeakerProfiles(): Promise<SpeakerProfile[]>;
   saveSpeakerProfiles(speakers: SpeakerProfile[]): Promise<SpeakerProfile[]>;
+  /**
+   * Deletes a voiceprint on the server. Resolves "deleted", "notFound" (already gone), or
+   * "noServer" when no server is permitted (nothing was ever sent there).
+   */
+  deleteSpeakerProfile(id: string): Promise<"deleted" | "notFound" | "noServer">;
   createSpeakerProfile(request: {
     id?: string;
     label: string;
@@ -202,6 +207,22 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
         headers,
       );
       return result.speakers;
+    },
+    async deleteSpeakerProfile(id) {
+      if (!baseUrl) {
+        return "noServer";
+      }
+      const path = `/speakers/${encodeURIComponent(id)}`;
+      const response = await fetcher(`${baseUrl}${path}`, {
+        redirect: "error",
+        method: "DELETE",
+        headers,
+      });
+      if (response.status === 404) {
+        return "notFound";
+      }
+      await assertOk(response, path);
+      return "deleted";
     },
     async saveSpeakerProfiles(speakers) {
       if (!baseUrl) {

@@ -11,7 +11,7 @@ import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
 import { createComputeRequestHandler, withWorkerTimeouts } from "./index";
 import { createNativeWorker, killWorker, type NativeWorker } from "./native-worker";
-import { createSpeakerStore, type SpeakerStore } from "./speakers";
+import { createSpeakerStore, PostgresSpeakerStore, type SpeakerStore } from "./speakers";
 
 const tempDirs: string[] = [];
 
@@ -267,6 +267,72 @@ describe("worker route timeouts", () => {
     expect(busy.status).toBe(503);
     release();
     expect((await first).status).toBe(200);
+  });
+});
+
+describe("speaker deletion", () => {
+  it("deletes one and then all voiceprints from the file store", async () => {
+    const dir = await tempDir();
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: createSpeakerStore({ filePath: join(dir, "speakers.json") }),
+      nativeWorker: fakeWorker(),
+    });
+    await putSpeakers(handler, [
+      speaker("a", "Alpha"),
+      speaker("b", "Beta"),
+      speaker("c", "Gamma"),
+    ]);
+
+    const one = await handler(new Request("http://server/speakers/b", { method: "DELETE" }));
+    expect(one.status).toBe(200);
+    expect(await one.json()).toEqual({ deleted: 1 });
+    const missing = await handler(new Request("http://server/speakers/b", { method: "DELETE" }));
+    expect(missing.status).toBe(404);
+
+    const listed = await handler(new Request("http://server/speakers"));
+    expect(
+      (await responseJson<{ speakers: SpeakerProfile[] }>(listed)).speakers.map((item) => item.id),
+    ).toEqual(["a", "c"]);
+
+    const all = await handler(new Request("http://server/speakers", { method: "DELETE" }));
+    expect(await all.json()).toEqual({ deleted: 2 });
+    const empty = await handler(new Request("http://server/speakers"));
+    expect((await responseJson<{ speakers: SpeakerProfile[] }>(empty)).speakers).toEqual([]);
+  });
+
+  it("requires authorization to delete in public-ready mode and allows DELETE in CORS", async () => {
+    const response = await publicHandler()(
+      new Request("http://server/speakers/a", {
+        method: "DELETE",
+        headers: { origin: "https://app.example.com" },
+      }),
+    );
+    expect(response.status).toBe(401);
+    const preflight = await publicHandler()(
+      new Request("http://server/speakers/a", {
+        method: "OPTIONS",
+        headers: { origin: "https://app.example.com" },
+      }),
+    );
+    expect(preflight.headers.get("access-control-allow-methods")).toContain("DELETE");
+  });
+
+  it("issues parameterized deletes in the Postgres store", async () => {
+    const queries: { text: string; values: unknown[] }[] = [];
+    const fakeSql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      const text = strings.join("?").replace(/\s+/g, " ").trim();
+      queries.push({ text, values });
+      return Promise.resolve(text.startsWith("delete") ? [{ id: "a" }] : []);
+    }) as unknown as ConstructorParameters<typeof PostgresSpeakerStore>[0];
+    const store = new PostgresSpeakerStore(fakeSql);
+
+    expect(await store.delete("a")).toBe(true);
+    expect(await store.deleteAll()).toBe(1);
+    expect(queries.filter((query) => query.text.startsWith("delete"))).toEqual([
+      { text: "delete from known_speakers where id = ? returning id", values: ["a"] },
+      { text: "delete from known_speakers returning id", values: [] },
+    ]);
   });
 });
 
@@ -749,6 +815,16 @@ function memorySpeakerStore(): SpeakerStore {
       }
       speakers = [...byId.values()];
       return speakers;
+    },
+    async delete(id) {
+      const before = speakers.length;
+      speakers = speakers.filter((item) => item.id !== id);
+      return speakers.length < before;
+    },
+    async deleteAll() {
+      const count = speakers.length;
+      speakers = [];
+      return count;
     },
   };
 }

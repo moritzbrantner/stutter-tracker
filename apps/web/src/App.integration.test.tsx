@@ -9,6 +9,9 @@ type AnalyzeRun =
   import("@stutter-tracker/compute-client").ComputeClient["analyzeSpeechSessionRun"];
 // Lets a test control analyzer responses; null passes through to the real client.
 let analysisHook: AnalyzeRun | null = null;
+type DeleteSpeaker =
+  import("@stutter-tracker/compute-client").ComputeClient["deleteSpeakerProfile"];
+let deleteSpeakerHook: DeleteSpeaker | null = null;
 
 vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@stutter-tracker/compute-client")>();
@@ -20,6 +23,8 @@ vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
         ...client,
         analyzeSpeechSessionRun: (request: Parameters<AnalyzeRun>[0]) =>
           analysisHook ? analysisHook(request) : client.analyzeSpeechSessionRun(request),
+        deleteSpeakerProfile: (id: string) =>
+          deleteSpeakerHook ? deleteSpeakerHook(id) : client.deleteSpeakerProfile(id),
       };
     },
   };
@@ -47,6 +52,7 @@ function renderApp() {
 
 afterEach(() => {
   analysisHook = null;
+  deleteSpeakerHook = null;
   localStorage.clear();
   vi.restoreAllMocks();
   Object.defineProperty(navigator, "mediaDevices", {
@@ -347,6 +353,55 @@ describe("App integration", () => {
     expect(
       await screen.findByRole("button", { name: /Reanalyze saved session from/ }),
     ).toBeDisabled();
+  });
+
+  it("removes a voiceprint here and on the server, and says when only the local copy went", async () => {
+    const speakerProfiles = [
+      {
+        id: "speaker-a",
+        label: "Alex",
+        embeddings: [[1, 0]],
+        sampleRate: 16_000,
+        sampleCount: 16_000,
+      },
+      {
+        id: "speaker-b",
+        label: "Blair",
+        embeddings: [[0, 1]],
+        sampleRate: 16_000,
+        sampleCount: 16_000,
+      },
+    ];
+    localStorage.setItem("stutter-tracker:speakers", JSON.stringify(speakerProfiles));
+    const deleted: string[] = [];
+    deleteSpeakerHook = async (id) => {
+      deleted.push(id);
+      return "deleted";
+    };
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    renderApp();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+    expect(
+      await screen.findByText("Removed Alex here and from the compute server"),
+    ).toBeInTheDocument();
+    expect(deleted).toEqual(["speaker-a"]);
+    expect(
+      (
+        JSON.parse(localStorage.getItem("stutter-tracker:speakers") ?? "[]") as { id: string }[]
+      ).map((profile) => profile.id),
+    ).toEqual(["speaker-b"]);
+
+    deleteSpeakerHook = async () => {
+      throw new Error("server unreachable");
+    };
+    await userEvent.click(screen.getByRole("button", { name: "Remove speaker Blair" }));
+    expect(
+      await screen.findByText(
+        /Removed Blair on this device only; deleting it from the compute server failed/,
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Remove speaker/ })).not.toBeInTheDocument();
   });
 
   it("keeps external-server transcription settings in web mode", async () => {

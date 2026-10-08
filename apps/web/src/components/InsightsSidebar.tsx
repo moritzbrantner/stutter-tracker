@@ -1,4 +1,4 @@
-import { CheckCircle2, Cpu, Download, LoaderCircle, ShieldCheck } from "lucide-react";
+import { CheckCircle2, Cpu, Download, LoaderCircle, ShieldCheck, Trash2 } from "lucide-react";
 import { INTENDED_USE_NOTICE } from "@stutter-tracker/shared";
 import type { ReactNode } from "react";
 import type {
@@ -43,6 +43,8 @@ type InsightsSidebarProps = {
   onModelSelect: (model: string) => void;
   onModelDownload: (model: string) => void;
   onSpeakerLabelChange: (label: string) => void;
+  /** Removes a voiceprint here and, when a server holds it, on that server too. */
+  onSpeakerRemove?: (speaker: SpeakerProfile) => void;
   onEnroll: () => void;
   onCorpusExport: () => void;
 };
@@ -68,6 +70,7 @@ export function InsightsSidebar({
   onModelSelect,
   onModelDownload,
   onSpeakerLabelChange,
+  onSpeakerRemove,
   onEnroll,
   onCorpusExport,
 }: InsightsSidebarProps) {
@@ -259,9 +262,20 @@ export function InsightsSidebar({
                 key={speaker.id}
               >
                 <strong className="break-words">{speaker.label}</strong>
-                <span className={`shrink-0 text-sm ${mutedTextClass}`}>
+                <span className={`ml-auto shrink-0 text-sm ${mutedTextClass}`}>
                   {speaker.embeddings.length} sample{speaker.embeddings.length === 1 ? "" : "s"}
                 </span>
+                {onSpeakerRemove && (
+                  <button
+                    type="button"
+                    className="shrink-0 rounded-md px-2 py-1 text-sm text-[#a33b3b] hover:bg-[#fff4f4]"
+                    aria-label={`Remove speaker ${speaker.label}`}
+                    title="Remove this voiceprint"
+                    onClick={() => onSpeakerRemove(speaker)}
+                  >
+                    <Trash2 size={15} />
+                  </button>
+                )}
               </div>
             ))
           )}

@@ -1042,6 +1042,44 @@ export function App() {
     );
   }
 
+  // Removing a voiceprint deletes the local copy and, when a server holds it, the server copy;
+  // the message says which happened.
+  async function removeSpeakerProfile(speaker: SpeakerProfile) {
+    if (!window.confirm(`Remove the voiceprint for ${speaker.label}?`)) {
+      return;
+    }
+    const remaining = speakers.filter((candidate) => candidate.id !== speaker.id);
+    setSpeakers(remaining);
+    if (isDesktopApp()) {
+      try {
+        setSpeakers(
+          await invoke<SpeakerProfile[]>("save_speaker_profiles", { speakers: remaining }),
+        );
+        setMessage(`Removed ${speaker.label}`);
+      } catch (error) {
+        setMessage(`Could not remove ${speaker.label}: ${errorMessage(error)}`);
+      }
+      return;
+    }
+    try {
+      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(remaining));
+    } catch {
+      // The local copy may not exist; the server copy below is what matters then.
+    }
+    try {
+      const result = await computeClient.deleteSpeakerProfile(speaker.id);
+      setMessage(
+        result === "noServer"
+          ? `Removed ${speaker.label} (it was stored only on this device)`
+          : `Removed ${speaker.label} here and from the compute server`,
+      );
+    } catch (error) {
+      setMessage(
+        `Removed ${speaker.label} on this device only; deleting it from the compute server failed (${errorMessage(error)})`,
+      );
+    }
+  }
+
   async function deleteSession(session: SavedSession) {
     setDeletingSessionId(session.id);
     try {
@@ -1403,6 +1441,7 @@ export function App() {
           onModelSelect={updateTranscriptionModel}
           onModelDownload={(model) => downloadModel(model)}
           onSpeakerLabelChange={setSpeakerLabel}
+          onSpeakerRemove={(speaker) => void removeSpeakerProfile(speaker)}
           onEnroll={saveSpeakerProfile}
           onCorpusExport={exportCorpusJson}
         />
