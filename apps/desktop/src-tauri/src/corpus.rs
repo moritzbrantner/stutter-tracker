@@ -39,21 +39,12 @@ pub struct CorpusSessionInput {
     pub provenance: SessionProvenance,
 }
 
+/// Every other top-level field of the canonical record, kept as-is, so fields added to the shared
+/// schema later survive a desktop save without Rust changes.
 #[derive(Debug, Clone, Default, PartialEq, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
 pub struct SessionProvenance {
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub schema_version: Option<u32>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub context: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub recordings: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub analysis: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub prior_analyses: Option<serde_json::Value>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub annotations: Option<serde_json::Value>,
+    #[serde(flatten)]
+    pub fields: serde_json::Map<String, serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -742,7 +733,8 @@ mod tests {
                 "audioId": "pcm-22"
             },
             "priorAnalyses": [],
-            "annotations": [{ "id": "a-1", "status": "accepted" }]
+            "annotations": [{ "id": "a-1", "status": "accepted" }],
+            "futureOutcomes": [{ "measure": "effort", "value": 3 }]
         });
         let mut input = serde_json::json!({
             "id": "s-1",
@@ -767,6 +759,7 @@ mod tests {
             "analysis",
             "priorAnalyses",
             "annotations",
+            "futureOutcomes",
         ] {
             assert_eq!(session[key], provenance[key], "{key}");
         }
