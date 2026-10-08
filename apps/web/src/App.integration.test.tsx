@@ -349,6 +349,45 @@ describe("App integration", () => {
     ).toBeDisabled();
   });
 
+  it("previews and exports only the sessions and content the user chooses", async () => {
+    const make = (id: string, startedAt: string, text: string) => ({
+      id,
+      startedAt,
+      segments: [{ text, startSeconds: 0, endSeconds: 2, confidence: 0.9, isFinal: true }],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 60,
+        wordCount: 4,
+        stutterCount: 1,
+        stuttersPerMinute: 1,
+        severity: "mild",
+        events: [],
+        byKind: {},
+      },
+    });
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify([
+        make("chosen", "2026-05-19T10:00:00.000Z", "Shared sentence here"),
+        make("other", "2026-05-20T10:00:00.000Z", "Private sentence elsewhere"),
+      ]),
+    );
+    renderApp();
+
+    await userEvent.click(screen.getByRole("button", { name: "Choose sessions" }));
+    const panel = screen.getByRole("region", { name: "Export for review" });
+    const checkboxes = within(panel).getAllByRole("checkbox");
+    await userEvent.click(checkboxes[0]);
+    await userEvent.click(within(panel).getByRole("checkbox", { name: "Transcripts" }));
+
+    const preview = within(panel).getByLabelText("Export preview");
+    expect(preview).toHaveTextContent("Sessions: 1");
+    expect(preview).toHaveTextContent("Shared sentence here");
+    expect(preview).not.toHaveTextContent("Private sentence elsewhere");
+    expect(preview).toHaveTextContent("Automated estimate (model, not a judgment)");
+    expect(within(panel).getByRole("button", { name: /Download report/ })).toBeEnabled();
+  });
+
   it("keeps external-server transcription settings in web mode", async () => {
     localStorage.setItem(
       TRANSCRIPTION_KEY,
