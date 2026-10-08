@@ -520,10 +520,14 @@ it("requires saved clinician-sharing consent and rechecks withdrawal before down
     report: fallbackAnalyze({ segments, pauses: [] }),
     run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
   });
-  render(<EvidenceExportPanel sessions={[saved]} />);
+  const view = render(
+    <EvidenceExportPanel sessions={[saved, { ...saved, id: "same-time-session" }]} />,
+  );
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Choose sessions" }));
   await user.click(screen.getAllByRole("checkbox")[0]!);
+  expect(screen.getByRole("checkbox", { name: /Session 1/ })).toBeInTheDocument();
+  expect(screen.getByRole("checkbox", { name: /Session 2/ })).toBeInTheDocument();
   const button = screen.getByRole("button", { name: "Download report" });
   expect(button).toBeDisabled();
   await user.click(screen.getByRole("checkbox", { name: /I consent to sharing/ }));
@@ -537,4 +541,17 @@ it("requires saved clinician-sharing consent and rechecks withdrawal before down
   await user.click(button);
   expect(await screen.findByRole("alert")).toHaveTextContent("could not be confirmed");
   expect(button).toBeDisabled();
+  const consent = screen.getByRole("checkbox", { name: /I consent to sharing/ });
+  await user.click(consent);
+  const write = vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("Quota full");
+  });
+  await user.click(consent);
+  expect(localStorage.getItem(CONSENT_LEDGER_KEY)).toBeNull();
+  write.mockRestore();
+  view.unmount();
+  render(<EvidenceExportPanel sessions={[saved]} />);
+  await user.click(screen.getByRole("button", { name: "Choose sessions" }));
+  await user.click(screen.getByRole("checkbox", { name: /Session 1/ }));
+  expect(screen.getByRole("button", { name: "Download report" })).toBeDisabled();
 });

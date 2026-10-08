@@ -107,15 +107,15 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
               {sessions.length === 0 ? (
                 <p className={`m-0 ${mutedTextClass}`}>No saved sessions yet.</p>
               ) : (
-                sessions.map((session) => (
+                sessions.map((session, index) => (
                   <label key={session.id} className="flex items-center gap-2 py-1">
                     <input
                       type="checkbox"
                       checked={selectedIds.includes(session.id)}
                       onChange={() => setSelectedIds((ids) => toggle(ids, session.id))}
                     />
-                    {new Date(session.startedAt).toLocaleString()} · {session.report.stutterCount}{" "}
-                    events
+                    Session {index + 1} · {new Date(session.startedAt).toLocaleString()} ·{" "}
+                    {session.report.stutterCount} events
                   </label>
                 ))
               )}
@@ -174,6 +174,13 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
                     setSharingAllowed(granted);
                     setConsentMessage("");
                   } catch {
+                    if (!granted) {
+                      try {
+                        localStorage.removeItem(CONSENT_LEDGER_KEY);
+                      } catch {
+                        /* Storage unavailable. */
+                      }
+                    }
                     setSharingAllowed(false);
                     setConsentMessage(
                       "Sharing consent could not be saved. Download is unavailable.",

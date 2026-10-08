@@ -106,8 +106,8 @@ export function speakerKey(
   if (segment.speakerId) {
     return `id:${segment.speakerId}`;
   }
-  return segment.speakerLabel
-    ? `label:${speakerKeyPart(sessionId)}:${speakerKeyPart(segment.speakerLabel)}`
+  return segment.speakerLabel?.trim()
+    ? `label:${speakerKeyPart(sessionId)}:${speakerKeyPart(segment.speakerLabel.trim())}`
     : `${UNATTRIBUTED_SPEAKER}:${sessionId}`;
 }
 
@@ -150,9 +150,8 @@ function speakerLabels(sessions: SessionRecord[]) {
   for (const session of ordered) {
     for (const segment of session.segments) {
       const key = speakerKey(segment, session.id);
-      if (segment.speakerLabel && !labels.has(key)) {
-        labels.set(key, segment.speakerLabel);
-      }
+      const label = segment.speakerLabel?.trim();
+      if (label && !labels.has(key)) labels.set(key, label);
     }
   }
   const counts = new Map<string, number>();
@@ -182,6 +181,8 @@ export function buildEvidenceExport(
   // only some segments is not split into two.
   const labels = speakerLabels(selected);
   const pseudonyms = new Map<string, string>();
+  const usedNames = new Set(options.includeSpeakerNames ? labels.values() : []);
+  let nextPseudonym = 1;
   const speakerName = (id: string) => {
     // A missing label still needs a distinct name, or separate speakers would merge.
     const label = labels.get(id);
@@ -189,7 +190,10 @@ export function buildEvidenceExport(
       return label;
     }
     if (!pseudonyms.has(id)) {
-      pseudonyms.set(id, `Speaker ${pseudonyms.size + 1}`);
+      let name = `Speaker ${nextPseudonym++}`;
+      while (usedNames.has(name)) name = `Speaker ${nextPseudonym++}`;
+      pseudonyms.set(id, name);
+      usedNames.add(name);
     }
     return pseudonyms.get(id) as string;
   };

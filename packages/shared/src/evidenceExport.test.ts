@@ -529,3 +529,22 @@ test("folds restored timestamp lines in report headings", () => {
   expect(report).toContain("2026-10-01 Injected heading");
   expect(report).toContain("2026-10-01 Injected reference");
 });
+
+test("normalizes blank labels and reserves saved names against pseudonyms", () => {
+  const saved = session("blank-labels", chosen.startedAt, [
+    ["named", "a", "Speaker 1"],
+    ["unnamed", "b", "   "],
+  ]);
+  const evidence = buildEvidenceExport([saved], {
+    sessionIds: [saved.id],
+    includeTranscripts: true,
+    transcriptSpeakers: "all",
+    includeSpeakerNames: true,
+    exportedAt,
+  });
+  expect(evidence.sessions[0]?.transcript?.map((item) => item.speaker)).toEqual([
+    "Speaker 1",
+    "Speaker 2",
+  ]);
+  expect(transcriptSpeakersOf([saved]).every((item) => item.label.trim().length > 0)).toBe(true);
+});
