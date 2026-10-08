@@ -223,7 +223,7 @@ describe("processing policy", () => {
       fetchImpl,
     });
     expect(await client.deleteSpeakerProfile("speaker 1")).toBe("deleted");
-    expect(calls).toEqual(["http://127.0.0.1:8787/speakers/speaker%201"]);
+    expect(calls).toEqual(["http://127.0.0.1:8787/speakers?id=speaker%201"]);
 
     const gone = createComputeClient({
       processingPolicy: { mode: "localCompanion", serverUrl: "http://127.0.0.1:8787/" },

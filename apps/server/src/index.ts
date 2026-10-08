@@ -97,22 +97,21 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
         return jsonResponse({ speakers: await deps.speakerStore.upsertMany(speakers) }, 200, cors);
       }
 
+      // The id travels as a query parameter: as a path segment, ids such as "." or ".." would be
+      // normalized away by URL parsing. Deleting everything needs an explicit all=1.
       if (request.method === "DELETE" && url.pathname === "/speakers") {
-        return jsonResponse({ deleted: await deps.speakerStore.deleteAll() }, 200, cors);
-      }
-
-      if (request.method === "DELETE" && url.pathname.startsWith("/speakers/")) {
-        // One path segment; an encoded slash belongs to the id (ids may contain "/").
-        const segment = url.pathname.slice("/speakers/".length);
-        if (!segment || segment.includes("/")) {
-          throw new HttpError("invalid_request", "speaker id is required", 400);
+        const id = url.searchParams.get("id");
+        if (id !== null && id !== "") {
+          if (!(await deps.speakerStore.delete(id))) {
+            // A specific code, so clients can tell a missing profile from a missing route.
+            return errorResponse("speaker_not_found", "speaker profile not found", 404, cors);
+          }
+          return jsonResponse({ deleted: 1 }, 200, cors);
         }
-        const id = decodeURIComponent(segment);
-        if (!(await deps.speakerStore.delete(id))) {
-          // A specific code, so clients can tell a missing profile from a missing route.
-          return errorResponse("speaker_not_found", "speaker profile not found", 404, cors);
+        if (url.searchParams.get("all") === "1") {
+          return jsonResponse({ deleted: await deps.speakerStore.deleteAll() }, 200, cors);
         }
-        return jsonResponse({ deleted: 1 }, 200, cors);
+        throw new HttpError("invalid_request", "pass ?id=<speaker id> or ?all=1", 400);
       }
 
       if (request.method === "POST" && url.pathname === "/speakers/profile") {

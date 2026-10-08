@@ -212,7 +212,7 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
       if (!baseUrl) {
         return "noServer";
       }
-      const path = `/speakers/${encodeURIComponent(id)}`;
+      const path = `/speakers?id=${encodeURIComponent(id)}`;
       const response = await fetcher(`${baseUrl}${path}`, {
         redirect: "error",
         method: "DELETE",

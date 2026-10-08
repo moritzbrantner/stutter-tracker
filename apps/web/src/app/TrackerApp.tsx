@@ -65,6 +65,8 @@ export { formatTime } from "../utils/formatting";
 const STORE_KEY = "stutter-tracker:sessions";
 const VOICE_KEY = "stutter-tracker:voiceprint";
 const SPEAKERS_KEY = "stutter-tracker:speakers";
+/** How long speaker removal waits for the startup load before it is enabled anyway. */
+const SPEAKER_LOAD_GRACE_MS = 5_000;
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const LANGUAGES = ["en-US", "de-DE", "en-GB"];
 const COMPUTE_SERVER_URL = import.meta.env.VITE_STUTTER_SERVER_URL ?? "http://127.0.0.1:8787";
@@ -137,6 +139,9 @@ export function App() {
   // Removal waits for the startup load, which could otherwise restore or re-upload a removed
   // voiceprint from its earlier snapshot.
   const [speakersReady, setSpeakersReady] = useState(false);
+  // Counts removals, so a slow startup load can tell its snapshot is stale.
+  const speakerRemovalsRef = useRef(0);
+  const speakerMutationTailRef = useRef<Promise<unknown>>(Promise.resolve());
   const [corpusAnalysis, setCorpusAnalysis] = useState<SpeechCorpusAnalysis>(() =>
     emptyCorpusAnalysis(),
   );
@@ -341,14 +346,20 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    loadPersistedSpeakerProfiles()
+    const removalsAtStart = speakerRemovalsRef.current;
+    const isStale = () => cancelled || speakerRemovalsRef.current !== removalsAtStart;
+    // A stalled server must not block local removal forever; the load then cannot apply or
+    // re-upload its snapshot once a removal has happened.
+    const readyTimer = setTimeout(() => setSpeakersReady(true), SPEAKER_LOAD_GRACE_MS);
+    loadPersistedSpeakerProfiles(isStale)
       .then((persistedSpeakers) => {
-        if (!cancelled) {
+        if (!isStale()) {
           setSpeakers(persistedSpeakers);
         }
       })
       .catch(() => undefined)
       .finally(() => {
+        clearTimeout(readyTimer);
         if (!cancelled) {
           setSpeakersReady(true);
         }
@@ -1059,12 +1070,19 @@ export function App() {
   }
 
   // Removing a voiceprint deletes the local copy and, when a server holds it, the server copy;
-  // the message says which happened.
-  async function removeSpeakerProfile(speaker: SpeakerProfile) {
+  // the message says which happened. Removals run one at a time from the latest list.
+  function removeSpeakerProfile(speaker: SpeakerProfile) {
     if (!window.confirm(`Remove the voiceprint for ${speaker.label}?`)) {
-      return;
+      return Promise.resolve();
     }
-    const remaining = speakers.filter((candidate) => candidate.id !== speaker.id);
+    speakerRemovalsRef.current += 1;
+    const operation = speakerMutationTailRef.current.then(() => runSpeakerRemoval(speaker));
+    speakerMutationTailRef.current = operation.catch(() => undefined);
+    return operation;
+  }
+
+  async function runSpeakerRemoval(speaker: SpeakerProfile) {
+    const remaining = speakersRef.current.filter((candidate) => candidate.id !== speaker.id);
     const forgetMatch = () => {
       speakersRef.current = remaining;
       if (speakerMatchRef.current?.speakerId === speaker.id) {
@@ -1079,24 +1097,17 @@ export function App() {
         });
         setSpeakers(saved);
         forgetMatch();
+        // The browser-storage copies a desktop profile was migrated from must go too, or the
+        // next start would migrate the voiceprint back.
+        removeLocalSpeakerCopy(speaker.id);
         setMessage(`Removed ${speaker.label}`);
       } catch (error) {
         setMessage(`Could not remove ${speaker.label}: ${errorMessage(error)}`);
       }
       return;
     }
-    // Only this speaker leaves local storage: it may also hold local-only profiles that the
-    // server-backed list on screen does not show.
     try {
-      const stored = JSON.parse(localStorage.getItem(SPEAKERS_KEY) ?? "[]") as unknown;
-      const kept = Array.isArray(stored)
-        ? (stored as SpeakerProfile[]).filter((candidate) => candidate.id !== speaker.id)
-        : [];
-      localStorage.setItem(SPEAKERS_KEY, JSON.stringify(kept));
-      // The pre-profile voiceprint key reappears as "legacy-speaker" whenever the list is empty.
-      if (speaker.id === "legacy-speaker" || kept.length === 0) {
-        localStorage.removeItem(VOICE_KEY);
-      }
+      removeLocalSpeakerCopy(speaker.id);
     } catch (error) {
       setMessage(`Could not remove ${speaker.label} from this browser: ${errorMessage(error)}`);
       return;
@@ -1107,7 +1118,8 @@ export function App() {
       const result = await computeClient.deleteSpeakerProfile(speaker.id);
       setMessage(
         result === "noServer"
-          ? `Removed ${speaker.label} (it was stored only on this device)`
+          ? // No server is permitted now; one used under earlier consent may still hold a copy.
+            `Removed ${speaker.label} from this device. No compute server is selected now; if you sent it to one earlier, delete it there too.`
           : `Removed ${speaker.label} here and from the compute server`,
       );
     } catch (error) {
@@ -2379,7 +2391,22 @@ function emptyChunkStats(): TranscriptionChunkStats {
   };
 }
 
-async function loadPersistedSpeakerProfiles(): Promise<SpeakerProfile[]> {
+function removeLocalSpeakerCopy(id: string) {
+  const stored = JSON.parse(localStorage.getItem(SPEAKERS_KEY) ?? "[]") as unknown;
+  const kept = Array.isArray(stored)
+    ? (stored as SpeakerProfile[]).filter((candidate) => candidate.id !== id)
+    : [];
+  localStorage.setItem(SPEAKERS_KEY, JSON.stringify(kept));
+  // The pre-profile voiceprint key is shown as "legacy-speaker"; clear it only for that profile.
+  if (id === "legacy-speaker") {
+    localStorage.removeItem(VOICE_KEY);
+  }
+}
+
+/** `isStale` turns true after a removal, so the snapshot taken at start is not re-uploaded. */
+async function loadPersistedSpeakerProfiles(
+  isStale: () => boolean = () => false,
+): Promise<SpeakerProfile[]> {
   const localSpeakers = loadSpeakerProfiles();
   if (isDesktopApp()) {
     try {
@@ -2387,7 +2414,7 @@ async function loadPersistedSpeakerProfiles(): Promise<SpeakerProfile[]> {
       if (speakers.length) {
         return normalizeSpeakerProfiles(speakers);
       }
-      if (localSpeakers.length) {
+      if (localSpeakers.length && !isStale()) {
         return savePersistedSpeakerProfiles(localSpeakers);
       }
       return [];
@@ -2401,7 +2428,7 @@ async function loadPersistedSpeakerProfiles(): Promise<SpeakerProfile[]> {
     if (speakers.length) {
       return normalizeSpeakerProfiles(speakers);
     }
-    if (localSpeakers.length) {
+    if (localSpeakers.length && !isStale()) {
       return savePersistedSpeakerProfiles(localSpeakers);
     }
     return [];
