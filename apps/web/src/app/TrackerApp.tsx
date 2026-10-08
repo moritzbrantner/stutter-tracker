@@ -177,6 +177,15 @@ export function App() {
   const sessionLanguageRef = useRef<string | null>(null);
   // The saved record shown in the workspace, so saving it again keeps its analysis history.
   const loadedSessionRef = useRef<SavedSession | null>(null);
+  // The saved session shown in the workspace. While one is shown, the view keeps its stored
+  // analysis: live analysis does not run, and a late result never replaces it. The ref is set
+  // synchronously so a result that lands before React applies the load is still ignored.
+  const [viewedSession, setViewedSessionState] = useState<SavedSession | null>(null);
+  const viewedSessionRef = useRef<SavedSession | null>(null);
+  const setViewedSession = (session: SavedSession | null) => {
+    viewedSessionRef.current = session;
+    setViewedSessionState(session);
+  };
   const nextChunkStartSampleRef = useRef(0);
   const chunkIndexRef = useRef(0);
   const chunkTranscriptionTailRef = useRef<Promise<void>>(Promise.resolve());
@@ -199,6 +208,7 @@ export function App() {
   const analysisQuery = useQuery({
     queryKey: ["analysis", analysisRequest],
     queryFn: () => analyzeWithFallback(analysisRequest),
+    enabled: viewedSession === null,
   });
 
   const modelStatusesQuery = useQuery({
@@ -345,7 +355,8 @@ export function App() {
   }, [language]);
 
   useEffect(() => {
-    if (analysisQuery.data) {
+    // A late result must not replace a saved session's stored analysis.
+    if (analysisQuery.data && viewedSessionRef.current === null) {
       setReport(analysisQuery.data.report);
       setReportRun({
         id: analysisQuery.data.runId,
@@ -455,6 +466,7 @@ export function App() {
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
       loadedSessionRef.current = null;
+      setViewedSession(null);
       resetChunkTranscription();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
@@ -697,9 +709,10 @@ export function App() {
     }
   }
 
+  // Writes storage first, so a failed write (quota, blocked storage) leaves memory unchanged.
   function persistSessions(next: SavedSession[]) {
-    sessionsRef.current = next;
     localStorage.setItem(STORE_KEY, JSON.stringify(next));
+    sessionsRef.current = next;
     setSessions(next);
   }
 
@@ -748,10 +761,16 @@ export function App() {
       },
     });
     const next = [session, ...sessionsRef.current].slice(0, 50);
-    persistSessions(next);
+    try {
+      persistSessions(next);
+    } catch {
+      setMessage("Could not save the session: browser storage is full or unavailable");
+      return;
+    }
     activeSessionIdRef.current = session.id;
     // Later saves of this workspace append runs to this record instead of creating copies.
     loadedSessionRef.current = session;
+    setViewedSession(session);
     try {
       const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(session));
       setCorpusAnalysis(corpus);
@@ -790,9 +809,15 @@ export function App() {
       if (loadedSessionRef.current?.id === updated.id) {
         loadedSessionRef.current = updated;
       }
-      persistSessions(
-        sessionsRef.current.map((candidate) => (candidate.id === updated.id ? updated : candidate)),
-      );
+      try {
+        persistSessions(
+          sessionsRef.current.map((candidate) =>
+            candidate.id === updated.id ? updated : candidate,
+          ),
+        );
+      } catch {
+        return "failed" as const;
+      }
       try {
         setCorpusAnalysis(await saveSpeechCorpusSession(updated));
         return "corpus" as const;
@@ -802,13 +827,15 @@ export function App() {
       }
     });
     setMessage(
-      outcome === "deleted"
-        ? "Session was deleted; nothing saved"
-        : outcome === "unchanged"
-          ? "Session is already saved"
-          : outcome === "corpus"
-            ? "New analysis saved to the session"
-            : "New analysis saved locally",
+      outcome === "failed"
+        ? "Could not save the session: browser storage is full or unavailable"
+        : outcome === "deleted"
+          ? "Session was deleted; nothing saved"
+          : outcome === "unchanged"
+            ? "Session is already saved"
+            : outcome === "corpus"
+              ? "New analysis saved to the session"
+              : "New analysis saved locally",
     );
   }
 
@@ -831,6 +858,7 @@ export function App() {
           setReportRun(null);
           sessionLanguageRef.current = null;
           loadedSessionRef.current = null;
+          setViewedSession(null);
           setInterimText("");
           setSpeakerMatch(null);
           resetChunkTranscription();
@@ -1191,6 +1219,7 @@ export function App() {
           setReportRun(session.analysis);
           sessionLanguageRef.current = session.context.spokenLanguage;
           loadedSessionRef.current = session;
+          setViewedSession(session);
           // Audio is not stored with sessions; keeping the last recording's PCM would analyze
           // this session against someone else's audio.
           samplesRef.current = [];

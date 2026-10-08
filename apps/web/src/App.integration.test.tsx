@@ -92,9 +92,8 @@ describe("App integration", () => {
     await userEvent.click(sessionButton!);
 
     expect(await screen.findAllByText("I I want to start")).toHaveLength(2);
+    // The stored report is shown as saved; it has no chunk breakdown and none is computed.
     expect(await screen.findByText("Repeated word sequence")).toBeInTheDocument();
-    expect((await screen.findAllByText("Text")).length).toBeGreaterThan(0);
-    expect(screen.getAllByText("0:00")).toHaveLength(2);
 
     vi.spyOn(window, "confirm").mockReturnValue(true);
     await userEvent.click(screen.getByRole("button", { name: /Delete saved session from/ }));
@@ -107,7 +106,7 @@ describe("App integration", () => {
     expect(screen.getByText("Transcript will appear here.")).toBeInTheDocument();
   });
 
-  it("saving a loaded session keeps one record and its analysis history", async () => {
+  it("saving an unchanged loaded session makes no copy", async () => {
     const legacy = {
       id: "session-1",
       startedAt: "2026-05-19T10:00:00.000Z",
@@ -138,17 +137,92 @@ describe("App integration", () => {
     await screen.findAllByText("I I want to start");
     await userEvent.click(screen.getByRole("button", { name: "Save" }));
 
-    await waitFor(() => {
-      const stored = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]") as {
-        id: string;
-        analysis: { id: string };
-        priorAnalyses: { id: string }[];
-      }[];
-      expect(stored).toHaveLength(1);
-      expect(stored[0].id).toBe("session-1");
-      const runIds = [...stored[0].priorAnalyses.map((run) => run.id), stored[0].analysis.id];
-      expect(runIds).toContain("session-1:legacy");
+    // Nothing changed, so nothing is written and no copy is made.
+    expect(await screen.findByText("Session is already saved")).toBeInTheDocument();
+    const stored = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]") as { id: string }[];
+    expect(stored.map((session) => session.id)).toEqual(["session-1"]);
+  });
+
+  it("shows a loaded session's stored analysis instead of a live re-analysis", async () => {
+    const stored = {
+      id: "session-stored",
+      startedAt: "2026-05-19T10:00:00.000Z",
+      segments: [
+        {
+          text: "I I want to start",
+          startSeconds: 0,
+          endSeconds: 3,
+          confidence: 0.9,
+          isFinal: true,
+        },
+      ],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 3,
+        wordCount: 5,
+        stutterCount: 1,
+        stuttersPerMinute: 20,
+        severity: "high",
+        events: [
+          {
+            kind: "prolongation",
+            startSeconds: 0.5,
+            endSeconds: 1.5,
+            text: "want",
+            detail: "Stored marker event",
+            confidence: 0.7,
+          },
+        ],
+        byKind: { prolongation: 1 },
+      },
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify([stored]));
+    const { container } = renderApp();
+
+    await userEvent.click(container.querySelector<HTMLButtonElement>(".session-row")!);
+    expect(await screen.findByText("Stored marker event")).toBeInTheDocument();
+    // Give any live analysis time to resolve; it must not replace the stored report.
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(screen.getByText("Stored marker event")).toBeInTheDocument();
+  });
+
+  it("keeps a session when deletion is cancelled or its storage write fails", async () => {
+    const stored = {
+      id: "session-keep",
+      startedAt: "2026-05-19T10:00:00.000Z",
+      segments: [],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 1,
+        wordCount: 0,
+        stutterCount: 0,
+        stuttersPerMinute: 0,
+        severity: "none",
+        events: [],
+        byKind: {},
+      },
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify([stored]));
+    const { container } = renderApp();
+    const deleteButton = () => screen.getByRole("button", { name: /Delete saved session from/ });
+
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    await userEvent.click(deleteButton());
+    expect(container.querySelectorAll(".session-row")).toHaveLength(1);
+
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key === STORE_KEY) {
+        throw new DOMException("full", "QuotaExceededError");
+      }
+      return setItem.call(this, key, value);
     });
+    await userEvent.click(deleteButton());
+
+    expect(await screen.findByText(/Delete failed/)).toBeInTheDocument();
+    expect(container.querySelectorAll(".session-row")).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1);
   });
 
   it("keeps external-server transcription settings in web mode", async () => {
