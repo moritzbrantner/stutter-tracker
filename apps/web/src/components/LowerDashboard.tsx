@@ -295,8 +295,11 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
                 role="note"
                 className="m-0 border-b border-[#f0e2c4] bg-[#fdf8ec] px-4 py-3 text-sm text-[#6b5520]"
               >
-                Not directly comparable: {comparability.reasons.join("; ")}. Reanalyze older
-                sessions to compare them on equal terms.
+                Not directly comparable: {comparability.reasons.join("; ")}.
+                {comparability.reanalysisHelps &&
+                  " Reanalyze older sessions to compare their analysis on equal terms."}
+                {comparability.contextDiffers &&
+                  " Compare sessions recorded in the same language, task and condition."}
               </p>
             )}
             <TrendMetric
@@ -323,6 +326,8 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
             />
             <p className={`m-0 px-4 py-3 text-xs ${mutedTextClass}`}>
               Tracking metrics are for personal review and are not diagnostic scores.
+              {comparability.contextUnrecorded &&
+                " Speaking task and assistance condition are not recorded yet, so sessions may differ in ways this view cannot show."}
             </p>
           </>
         )}

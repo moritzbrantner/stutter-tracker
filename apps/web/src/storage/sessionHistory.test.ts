@@ -83,7 +83,18 @@ describe("buildSessionHistory", () => {
     expect(progressComparability(buildSessionHistory([first, second]))).toEqual({
       comparable: true,
       reasons: [],
+      reanalysisHelps: false,
+      contextDiffers: false,
+      contextUnrecorded: true,
     });
+    const variant = { ...second, context: { ...second.context, spokenLanguage: "en-US" } };
+    const sameLanguage = progressComparability(
+      buildSessionHistory([
+        { ...first, context: { ...first.context, spokenLanguage: "en" } },
+        variant,
+      ]),
+    );
+    expect(sameLanguage.comparable).toBe(true);
     const mixed = progressComparability(buildSessionHistory([first, second, newer]));
     expect(mixed.comparable).toBe(false);
     expect(mixed.reasons).toEqual(["2 different analyzer versions produced these results"]);
@@ -97,9 +108,10 @@ describe("buildSessionHistory", () => {
       "1 session's analysis is not verified for the saved transcript",
     ]);
     const inGerman = { ...second, context: { ...second.context, spokenLanguage: "de" } };
-    expect(progressComparability(buildSessionHistory([first, inGerman])).reasons).toEqual([
-      "they span 2 different languages",
-    ]);
+    const languages = progressComparability(buildSessionHistory([first, inGerman]));
+    expect(languages.reasons).toEqual(["they span 2 different languages"]);
+    expect(languages.contextDiffers).toBe(true);
+    expect(languages.reanalysisHelps).toBe(false);
     const assisted = {
       ...second,
       context: { ...second.context, condition: { kind: "assisted" as const, aidId: "daf" } },

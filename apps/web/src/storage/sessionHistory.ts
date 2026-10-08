@@ -1,4 +1,4 @@
-import { analyzerKey, isAnalysisVerified } from "@stutter-tracker/shared";
+import { analyzerKey, canonicalSpokenLanguage, isAnalysisVerified } from "@stutter-tracker/shared";
 import type { SavedSession } from "../types";
 
 export type SessionHistoryPoint = {
@@ -25,6 +25,12 @@ export type ProgressComparability = {
   comparable: boolean;
   /** Plain-language reasons the points are not directly comparable. */
   reasons: string[];
+  /** Some reasons concern the analysis, which reanalyzing the sessions can fix. */
+  reanalysisHelps: boolean;
+  /** Some reasons concern the speaking context, which reanalysis cannot change. */
+  contextDiffers: boolean;
+  /** No point records its speaking task or assistance condition (the app does not ask yet). */
+  contextUnrecorded: boolean;
 };
 
 /**
@@ -58,7 +64,10 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
       `whether audio was analyzed was not recorded for ${audioUnknown === points.length ? "these sessions" : `${audioUnknown} of them`}`,
     );
   }
-  // Same split as outcome comparisons: language, task and assistance condition.
+  let contextDiffers = false;
+  // Same split as outcome comparisons: language, task and assistance condition. Unknown task or
+  // condition on every point is reported separately (contextUnrecorded): flagging it as a
+  // mismatch would show the warning on every chart, since the app does not record them yet.
   for (const [field, label] of [
     ["spokenLanguage", "languages"],
     ["task", "speaking tasks"],
@@ -67,6 +76,7 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
     const values = new Set(points.map((point) => point[field]));
     if (values.size > 1) {
       reasons.push(`they span ${values.size} different ${label}`);
+      contextDiffers = true;
     }
   }
   const unverified = points.filter((point) => !point.verified).length;
@@ -75,7 +85,16 @@ export function progressComparability(points: SessionHistoryPoint[]): ProgressCo
       `${unverified} session${unverified === 1 ? "'s analysis is" : "s' analyses are"} not verified for the saved transcript`,
     );
   }
-  return { comparable: reasons.length === 0, reasons };
+  return {
+    comparable: reasons.length === 0,
+    reasons,
+    reanalysisHelps:
+      known.size > 1 || unknown > 0 || audioUse.size > 1 || audioUnknown > 0 || unverified > 0,
+    contextDiffers,
+    contextUnrecorded:
+      points.length > 0 &&
+      points.every((point) => point.task === "unknown" && point.condition === "unknown"),
+  };
 }
 
 export function buildSessionHistory(sessions: SavedSession[], limit = 12): SessionHistoryPoint[] {
@@ -116,7 +135,7 @@ function toHistoryPoint(session: SavedSession): SessionHistoryPoint {
     analyzerKey: analyzerKey(session),
     verified: isAnalysisVerified(session),
     usedAudio: session.analysis.usedAudio,
-    spokenLanguage: session.context.spokenLanguage,
+    spokenLanguage: canonicalSpokenLanguage(session.context.spokenLanguage),
     task: session.context.task
       ? `${session.context.task.kind}:${session.context.task.trained ? "trained" : "untrained"}`
       : "unknown",
