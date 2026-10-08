@@ -134,6 +134,9 @@ export function App() {
   const [reportRun, setReportRun] = useState<AnalysisRunIdentity | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
+  // Removal waits for the startup load, which could otherwise restore or re-upload a removed
+  // voiceprint from its earlier snapshot.
+  const [speakersReady, setSpeakersReady] = useState(false);
   const [corpusAnalysis, setCorpusAnalysis] = useState<SpeechCorpusAnalysis>(() =>
     emptyCorpusAnalysis(),
   );
@@ -344,7 +347,12 @@ export function App() {
           setSpeakers(persistedSpeakers);
         }
       })
-      .catch(() => undefined);
+      .catch(() => undefined)
+      .finally(() => {
+        if (!cancelled) {
+          setSpeakersReady(true);
+        }
+      });
     return () => {
       cancelled = true;
     };
@@ -666,7 +674,15 @@ export function App() {
         speakerMatchInFlightRef.current = true;
         setIsMatchingVoice(true);
         identifySpeaker(recent, sampleRateRef.current, speakerProfiles)
-          .then((result) => setSpeakerMatch(result.bestMatch ?? null))
+          .then((result) =>
+            // A speaker removed while identification ran must not come back as a match.
+            setSpeakerMatch(
+              result.bestMatch &&
+                speakersRef.current.some((speaker) => speaker.id === result.bestMatch?.speakerId)
+                ? result.bestMatch
+                : null,
+            ),
+          )
           .catch(() => undefined)
           .finally(() => {
             speakerMatchInFlightRef.current = false;
@@ -1049,12 +1065,20 @@ export function App() {
       return;
     }
     const remaining = speakers.filter((candidate) => candidate.id !== speaker.id);
-    setSpeakers(remaining);
+    const forgetMatch = () => {
+      speakersRef.current = remaining;
+      if (speakerMatchRef.current?.speakerId === speaker.id) {
+        speakerMatchRef.current = null;
+        setSpeakerMatch(null);
+      }
+    };
     if (isDesktopApp()) {
       try {
-        setSpeakers(
-          await invoke<SpeakerProfile[]>("save_speaker_profiles", { speakers: remaining }),
-        );
+        const saved = await invoke<SpeakerProfile[]>("save_speaker_profiles", {
+          speakers: remaining,
+        });
+        setSpeakers(saved);
+        forgetMatch();
         setMessage(`Removed ${speaker.label}`);
       } catch (error) {
         setMessage(`Could not remove ${speaker.label}: ${errorMessage(error)}`);
@@ -1074,10 +1098,11 @@ export function App() {
         localStorage.removeItem(VOICE_KEY);
       }
     } catch (error) {
-      setSpeakers(speakers);
       setMessage(`Could not remove ${speaker.label} from this browser: ${errorMessage(error)}`);
       return;
     }
+    setSpeakers(remaining);
+    forgetMatch();
     try {
       const result = await computeClient.deleteSpeakerProfile(speaker.id);
       setMessage(
@@ -1453,7 +1478,9 @@ export function App() {
           onModelSelect={updateTranscriptionModel}
           onModelDownload={(model) => downloadModel(model)}
           onSpeakerLabelChange={setSpeakerLabel}
-          onSpeakerRemove={(speaker) => void removeSpeakerProfile(speaker)}
+          onSpeakerRemove={
+            speakersReady ? (speaker) => void removeSpeakerProfile(speaker) : undefined
+          }
           onEnroll={saveSpeakerProfile}
           onCorpusExport={exportCorpusJson}
         />
