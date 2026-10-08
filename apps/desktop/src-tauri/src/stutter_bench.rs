@@ -4,7 +4,9 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
-use crate::speech_analysis::{analyze_speech_session_impl, AnalyzeSpeechRequest, StutterKind};
+use crate::speech_analysis::{
+    analyze_speech_session_impl, AnalyzeSpeechRequest, SpeechAnalysisError, StutterKind,
+};
 
 const BENCHMARK_KINDS: [StutterKind; 5] = [
     StutterKind::WordRepetition,
@@ -42,6 +44,14 @@ pub(crate) enum BenchmarkError {
     DuplicateClip(String),
     #[error("speaker mapping lists clip `{0}` more than once")]
     DuplicateSpeakerMapping(String),
+    #[error("labels are missing required SEP-28k column `{0}`")]
+    MissingColumn(&'static str),
+    #[error("clip `{clip_id}` has invalid {column} value `{value}` (expected 0-3)")]
+    InvalidVote {
+        clip_id: String,
+        column: &'static str,
+        value: String,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -478,7 +488,13 @@ struct RunConfiguration {
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct CorpusCounts {
+    /// Rows in the label file.
     rows: usize,
+    /// Rows read in this run (fewer than `rows` under `--limit`); the counts below add up to it.
+    processed_rows: usize,
+    /// Rows excluded by at least one flag or for lacking an affirmative label.
+    excluded_rows: usize,
+    /// Per reason; a row with several flags counts under each, so these may exceed excluded_rows.
     excluded: BTreeMap<&'static str, usize>,
     missing_audio: usize,
     unreadable_audio: usize,
@@ -531,7 +547,16 @@ pub(crate) fn run_sep28k_corpus(
     let mut missing = Vec::new();
     let mut unreadable = Vec::new();
     let mut clips = Vec::new();
+    if let Some(header) = rows.first() {
+        for column in SEP28K_REQUIRED_COLUMNS {
+            if !header.contains_key(column) {
+                return Err(BenchmarkError::MissingColumn(column));
+            }
+        }
+    }
     for row in rows.iter().take(options.limit.unwrap_or(usize::MAX)) {
+        counts.processed_rows += 1;
+        validate_sep28k_votes(row)?;
         let mut entry = normalize_sep28k_row(row, options.vote_threshold, None)?;
         if !seen.insert(entry.id.clone()) {
             return Err(BenchmarkError::DuplicateClip(entry.id));
@@ -539,8 +564,12 @@ pub(crate) fn run_sep28k_corpus(
         entry.speaker_id = speakers
             .as_ref()
             .and_then(|mapping| mapping.get(&entry.id).cloned());
-        if let Some(reason) = exclusion_reason(&entry) {
-            *counts.excluded.entry(reason).or_default() += 1;
+        let reasons = exclusion_reasons(&entry);
+        if !reasons.is_empty() {
+            counts.excluded_rows += 1;
+            for reason in reasons {
+                *counts.excluded.entry(reason).or_default() += 1;
+            }
             continue;
         }
         let path = sep28k_clip_path(&options.clips_dir, &entry);
@@ -560,14 +589,22 @@ pub(crate) fn run_sep28k_corpus(
             continue;
         }
         let duration_seconds = samples.len() as f64 / f64::from(sample_rate);
-        let report = analyze_speech_session_impl(AnalyzeSpeechRequest {
+        let report = match analyze_speech_session_impl(AnalyzeSpeechRequest {
             segments: Vec::new(),
             pauses: Vec::new(),
             session_started_at: None,
             samples: Some(samples),
             sample_rate: Some(sample_rate),
-        })
-        .map_err(|error| BenchmarkError::Detector(error.to_string()))?;
+        }) {
+            Ok(report) => report,
+            // Input validation (too short, non-finite samples): this clip is unusable, not the run.
+            Err(SpeechAnalysisError::Invalid(_)) => {
+                counts.unreadable_audio += 1;
+                unreadable.push(entry.id);
+                continue;
+            }
+            Err(error) => return Err(BenchmarkError::Detector(error.to_string())),
+        };
         let observed = report
             .events
             .iter()
@@ -684,9 +721,11 @@ pub(crate) fn run_sep28k_corpus(
     })
 }
 
-fn exclusion_reason(entry: &Sep28kManifestEntry) -> Option<&'static str> {
+/// Every applicable reason. Quality flags are multi-label; a clip with no stuttering kind at the
+/// threshold also needs an affirmative `NoStutteredWords` vote to count as fluent.
+fn exclusion_reasons(entry: &Sep28kManifestEntry) -> Vec<&'static str> {
     let flags = &entry.flags;
-    [
+    let mut reasons = [
         (flags.unsure, "unsure"),
         (flags.poor_audio_quality, "poorAudioQuality"),
         (flags.difficult_to_understand, "difficultToUnderstand"),
@@ -694,7 +733,50 @@ fn exclusion_reason(entry: &Sep28kManifestEntry) -> Option<&'static str> {
         (flags.no_speech, "noSpeech"),
     ]
     .into_iter()
-    .find_map(|(flagged, reason)| flagged.then_some(reason))
+    .filter_map(|(flagged, reason)| flagged.then_some(reason))
+    .collect::<Vec<_>>();
+    if entry.reference_kinds.is_empty() && !flags.no_stutter {
+        reasons.push("noAffirmativeLabel");
+    }
+    reasons
+}
+
+const SEP28K_REQUIRED_COLUMNS: [&str; 15] = [
+    "Show",
+    "EpId",
+    "ClipId",
+    "Unsure",
+    "PoorAudioQuality",
+    "Prolongation",
+    "Block",
+    "SoundRep",
+    "WordRep",
+    "DifficultToUnderstand",
+    "Interjection",
+    "NoStutteredWords",
+    "NaturalPause",
+    "Music",
+    "NoSpeech",
+];
+
+/// Vote cells must be integers 0-3; a damaged cell must not silently become a negative.
+fn validate_sep28k_votes(row: &Sep28kRow) -> Result<(), BenchmarkError> {
+    for column in &SEP28K_REQUIRED_COLUMNS[3..] {
+        let value = row.get(*column).map(String::as_str).unwrap_or_default();
+        if !matches!(value.parse::<u8>(), Ok(0..=3)) {
+            return Err(BenchmarkError::InvalidVote {
+                clip_id: format!(
+                    "{}:{}:{}",
+                    first(row, &["Show"]).unwrap_or("?"),
+                    first(row, &["EpId"]).unwrap_or("?"),
+                    first(row, &["ClipId"]).unwrap_or("?")
+                ),
+                column,
+                value: value.to_owned(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Layout written by the dataset's own download script: `clips/<Show>/<EpId>/<Show>_<EpId>_<ClipId>.wav`.
@@ -1093,6 +1175,17 @@ mod tests {
         }
 
         fn wav(&self, show: &str, episode: &str, clip: &str, tone_hz: Option<f32>) {
+            self.wav_samples(show, episode, clip, tone_hz, 48_000);
+        }
+
+        fn wav_samples(
+            &self,
+            show: &str,
+            episode: &str,
+            clip: &str,
+            tone_hz: Option<f32>,
+            samples: usize,
+        ) {
             let spec = hound::WavSpec {
                 channels: 1,
                 sample_rate: 16_000,
@@ -1101,7 +1194,7 @@ mod tests {
             };
             let mut writer =
                 hound::WavWriter::create(self.clip_path(show, episode, clip), spec).unwrap();
-            for index in 0..48_000 {
+            for index in 0..samples {
                 let value = tone_hz.map_or(0.0, |hz| {
                     0.3 * (2.0 * std::f32::consts::PI * hz * index as f32 / 16_000.0).sin()
                 });
@@ -1148,6 +1241,8 @@ mod tests {
         let report = run_sep28k_corpus(&corpus.options(labels, None)).unwrap();
 
         assert_eq!(report.counts.rows, 5);
+        assert_eq!(report.counts.processed_rows, 5);
+        assert_eq!(report.counts.excluded_rows, 1);
         assert_eq!(report.counts.excluded.get("poorAudioQuality"), Some(&1));
         assert_eq!(report.counts.missing_audio, 1);
         assert_eq!(report.counts.unreadable_audio, 1);
@@ -1259,5 +1354,70 @@ mod tests {
         let report = run_sep28k_corpus(&corpus.options(labels, None)).unwrap();
         assert_eq!(report.counts.scored, 0);
         assert!(report.all_scored.is_none());
+    }
+
+    #[test]
+    fn corpus_runner_reports_processed_rows_under_a_limit() {
+        let (corpus, labels) = standard_fixture("limit");
+        let mut options = corpus.options(labels, None);
+        options.limit = Some(2);
+        let report = run_sep28k_corpus(&options).unwrap();
+        assert_eq!(report.counts.rows, 5);
+        assert_eq!(report.counts.processed_rows, 2);
+        assert_eq!(report.counts.scored, 2);
+    }
+
+    #[test]
+    fn corpus_runner_counts_every_exclusion_flag_and_requires_an_affirmative_fluent_label() {
+        let corpus = FixtureCorpus::new("flags");
+        corpus.wav("show", "1", "7", None);
+        let labels = corpus.labels(&[
+            // Music and no speech together.
+            "show,1,6,0,48000,0,0,0,0,0,0,0,0,0,0,2,3",
+            // No stuttering kind at the threshold, but no affirmative fluent vote either.
+            "show,1,7,0,48000,0,0,1,0,0,0,0,0,1,0,0,0",
+        ]);
+        let report = run_sep28k_corpus(&corpus.options(labels, None)).unwrap();
+
+        assert_eq!(report.counts.excluded_rows, 2);
+        assert_eq!(report.counts.excluded.get("music"), Some(&1));
+        assert_eq!(report.counts.excluded.get("noSpeech"), Some(&1));
+        assert_eq!(report.counts.excluded.get("noAffirmativeLabel"), Some(&2));
+        assert_eq!(report.counts.fluent_scored, 0);
+    }
+
+    #[test]
+    fn corpus_runner_rejects_malformed_votes_and_missing_columns() {
+        let corpus = FixtureCorpus::new("votes");
+        for bad in ["x", "4", "-1", ""] {
+            let labels = corpus.labels(&[&format!("show,1,1,0,48000,0,0,{bad},0,0,0,0,0,3,0,0,0")]);
+            assert!(matches!(
+                run_sep28k_corpus(&corpus.options(labels, None)),
+                Err(BenchmarkError::InvalidVote {
+                    column: "Prolongation",
+                    ..
+                })
+            ));
+        }
+
+        let path = corpus.root.join("short-header.csv");
+        std::fs::write(&path, "Show,EpId,ClipId,WordRep\nshow,1,1,0\n").unwrap();
+        assert!(matches!(
+            run_sep28k_corpus(&corpus.options(path, None)),
+            Err(BenchmarkError::MissingColumn("Unsure"))
+        ));
+    }
+
+    #[test]
+    fn corpus_runner_counts_detector_invalid_audio_without_aborting() {
+        let corpus = FixtureCorpus::new("short");
+        corpus.wav_samples("show", "1", "1", None, 1_000);
+        corpus.wav("show", "1", "2", Some(220.0));
+        let labels = corpus.labels(&[FLUENT, PROLONGATION]);
+        let report = run_sep28k_corpus(&corpus.options(labels, None)).unwrap();
+
+        assert_eq!(report.counts.unreadable_audio, 1);
+        assert_eq!(report.unreadable_clip_ids, vec!["show:1:1".to_owned()]);
+        assert_eq!(report.counts.scored, 1);
     }
 }

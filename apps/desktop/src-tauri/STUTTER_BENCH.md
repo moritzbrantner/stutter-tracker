@@ -52,7 +52,8 @@ bun run benchmark:stutter:corpus -- \
 
 - `--clips` uses the layout written by the dataset's download script: `<clips>/<Show>/<EpId>/<Show>_<EpId>_<ClipId>.wav`.
 - `--speakers` is a verified mapping with the columns `clipId,speakerId`, where clip ids are `Show:EpId:ClipId` (for example from SEP-28k-E). The held-out metrics are speaker-exclusive only when every scored clip has a verified speaker; otherwise the report says why they are not.
-- The report records the label-file and mapping SHA-256, the detector configuration, row and exclusion counts, missing and unreadable clips, per-kind prevalence, metrics over all scored clips and the held-out partition, and its limitations. Duplicate clip ids or mapping entries fail the run.
+- Every required SEP-28k column must be present and every vote cell must be an integer 0–3; otherwise the run fails rather than reading damaged labels as negatives. A clip counts as fluent only with an affirmative `NoStutteredWords` vote; clips with neither a stuttering kind nor that vote are excluded as `noAffirmativeLabel`. Exclusions are counted per flag (a clip can have several) and as rows. Clips the detector rejects as input (shorter than 250 ms, non-finite samples) count as unreadable.
+- The report records the label-file and mapping SHA-256, the detector configuration, row, processed-row and exclusion counts, missing and unreadable clips, per-kind prevalence, metrics over all scored clips and the held-out partition, and its limitations. Duplicate clip ids or mapping entries fail the run.
 - The detector receives clip audio only. SEP-28k has no transcripts, so transcript-based detections cannot fire in this configuration; a transcript-assisted configuration is a separate experiment.
 - Nothing is downloaded. Corpus audio and reports derived from it are never committed.
 
