@@ -3,6 +3,9 @@ import { describe, expect, test } from "bun:test";
 import { fallbackAnalyze } from "./index";
 import {
   acceptedAnnotation,
+  analysisSource,
+  analyzerKey,
+  isAnalysisVerified,
   annotateSession,
   audioFingerprint,
   currentAnnotations,
@@ -249,5 +252,33 @@ describe("annotation revisions", () => {
     expect(
       annotateSession(record, revision("a-5", { basedOnRunId: null })).annotations,
     ).toHaveLength(1);
+  });
+});
+
+describe("analysis comparability", () => {
+  test("identifies the analyzer, verification and source of a session's analysis", () => {
+    const legacyRecord = migrateSessionRecord(legacy);
+    expect(analyzerKey(legacyRecord)).toBe("unknown");
+    expect(isAnalysisVerified(legacyRecord)).toBe(false);
+    expect(analysisSource(legacyRecord)).toBe("automated");
+
+    const rerun = reanalyzeSession(
+      legacyRecord,
+      { id: "run-2", createdAt: null, analyzer: onDevice, usedAudio: false, audioId: null },
+      report,
+    );
+    expect(analyzerKey(rerun)).toBe(`onDevice:shared-fallback:${SHARED_ANALYSIS_VERSION}`);
+    expect(isAnalysisVerified(rerun)).toBe(true);
+
+    const reviewed = annotateSession(rerun, {
+      id: "a-1",
+      createdAt: "2026-10-08T10:00:00.000Z",
+      author: { role: "clinician" },
+      basedOnRunId: null,
+      events: [],
+      status: "accepted",
+      supersedes: null,
+    });
+    expect(analysisSource(reviewed)).toBe("humanReference");
   });
 });

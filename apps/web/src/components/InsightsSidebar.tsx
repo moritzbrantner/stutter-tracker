@@ -17,6 +17,8 @@ type TodayStats = {
   count: number;
   totalEvents: number;
   totalMinutes: number;
+  /** Sessions whose saved analysis is not verified for their transcript; counted, but flagged. */
+  unverified: number;
 };
 
 type InsightsSidebarProps = {
@@ -73,6 +75,9 @@ export function InsightsSidebar({
           <MiniStat>{todayStats.count} sessions</MiniStat>
           <MiniStat>{todayStats.totalEvents} events</MiniStat>
           <MiniStat>{todayStats.totalMinutes.toFixed(1)} min</MiniStat>
+          {todayStats.unverified > 0 && (
+            <MiniStat>{todayStats.unverified} with unverified analysis</MiniStat>
+          )}
         </div>
       </PanelBlock>
 

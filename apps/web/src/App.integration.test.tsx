@@ -272,6 +272,45 @@ describe("App integration", () => {
     expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1);
   });
 
+  it("reanalyzes a saved session on request and keeps the earlier run", async () => {
+    const legacy = {
+      id: "session-re",
+      startedAt: "2026-05-19T10:00:00.000Z",
+      segments: [
+        {
+          text: "I I want to start",
+          startSeconds: 0,
+          endSeconds: 3,
+          confidence: 0.9,
+          isFinal: true,
+        },
+      ],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 3,
+        wordCount: 5,
+        stutterCount: 0,
+        stuttersPerMinute: 0,
+        severity: "none",
+        events: [],
+        byKind: {},
+      },
+    };
+    localStorage.setItem(STORE_KEY, JSON.stringify([legacy]));
+    renderApp();
+
+    await userEvent.click(screen.getByRole("button", { name: /Reanalyze saved session from/ }));
+
+    expect(await screen.findByText("Reanalysis added to the session")).toBeInTheDocument();
+    const [stored] = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]") as {
+      analysis: { id: string; analyzer: { producer: string } | null };
+      priorAnalyses: { id: string }[];
+    }[];
+    expect(stored.priorAnalyses.map((run) => run.id)).toEqual(["session-re:legacy"]);
+    expect(stored.analysis.analyzer?.producer).toBe("onDevice");
+    expect(screen.getByText(/2 analysis runs/)).toBeInTheDocument();
+  });
+
   it("keeps external-server transcription settings in web mode", async () => {
     localStorage.setItem(
       TRANSCRIPTION_KEY,

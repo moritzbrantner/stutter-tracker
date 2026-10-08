@@ -250,6 +250,26 @@ export function acceptedAnnotation(record: SessionRecord): AnnotationRevision | 
   return accepted.at(-1) ?? null;
 }
 
+export type AnalysisSource = "automated" | "humanReference";
+
+/** Identifies the analyzer behind the current report; "unknown" when it was never recorded. */
+export function analyzerKey(record: SessionRecord): string {
+  const analyzer = record.analysis.analyzer;
+  return analyzer
+    ? `${analyzer.producer}:${analyzer.algorithm}:${analyzer.version ?? "unversioned"}`
+    : "unknown";
+}
+
+/** True when the current report is known to be the analysis of exactly the saved observation. */
+export function isAnalysisVerified(record: SessionRecord): boolean {
+  return record.analysis.inputId === observationFingerprint(record.segments, record.pauses);
+}
+
+/** Whether an accepted human annotation exists to compare against, or only automated analysis. */
+export function analysisSource(record: SessionRecord): AnalysisSource {
+  return acceptedAnnotation(record) ? "humanReference" : "automated";
+}
+
 /** Every run, oldest first, ending with the current one. */
 export function sessionAnalysisRuns(record: SessionRecord): AnalysisRun[] {
   return [...record.priorAnalyses, { ...record.analysis, report: record.report }];

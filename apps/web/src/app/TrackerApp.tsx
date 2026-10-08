@@ -10,6 +10,7 @@ import {
   type AnalyzerIdentity,
   canonicalSpokenLanguage,
   createSessionRecord,
+  isAnalysisVerified,
   reanalyzeSession,
   fallbackAnalyze as sharedFallbackAnalyze,
   observationFingerprint,
@@ -452,7 +453,8 @@ export function App() {
       (sum, session) => sum + session.report.totalDurationSeconds / 60,
       0,
     );
-    return { count: todays.length, totalEvents, totalMinutes };
+    const unverified = todays.filter((session) => !isAnalysisVerified(session)).length;
+    return { count: todays.length, totalEvents, totalMinutes, unverified };
   }, [sessions]);
 
   async function startRecording() {
@@ -918,6 +920,66 @@ export function App() {
     );
   }
 
+  // Explicit reanalysis of a saved transcript (no stored audio): appends a run, keeping the
+  // earlier ones, and shows the new result if that session is on screen.
+  async function reanalyzeSavedSession(session: SavedSession) {
+    if (captureInProgress) {
+      setMessage("Stop recording and let transcription finish before reanalyzing");
+      return;
+    }
+    setMessage("Reanalyzing saved session");
+    const analysis = await analyzeWithFallback({
+      segments: session.segments,
+      pauses: session.pauses,
+      sessionStartedAt: session.startedAt,
+    });
+    const outcome = await serializeSessionMutation(async () => {
+      const latest = sessionsRef.current.find((candidate) => candidate.id === session.id);
+      if (!latest) {
+        return "deleted" as const;
+      }
+      const updated = reanalyzeSession(
+        latest,
+        {
+          id: analysis.runId,
+          createdAt: analysis.createdAt,
+          analyzer: analysis.analyzer,
+          usedAudio: false,
+          audioId: null,
+        },
+        analysis.report,
+      );
+      try {
+        persistSessions(
+          sessionsRef.current.map((candidate) =>
+            candidate.id === updated.id ? updated : candidate,
+          ),
+        );
+      } catch {
+        return "failed" as const;
+      }
+      if (viewedSessionRef.current?.id === updated.id) {
+        loadedSessionRef.current = updated;
+        setViewedSession(updated);
+        setReport(updated.report);
+        setReportRun(updated.analysis);
+      }
+      try {
+        setCorpusAnalysis(await saveSpeechCorpusSession(updated));
+      } catch {
+        setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+      }
+      return "saved" as const;
+    });
+    setMessage(
+      outcome === "saved"
+        ? "Reanalysis added to the session"
+        : outcome === "deleted"
+          ? "Session was deleted; nothing reanalyzed"
+          : "Could not save the reanalysis: browser storage is full or unavailable",
+    );
+  }
+
   async function deleteSession(session: SavedSession) {
     setDeletingSessionId(session.id);
     try {
@@ -1311,6 +1373,7 @@ export function App() {
           samplesRef.current = [];
         }}
         onSessionDelete={(session) => void deleteSession(session)}
+        onSessionReanalyze={(session) => void reanalyzeSavedSession(session)}
       />
     </main>
   );
@@ -2095,6 +2158,13 @@ function analyzeLocalCorpus(sessions: SavedSession[]): SpeechCorpusAnalysis {
         })),
     }))
     .sort((left, right) => right.wordCount - left.wordCount);
+  const unverified = sessions.filter((session) => !isAnalysisVerified(session)).length;
+  if (unverified > 0) {
+    corpus.summary = [
+      ...corpus.summary,
+      `${unverified} of ${sessions.length} sessions have an analysis that is not verified for their transcript; reanalyze them before comparing.`,
+    ];
+  }
   return corpus;
 }
 

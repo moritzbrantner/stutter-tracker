@@ -1,7 +1,7 @@
-import { migrateSessionRecord } from "@stutter-tracker/shared";
+import { migrateSessionRecord, reanalyzeSession } from "@stutter-tracker/shared";
 import { describe, expect, it } from "vitest";
 import type { AnalysisReport, SavedSession } from "../types";
-import { buildSessionHistory } from "./sessionHistory";
+import { buildSessionHistory, progressComparability } from "./sessionHistory";
 
 describe("buildSessionHistory", () => {
   it("returns the newest requested sessions in chronological order", () => {
@@ -43,6 +43,9 @@ describe("buildSessionHistory", () => {
         stuttersPerMinute: 2,
         fluencyPercentage: null,
         wordsPerMinute: null,
+        analyzerKey: "unknown",
+        verified: false,
+        source: "automated",
       },
     ]);
   });
@@ -55,6 +58,40 @@ describe("buildSessionHistory", () => {
       stuttersPerMinute: 0,
       wordsPerMinute: 0,
     });
+  });
+
+  it("marks progress with mixed analyzer versions as not directly comparable", () => {
+    const verifiedRun = (session: SavedSession, version: string): SavedSession =>
+      reanalyzeSession(
+        session,
+        {
+          id: `run-${version}-${session.id}`,
+          createdAt: "2026-10-01T00:00:00.000Z",
+          analyzer: { producer: "onDevice", algorithm: "shared-fallback", version },
+          usedAudio: false,
+          audioId: null,
+        },
+        session.report,
+      );
+    const first = verifiedRun(savedSession("a", "2026-09-01T12:00:00.000Z", 90, 2, 120), "1");
+    const second = verifiedRun(savedSession("b", "2026-09-02T12:00:00.000Z", 92, 1, 120), "1");
+    const newer = verifiedRun(savedSession("c", "2026-09-03T12:00:00.000Z", 95, 1, 120), "2");
+
+    expect(progressComparability(buildSessionHistory([first, second]))).toEqual({
+      comparable: true,
+      reasons: [],
+    });
+    const mixed = progressComparability(buildSessionHistory([first, second, newer]));
+    expect(mixed.comparable).toBe(false);
+    expect(mixed.reasons).toEqual(["analyzed by 2 different analyzer versions"]);
+
+    const legacy = progressComparability(
+      buildSessionHistory([savedSession("d", "2026-09-04T12:00:00.000Z", 90, 2, 120)]),
+    );
+    expect(legacy.reasons).toEqual([
+      "the analyzer of these sessions was not recorded",
+      "1 session's analysis is not verified for the saved transcript",
+    ]);
   });
 });
 

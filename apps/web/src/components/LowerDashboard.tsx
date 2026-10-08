@@ -3,12 +3,17 @@ import {
   BrainCircuit,
   ListChecks,
   PlayCircle,
+  RefreshCw,
   Trash2,
   TrendingUp,
   Waves,
 } from "lucide-react";
 import type { ReactNode } from "react";
-import { buildSessionHistory, type SessionHistoryPoint } from "../storage/sessionHistory";
+import {
+  buildSessionHistory,
+  progressComparability,
+  type SessionHistoryPoint,
+} from "../storage/sessionHistory";
 import type {
   AnalysisReport,
   BlockerStats,
@@ -37,6 +42,8 @@ type LowerDashboardProps = {
   /** Loading waits until capture and transcription have finished. */
   sessionLoadDisabled?: boolean;
   onSessionDelete: (session: SavedSession) => void;
+  /** Appends a fresh analysis run of the saved transcript; earlier runs stay in the history. */
+  onSessionReanalyze?: (session: SavedSession) => void;
   deletingSessionId: string | null;
 };
 
@@ -50,6 +57,7 @@ export function LowerDashboard({
   onSessionLoad,
   sessionLoadDisabled = false,
   onSessionDelete,
+  onSessionReanalyze,
   deletingSessionId,
 }: LowerDashboardProps) {
   return (
@@ -64,6 +72,7 @@ export function LowerDashboard({
         onSessionLoad={onSessionLoad}
         sessionLoadDisabled={sessionLoadDisabled}
         onSessionDelete={onSessionDelete}
+        onSessionReanalyze={onSessionReanalyze}
         deletingSessionId={deletingSessionId}
       />
     </section>
@@ -256,6 +265,7 @@ function ChunkAnalysisPanel({
 
 function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
   const history = buildSessionHistory(sessions);
+  const comparability = progressComparability(history);
 
   return (
     <div className={`${panelClass} min-w-0 flex-[1.2_1_28rem] max-lg:w-full`}>
@@ -275,6 +285,15 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
           />
         ) : (
           <>
+            {!comparability.comparable && (
+              <p
+                role="note"
+                className="m-0 border-b border-[#f0e2c4] bg-[#fdf8ec] px-4 py-3 text-sm text-[#6b5520]"
+              >
+                Not directly comparable: these sessions were {comparability.reasons.join("; ")}.
+                Reanalyze older sessions to compare them on equal terms.
+              </p>
+            )}
             <TrendMetric
               label="Fluency"
               hint="Computed fluency percentage"
@@ -372,12 +391,15 @@ function SessionsPanel({
   onSessionLoad,
   sessionLoadDisabled = false,
   onSessionDelete,
+  onSessionReanalyze,
   deletingSessionId,
 }: {
   sessions: SavedSession[];
   onSessionLoad: (session: SavedSession) => void;
   sessionLoadDisabled?: boolean;
   onSessionDelete: (session: SavedSession) => void;
+  /** Appends a fresh analysis run of the saved transcript; earlier runs stay in the history. */
+  onSessionReanalyze?: (session: SavedSession) => void;
   deletingSessionId: string | null;
 }) {
   const historyById = new Map(
@@ -432,6 +454,18 @@ function SessionsPanel({
                   </span>
                   <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
                 </button>
+                {onSessionReanalyze && (
+                  <button
+                    type="button"
+                    className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#355e47] hover:bg-[#f2f7f4] disabled:cursor-not-allowed disabled:opacity-50"
+                    aria-label={`Reanalyze saved session from ${new Date(session.startedAt).toLocaleString()}`}
+                    title="Reanalyze: add a new analysis run; earlier runs stay in the history"
+                    disabled={sessionLoadDisabled || deletingSessionId === session.id}
+                    onClick={() => onSessionReanalyze(session)}
+                  >
+                    <RefreshCw size={16} />
+                  </button>
+                )}
                 <button
                   type="button"
                   className="border-0 border-l border-[#edf1ee] bg-white px-3 text-[#a33b3b] hover:bg-[#fff4f4] disabled:cursor-wait disabled:opacity-50"
