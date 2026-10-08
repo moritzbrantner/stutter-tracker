@@ -52,6 +52,8 @@ pub(crate) enum BenchmarkError {
     ClipsDirectory(String),
     #[error("a label row has an empty {0}")]
     EmptyIdentity(&'static str),
+    #[error("clip `{0}` needs numeric Start/Stop sample offsets with Stop > Start")]
+    InvalidBounds(String),
     #[error("labels are missing required SEP-28k column `{0}`")]
     MissingColumn(&'static str),
     #[error("clip `{clip_id}` has invalid {column} value `{value}` (expected 0-3)")]
@@ -450,6 +452,19 @@ const DURATION_TOLERANCE: f64 = 0.05;
 const PARTITION_SEED: &str = "sep28k-partition-v1";
 const LISTED_ID_LIMIT: usize = 20;
 
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DetectorRevision {
+    /// `git rev-parse HEAD` of this repository.
+    pub(crate) commit: String,
+    /// Uncommitted changes were present, so `commit` alone does not identify the code.
+    pub(crate) dirty: bool,
+    /// SHA-256 of `.coding-tooling.source-deps.json` (exact capability-source revisions).
+    pub(crate) source_pins_sha256: Option<String>,
+    /// Whether exact local sources were active (`.cargo/config.toml` present).
+    pub(crate) source_mode: bool,
+}
+
 #[derive(Debug, Clone)]
 pub(crate) struct CorpusRunOptions {
     pub(crate) labels_csv: PathBuf,
@@ -458,6 +473,7 @@ pub(crate) struct CorpusRunOptions {
     pub(crate) speakers_csv: Option<PathBuf>,
     pub(crate) vote_threshold: u8,
     pub(crate) limit: Option<usize>,
+    pub(crate) detector_revision: Option<DetectorRevision>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -494,6 +510,8 @@ struct CorpusIdentity {
 #[serde(rename_all = "camelCase")]
 struct RunConfiguration {
     detector: &'static str,
+    /// Code that produced the predictions; supplied by the caller (git and source-pin state).
+    detector_revision: Option<DetectorRevision>,
     detector_input: &'static str,
     vote_threshold: u8,
     limit: Option<usize>,
@@ -614,12 +632,13 @@ pub(crate) fn run_sep28k_corpus(
         }
         // Clips must cover the labelled interval; a truncated extraction would be scored against
         // labels for audio it does not contain.
-        let expected_seconds = match (entry.start_sample, entry.stop_sample) {
-            (Some(start), Some(stop)) if stop > start => {
-                Some((stop - start) as f64 / f64::from(SEP28K_SAMPLE_RATE))
-            }
-            _ => None,
+        let (Some(start), Some(stop)) = (entry.start_sample, entry.stop_sample) else {
+            return Err(BenchmarkError::InvalidBounds(entry.id));
         };
+        if stop <= start {
+            return Err(BenchmarkError::InvalidBounds(entry.id));
+        }
+        let expected_seconds = (stop - start) as f64 / f64::from(SEP28K_SAMPLE_RATE);
         let Ok((samples, sample_rate)) = read_mono_wav(&path) else {
             counts.unreadable_audio += 1;
             unreadable.push(entry.id);
@@ -631,9 +650,7 @@ pub(crate) fn run_sep28k_corpus(
             continue;
         }
         let duration_seconds = samples.len() as f64 / f64::from(sample_rate);
-        if expected_seconds.is_some_and(|expected| {
-            (duration_seconds - expected).abs() > expected * DURATION_TOLERANCE
-        }) {
+        if (duration_seconds - expected_seconds).abs() > expected_seconds * DURATION_TOLERANCE {
             counts.unreadable_audio += 1;
             unreadable.push(entry.id);
             continue;
@@ -723,9 +740,15 @@ pub(crate) fn run_sep28k_corpus(
             },
             None,
         ),
+        Some(_) if speaker_count(&clips) < 2 => (
+            PartitionSummary::NotSpeakerExclusive {
+                reason: "fewer than two verified speakers among the scored clips".to_owned(),
+            },
+            None,
+        ),
         Some(_) => {
             let (train, evaluation) =
-                speaker_safe_split(&clips, DEFAULT_EVALUATION_FRACTION, PARTITION_SEED)?;
+                held_out_speaker_split(&clips, DEFAULT_EVALUATION_FRACTION, PARTITION_SEED);
             let summary = PartitionSummary::SpeakerExclusive {
                 seed: PARTITION_SEED,
                 evaluation_fraction: DEFAULT_EVALUATION_FRACTION,
@@ -759,6 +782,7 @@ pub(crate) fn run_sep28k_corpus(
         },
         configuration: RunConfiguration {
             detector: "existing-detector",
+            detector_revision: options.detector_revision.clone(),
             detector_input: "clip audio only; no transcript",
             vote_threshold: options.vote_threshold,
             limit: options.limit,
@@ -784,6 +808,35 @@ pub(crate) fn run_sep28k_corpus(
 
 /// Every applicable reason. Quality flags are multi-label; a clip with no stuttering kind at the
 /// threshold also needs an affirmative `NoStutteredWords` vote to count as fluent.
+/// Speaker-exclusive split with a deterministic, non-empty held-out side: speakers are ranked by
+/// a seeded hash and the lowest `ceil(fraction * speakers)` (at least one, never all) are held
+/// out. Unlike independent hash bucketing, small corpora cannot end up with no held-out speaker.
+fn held_out_speaker_split(
+    clips: &[BenchmarkClip],
+    evaluation_fraction: f64,
+    seed: &str,
+) -> (Vec<BenchmarkClip>, Vec<BenchmarkClip>) {
+    let mut speakers = clips
+        .iter()
+        .filter_map(|clip| clip.speaker_id.as_deref())
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    speakers.sort_by_key(|speaker| (stable_hash(&format!("{seed}:{speaker}")), *speaker));
+    let held_out_count = ((speakers.len() as f64 * evaluation_fraction).ceil() as usize)
+        .clamp(1, speakers.len().saturating_sub(1).max(1));
+    let held_out = speakers[..held_out_count]
+        .iter()
+        .copied()
+        .collect::<HashSet<_>>();
+    clips.iter().cloned().partition(|clip| {
+        !clip
+            .speaker_id
+            .as_deref()
+            .is_some_and(|speaker| held_out.contains(speaker))
+    })
+}
+
 fn exclusion_reasons(entry: &Sep28kManifestEntry) -> Vec<&'static str> {
     let flags = &entry.flags;
     let mut reasons = [
@@ -1276,6 +1329,7 @@ mod tests {
                 speakers_csv: speakers,
                 vote_threshold: 2,
                 limit: None,
+                detector_revision: None,
             }
         }
     }
@@ -1563,6 +1617,66 @@ mod tests {
                 .unwrap();
         let json = serde_json::to_string(&report).unwrap();
         assert!(json.contains("\"trainClips\""));
+        assert!(report.held_out.is_some());
         assert!(!json.contains('_'), "snake_case key in {json}");
+    }
+
+    #[test]
+    fn corpus_runner_rejects_missing_or_unordered_clip_bounds() {
+        let corpus = FixtureCorpus::new("bounds");
+        corpus.wav("show", "1", "1", None);
+        for row in [
+            "show,1,1,,48000,0,0,0,0,0,0,0,0,3,0,0,0",
+            "show,1,1,x,48000,0,0,0,0,0,0,0,0,3,0,0,0",
+            "show,1,1,48000,48000,0,0,0,0,0,0,0,0,3,0,0,0",
+        ] {
+            assert!(matches!(
+                run_sep28k_corpus(&corpus.options(corpus.labels(&[row]), None)),
+                Err(BenchmarkError::InvalidBounds(_))
+            ));
+        }
+    }
+
+    #[test]
+    fn held_out_split_is_never_empty_and_never_everything() {
+        for speakers in 2..12 {
+            let clips = (0..speakers * 2)
+                .map(|index| {
+                    clip(
+                        &format!("clip-{index}"),
+                        Some(&format!("speaker-{}", index / 2)),
+                        vec![],
+                        vec![],
+                    )
+                })
+                .collect::<Vec<_>>();
+            let (train, evaluation) = held_out_speaker_split(&clips, 0.2, PARTITION_SEED);
+            assert!(
+                !train.is_empty() && !evaluation.is_empty(),
+                "{speakers} speakers"
+            );
+            assert!(speaker_count(&train) > 0 && speaker_count(&evaluation) > 0);
+            let train_speakers = train
+                .iter()
+                .filter_map(|item| item.speaker_id.as_deref())
+                .collect::<HashSet<_>>();
+            assert!(evaluation
+                .iter()
+                .all(|item| !train_speakers.contains(item.speaker_id.as_deref().unwrap())));
+        }
+    }
+
+    #[test]
+    fn corpus_report_records_the_supplied_detector_revision() {
+        let (corpus, labels) = standard_fixture("revision");
+        let mut options = corpus.options(labels, None);
+        options.detector_revision = Some(DetectorRevision {
+            commit: "abc123".to_owned(),
+            dirty: true,
+            source_pins_sha256: Some("pins".to_owned()),
+            source_mode: true,
+        });
+        let json = serde_json::to_string(&run_sep28k_corpus(&options).unwrap()).unwrap();
+        assert!(json.contains("\"detectorRevision\":{\"commit\":\"abc123\",\"dirty\":true"));
     }
 }

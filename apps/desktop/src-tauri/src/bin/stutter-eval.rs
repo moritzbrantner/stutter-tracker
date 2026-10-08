@@ -74,6 +74,7 @@ fn run(args: Vec<String>) -> Result<(), String> {
         speakers_csv: speakers,
         vote_threshold,
         limit,
+        detector_revision: detector_revision(),
     };
     let report = stutter_bench::run_sep28k_corpus(&options).map_err(|error| error.to_string())?;
     let json = serde_json::to_string_pretty(&report).map_err(|error| error.to_string())?;
@@ -85,4 +86,50 @@ fn run(args: Vec<String>) -> Result<(), String> {
             Ok(())
         }
     }
+}
+
+/// Identifies the code that produced the predictions: the repository commit, whether it had
+/// uncommitted changes, and the exact capability-source pins in use.
+fn detector_revision() -> Option<stutter_bench::DetectorRevision> {
+    use sha2::{Digest, Sha256};
+    use std::path::Path;
+    use std::process::Command;
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .args(args)
+            .output()
+            .ok()
+            .filter(|output| output.status.success())
+            .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
+    };
+    let commit = git(&["rev-parse", "HEAD"])?;
+    // Source mode rewrites Cargo.lock; the pins it reflects are recorded separately below.
+    let dirty = git(&[
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+        "--",
+        ".",
+        ":(exclude)apps/desktop/src-tauri/Cargo.lock",
+    ])
+    .map(|status| !status.is_empty())
+    .unwrap_or(true);
+    let source_pins_sha256 = std::fs::read(root.join(".coding-tooling.source-deps.json"))
+        .ok()
+        .map(|bytes| {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect()
+        });
+    Some(stutter_bench::DetectorRevision {
+        commit,
+        dirty,
+        source_pins_sha256,
+        source_mode: root.join(".cargo/config.toml").is_file(),
+    })
 }
