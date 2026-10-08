@@ -33,6 +33,8 @@ export type AnalysisRunIdentity = {
   inputId: string;
   /** Whether captured audio fed the run; audio is not stored, so such runs cannot be replayed. */
   usedAudio: boolean | null;
+  /** Fingerprint of the audio the run analyzed (see `audioFingerprint`); null when none or unknown. */
+  audioId: string | null;
 };
 
 export type AnalysisRun = AnalysisRunIdentity & { report: AnalysisReport };
@@ -134,6 +136,7 @@ export function migrateSessionRecord(record: LegacySessionRecord | SessionRecord
       analyzer: null,
       inputId: observationFingerprint(record.segments, record.pauses),
       usedAudio: null,
+      audioId: null,
     },
     priorAnalyses: [],
   };
@@ -183,6 +186,18 @@ export function observationFingerprint(segments: TranscriptSegment[], pauses: Pa
     pauses.map((pause) => [pause.startSeconds, pause.endSeconds, pause.afterText ?? null]),
   ]);
   return `obs-${fnv1a(canonical, 0x811c9dc5)}${fnv1a(canonical, 0x050c5d1f)}`;
+}
+
+/** Deterministic identity of analyzed PCM: sample rate plus the exact float32 sample bits. */
+export function audioFingerprint(samples: ArrayLike<number>, sampleRate: number) {
+  const bits = new Uint32Array(Float32Array.from(samples).buffer);
+  let low = Math.imul(0x811c9dc5 ^ sampleRate, 0x01000193) >>> 0;
+  let high = Math.imul(0x050c5d1f ^ bits.length, 0x01000193) >>> 0;
+  for (let index = 0; index < bits.length; index += 1) {
+    low = Math.imul(low ^ bits[index], 0x01000193) >>> 0;
+    high = Math.imul(high ^ (bits[index] >>> 7), 0x01000193) >>> 0;
+  }
+  return `pcm-${low.toString(16).padStart(8, "0")}${high.toString(16).padStart(8, "0")}`;
 }
 
 function fnv1a(text: string, seed: number) {

@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 
 import { fallbackAnalyze } from "./index";
 import {
+  audioFingerprint,
   createSessionRecord,
   type LegacySessionRecord,
   migrateSessionRecord,
@@ -45,6 +46,7 @@ describe("session records", () => {
         analyzer: null,
         inputId: observationFingerprint(segments, pauses),
         usedAudio: null,
+        audioId: null,
       },
       priorAnalyses: [],
     });
@@ -66,6 +68,7 @@ describe("session records", () => {
         createdAt: "2026-09-09T06:01:00.000Z",
         analyzer: onDevice,
         usedAudio: true,
+        audioId: null,
       },
     });
 
@@ -75,6 +78,7 @@ describe("session records", () => {
       analyzer: onDevice,
       inputId: observationFingerprint(segments, pauses),
       usedAudio: true,
+      audioId: null,
     });
     expect(record.priorAnalyses).toEqual([]);
   });
@@ -88,6 +92,7 @@ describe("session records", () => {
         createdAt: null,
         analyzer: onDevice,
         usedAudio: false,
+        audioId: null,
         inputId: staleInput,
       },
     });
@@ -102,7 +107,13 @@ describe("session records", () => {
 
     const rerun = reanalyzeSession(
       original,
-      { id: "run-2", createdAt: "2026-10-01T00:00:00.000Z", analyzer: onDevice, usedAudio: false },
+      {
+        id: "run-2",
+        createdAt: "2026-10-01T00:00:00.000Z",
+        analyzer: onDevice,
+        usedAudio: false,
+        audioId: null,
+      },
       nextReport,
     );
 
@@ -124,6 +135,17 @@ describe("session records", () => {
     expect(() => reanalyzeSession(original, { ...original.analysis }, report)).toThrow(
       "already recorded",
     );
+  });
+
+  test("fingerprints analyzed audio by sample rate and exact samples", () => {
+    const samples = [0, 0.25, -0.5, 1];
+    expect(audioFingerprint(samples, 16_000)).toBe(audioFingerprint(samples, 16_000));
+    expect(audioFingerprint(samples, 16_000)).toMatch(/^pcm-[0-9a-f]{16}$/);
+    expect(audioFingerprint(samples, 48_000)).not.toBe(audioFingerprint(samples, 16_000));
+    expect(audioFingerprint([0, 0.25, -0.5, 0.9], 16_000)).not.toBe(
+      audioFingerprint(samples, 16_000),
+    );
+    expect(audioFingerprint([...samples, 0], 16_000)).not.toBe(audioFingerprint(samples, 16_000));
   });
 
   test("fingerprints the observation deterministically", () => {

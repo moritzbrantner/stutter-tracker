@@ -100,6 +100,7 @@ describe("session backup", () => {
           version: SHARED_ANALYSIS_VERSION,
         },
         usedAudio: false,
+        audioId: null,
       },
       { ...session.report, stutterCount: 1 },
     );
@@ -130,10 +131,33 @@ describe("session backup", () => {
     expect(
       parseSessionBackup({ sessions: [{ ...session, recordings: [recording] }] }),
     ).toHaveLength(1);
+    expect(() =>
+      parseSessionBackup({
+        sessions: [{ ...session, recordings: [{ ...recording, sessionId: "other-session" }] }],
+      }),
+    ).toThrow("Backup session 1 is invalid.");
     const { discontinuities: _dropped, ...partial } = recording;
     expect(() => parseSessionBackup({ sessions: [{ ...session, recordings: [partial] }] })).toThrow(
       "Backup session 1 is invalid.",
     );
+  });
+
+  test("rejects recordings from another session and repeated run ids", () => {
+    const rerun = reanalyzeSession(
+      session,
+      { id: "run-2", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+      session.report,
+    );
+    expect(() =>
+      parseSessionBackup({
+        sessions: [{ ...rerun, analysis: { ...rerun.analysis, id: session.analysis.id } }],
+      }),
+    ).toThrow("Backup session 1 is invalid.");
+    expect(() =>
+      parseSessionBackup({
+        sessions: [{ ...rerun, priorAnalyses: [rerun.priorAnalyses[0], rerun.priorAnalyses[0]] }],
+      }),
+    ).toThrow("Backup session 1 is invalid.");
   });
 
   test("imports nothing when any session is unreadable", () => {

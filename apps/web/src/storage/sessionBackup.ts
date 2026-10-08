@@ -74,15 +74,26 @@ export function parseStoredSession(value: unknown): SavedSession | null {
 }
 
 function isSessionProvenance(value: Record<string, unknown>) {
-  return (
-    isSessionContext(value.context) &&
-    Array.isArray(value.recordings) &&
-    value.recordings.every(isRecordingDescriptor) &&
-    isAnalysisRunIdentity(value.analysis) &&
-    Array.isArray(value.priorAnalyses) &&
-    value.priorAnalyses.every(
-      (run) => isAnalysisRunIdentity(run) && isAnalysisReport((run as { report: unknown }).report),
+  if (
+    !(
+      isSessionContext(value.context) &&
+      Array.isArray(value.recordings) &&
+      value.recordings.every(isRecordingDescriptor) &&
+      isAnalysisRunIdentity(value.analysis) &&
+      Array.isArray(value.priorAnalyses) &&
+      value.priorAnalyses.every(
+        (run) =>
+          isAnalysisRunIdentity(run) && isAnalysisReport((run as { report: unknown }).report),
+      )
     )
+  ) {
+    return false;
+  }
+  // Capture descriptors belong to this session, and every analysis run is recorded once.
+  const runIds = [value.analysis, ...value.priorAnalyses].map((run) => (run as { id: string }).id);
+  return (
+    value.recordings.every((recording) => recording.sessionId === value.id) &&
+    new Set(runIds).size === runIds.length
   );
 }
 
@@ -156,7 +167,8 @@ function isAnalysisRunIdentity(value: unknown) {
     (value.createdAt === null || isValidDateString(value.createdAt)) &&
     (value.analyzer === null || isAnalyzerIdentity(value.analyzer)) &&
     typeof value.inputId === "string" &&
-    (value.usedAudio === null || typeof value.usedAudio === "boolean")
+    (value.usedAudio === null || typeof value.usedAudio === "boolean") &&
+    (value.audioId === null || typeof value.audioId === "string")
   );
 }
 

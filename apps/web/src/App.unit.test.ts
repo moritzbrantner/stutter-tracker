@@ -280,6 +280,7 @@ describe("analysis provenance label", () => {
         createdAt: "2026-10-01T00:00:00.000Z",
         analyzer: { producer: "onDevice", algorithm: "shared-fallback", version: "1" },
         usedAudio: false,
+        audioId: null,
       },
       legacy.report,
     );

@@ -12,6 +12,7 @@ import {
   createSessionRecord,
   fallbackAnalyze as sharedFallbackAnalyze,
   observationFingerprint,
+  audioFingerprint,
   resampleSamples as sharedResampleSamples,
 } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
@@ -347,6 +348,7 @@ export function App() {
         createdAt: new Date().toISOString(),
         analyzer: analysisQuery.data.analyzer,
         usedAudio: analysisQuery.data.usedAudio,
+        audioId: analysisQuery.data.audioId,
         inputId: analysisQuery.data.inputId,
       });
     }
@@ -721,6 +723,7 @@ export function App() {
         createdAt: null,
         analyzer: null,
         usedAudio: null,
+        audioId: null,
       },
       context: {
         spokenLanguage: canonicalSpokenLanguage(sessionLanguageRef.current),
@@ -1154,9 +1157,14 @@ async function analyzeWithFallback(request: {
   sessionStartedAt?: string;
   samples?: number[];
   sampleRate?: number;
-}): Promise<AnalyzedSpeech & { usedAudio: boolean; inputId: string }> {
+}): Promise<AnalyzedSpeech & { usedAudio: boolean; inputId: string; audioId: string | null }> {
+  const usedAudio = Boolean(request.samples?.length && request.sampleRate);
   const provenance = {
-    usedAudio: Boolean(request.samples?.length),
+    usedAudio,
+    audioId:
+      usedAudio && request.samples && request.sampleRate
+        ? audioFingerprint(request.samples, request.sampleRate)
+        : null,
     inputId: observationFingerprint(request.segments, request.pauses),
   };
   try {
