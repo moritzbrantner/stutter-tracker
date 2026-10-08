@@ -537,8 +537,10 @@ struct MetricIntervals {
     seed: &'static str,
     micro_f1: Interval,
     macro_f1: Interval,
-    false_positive_clip_rate: Interval,
-    f1_by_kind: BTreeMap<String, Interval>,
+    /// Over draws that contain at least one fluent clip; null if none did.
+    false_positive_clip_rate: Option<Interval>,
+    /// Per kind, over draws with at least one reference positive; null if none had one.
+    f1_by_kind: BTreeMap<String, Option<Interval>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize)]
@@ -898,12 +900,18 @@ fn bootstrap_intervals(clips: &[BenchmarkClip]) -> Result<Option<MetricIntervals
         let report = evaluate_clip_refs(&sample)?;
         micro.push(report.micro_f1);
         macro_f1.push(report.macro_f1);
-        fluent.push(report.false_positive_clip_rate);
+        // A rate or F1 with a zero denominator is undefined, not perfect or zero: skip the draw.
+        if sample.iter().any(|clip| clip.reference_kinds.is_empty()) {
+            fluent.push(report.false_positive_clip_rate);
+        }
         for kind in BENCHMARK_KINDS {
-            per_kind
-                .entry(kind_name(kind).to_owned())
-                .or_default()
-                .push(report.by_kind[&kind].f1);
+            let values = per_kind.entry(kind_name(kind).to_owned()).or_default();
+            if sample
+                .iter()
+                .any(|clip| clip.reference_kinds.contains(&kind))
+            {
+                values.push(report.by_kind[&kind].f1);
+            }
         }
     }
     Ok(Some(MetricIntervals {
@@ -912,10 +920,15 @@ fn bootstrap_intervals(clips: &[BenchmarkClip]) -> Result<Option<MetricIntervals
         seed: BOOTSTRAP_SEED,
         micro_f1: percentile_interval(micro),
         macro_f1: percentile_interval(macro_f1),
-        false_positive_clip_rate: percentile_interval(fluent),
+        false_positive_clip_rate: (!fluent.is_empty()).then(|| percentile_interval(fluent)),
         f1_by_kind: per_kind
             .into_iter()
-            .map(|(kind, values)| (kind, percentile_interval(values)))
+            .map(|(kind, values)| {
+                (
+                    kind,
+                    (!values.is_empty()).then(|| percentile_interval(values)),
+                )
+            })
             .collect(),
     }))
 }
@@ -2034,9 +2047,10 @@ mod tests {
             .collect::<Vec<_>>();
         let intervals = bootstrap_intervals(&clips).unwrap().unwrap();
         assert_eq!(intervals.resampling_unit, "speaker");
-        assert!(
-            intervals.false_positive_clip_rate.lower <= intervals.false_positive_clip_rate.upper
-        );
+        let fluent = intervals.false_positive_clip_rate.unwrap();
+        assert!(fluent.lower <= fluent.upper);
+        // No clip has a filler reference, so its F1 interval is undefined rather than zero.
+        assert_eq!(intervals.f1_by_kind["filler"], None);
         assert!(bootstrap_intervals(&[]).unwrap().is_none());
         let one_speaker = clips
             .iter()
@@ -2154,5 +2168,32 @@ mod tests {
 
     fn clip_with_speaker(id: &str, speaker: &str) -> BenchmarkClip {
         clip(id, Some(speaker), vec![], vec![])
+    }
+
+    #[test]
+    fn bootstrap_skips_draws_without_fluent_clips_for_the_fluent_rate() {
+        // Fluent clips only for one of many speakers: many draws contain none of them.
+        let mut clips = vec![clip(
+            "fluent",
+            Some("speaker-0"),
+            vec![],
+            vec![StutterKind::Filler],
+        )];
+        for index in 1..12 {
+            clips.push(clip(
+                &format!("clip-{index}"),
+                Some(&format!("speaker-{index}")),
+                vec![StutterKind::Block],
+                vec![StutterKind::Block],
+            ));
+        }
+        let fluent = bootstrap_intervals(&clips)
+            .unwrap()
+            .unwrap()
+            .false_positive_clip_rate
+            .unwrap();
+        // The only fluent clip is a false positive, so every defined draw has rate 1.
+        assert_eq!(fluent.lower, 1.0);
+        assert_eq!(fluent.upper, 1.0);
     }
 }
