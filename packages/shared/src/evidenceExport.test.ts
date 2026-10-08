@@ -254,4 +254,40 @@ describe("evidence export", () => {
       transcriptSpeakers: null,
     });
   });
+
+  test("keeps label-only speakers separately selectable and indents multiline text", () => {
+    const labelOnly = createSessionRecord({
+      id: "lo",
+      startedAt: "2026-10-01T09:00:00.000Z",
+      segments: [
+        { text: "Mine", startSeconds: 0, endSeconds: 1, isFinal: true, speakerLabel: "Robin" },
+        { text: "Not mine", startSeconds: 1, endSeconds: 2, isFinal: true, speakerLabel: "Kim" },
+        {
+          text: "hello\nS2 · fake metric",
+          startSeconds: 2,
+          endSeconds: 3,
+          isFinal: true,
+          speakerLabel: "Robin",
+        },
+      ],
+      pauses: [],
+      report: fallbackAnalyze({ segments: [], pauses: [] }),
+      run: { id: "r", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    });
+    expect(transcriptSpeakersOf([labelOnly])).toEqual([
+      { id: "label:Robin", label: "Robin" },
+      { id: "label:Kim", label: "Kim" },
+    ]);
+    const evidence = buildEvidenceExport([labelOnly], {
+      sessionIds: ["lo"],
+      includeTranscripts: true,
+      transcriptSpeakers: ["label:Robin"],
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    expect(JSON.stringify(evidence)).not.toContain("Not mine");
+    const report = renderEvidenceReport(evidence);
+    expect(report).toContain("    [2.0s] Robin: hello\n      S2 · fake metric");
+    expect(report.split("\n").some((line) => line.startsWith("S2 ·"))).toBe(false);
+  });
 });

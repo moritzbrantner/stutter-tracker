@@ -84,12 +84,23 @@ export type EvidencePackage = {
 export const EVIDENCE_EXPORT_NOTICE =
   "Exported by the user for review. Counts are automated estimates unless marked as a human reference; they are not a diagnosis, a severity rating or evidence of treatment effect. Once shared, copies cannot be recalled.";
 
+/**
+ * Selection key for a segment's speaker: its id, else its label (label-only speakers must stay
+ * separately selectable), else the unattributed group.
+ */
+export function speakerKey(segment: { speakerId?: string; speakerLabel?: string }) {
+  if (segment.speakerId) {
+    return segment.speakerId;
+  }
+  return segment.speakerLabel ? `label:${segment.speakerLabel}` : UNATTRIBUTED_SPEAKER;
+}
+
 /** Speakers that appear in the selected sessions' transcripts, for the export preview. */
 export function transcriptSpeakersOf(sessions: SessionRecord[]) {
   const speakers = new Map<string, string>();
   for (const session of sessions) {
     for (const segment of session.segments) {
-      const id = segment.speakerId ?? UNATTRIBUTED_SPEAKER;
+      const id = speakerKey(segment);
       if (!speakers.has(id)) {
         speakers.set(
           id,
@@ -175,10 +186,10 @@ export function buildEvidenceExport(
           .filter(
             (segment) =>
               options.transcriptSpeakers === "all" ||
-              options.transcriptSpeakers.includes(segment.speakerId ?? UNATTRIBUTED_SPEAKER),
+              options.transcriptSpeakers.includes(speakerKey(segment)),
           )
           .map((segment) => ({
-            speaker: speakerName(segment.speakerId ?? UNATTRIBUTED_SPEAKER, segment.speakerLabel),
+            speaker: speakerName(speakerKey(segment), segment.speakerLabel),
             startSeconds: segment.startSeconds,
             endSeconds: segment.endSeconds,
             text: segment.text.trim(),
@@ -219,7 +230,12 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
           : "  Transcript:",
       );
       for (const segment of session.transcript) {
-        lines.push(`    [${segment.startSeconds.toFixed(1)}s] ${segment.speaker}: ${segment.text}`);
+        // Embedded line breaks stay indented, so transcript text cannot pass for report lines.
+        lines.push(
+          `    [${segment.startSeconds.toFixed(1)}s] ${oneLine(segment.speaker)}: ${segment.text
+            .split(/\r?\n/)
+            .join("\n      ")}`,
+        );
       }
     }
   }
@@ -246,6 +262,10 @@ function describeCondition(context: EvidenceSession["context"]) {
     .map(([key, value]) => `${key} ${value}`)
     .join(", ");
   return `assisted (${context.aid}${settings ? `; ${settings}` : ""})`;
+}
+
+function oneLine(value: string) {
+  return value.replace(/\s*\r?\n\s*/g, " ");
 }
 
 function round(value: number) {
