@@ -458,3 +458,49 @@ describe("App integration", () => {
     ).toBeInTheDocument();
   });
 });
+
+it("reuses the data preview across parent recording renders", async () => {
+  const { EvidenceExportPanel } = await import("./components/EvidenceExportPanel");
+  const { createSessionRecord } = await import("@stutter-tracker/shared");
+  const segments = Array.from({ length: 1000 }, (_, index) => ({
+    text: `Transcript ${index} ${"words ".repeat(100)}`,
+    startSeconds: index,
+    endSeconds: index + 1,
+    isFinal: true,
+  }));
+  const sessions = [
+    createSessionRecord({
+      id: "preview-test",
+      startedAt: "2026-10-01T09:00:00.000Z",
+      segments,
+      pauses: [],
+      report: fallbackAnalyze({ segments, pauses: [] }),
+      run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    }),
+  ];
+  const user = userEvent.setup();
+  const view = render(<EvidenceExportPanel sessions={sessions} />);
+  await user.click(screen.getByRole("button", { name: "Choose sessions" }));
+  await user.click(screen.getAllByRole("checkbox")[0]!);
+  await user.click(screen.getByRole("checkbox", { name: "Transcripts" }));
+  await user.click(screen.getByRole("button", { name: "Data (JSON)" }));
+  const previewText = screen.getByLabelText("Export preview").textContent;
+  expect(previewText).toContain("Transcript 999");
+  const stringify = vi.spyOn(JSON, "stringify");
+  try {
+    for (let frame = 0; frame < 10; frame++) {
+      view.rerender(<EvidenceExportPanel sessions={sessions} />);
+    }
+    const exports = stringify.mock.calls.filter(
+      ([value]) =>
+        typeof value === "object" &&
+        value !== null &&
+        "schema" in value &&
+        value.schema === "vox-evidence-export",
+    );
+    expect(exports).toHaveLength(0);
+    expect(screen.getByLabelText("Export preview").textContent).toBe(previewText);
+  } finally {
+    stringify.mockRestore();
+  }
+});

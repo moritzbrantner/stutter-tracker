@@ -46,6 +46,7 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
     [open, sessions, exportOptions],
   );
   const report = useMemo(() => (preview ? renderEvidenceReport(preview) : ""), [preview]);
+  const data = useMemo(() => (preview ? JSON.stringify(preview, null, 2) : ""), [preview]);
   const hasSessions = (preview?.sessions.length ?? 0) > 0;
   const buildForDownload = () =>
     buildEvidenceExport(sessions, { ...exportOptions, exportedAt: new Date() });
@@ -190,7 +191,7 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
                 ? "Select at least one session."
                 : previewFormat === "report"
                   ? report
-                  : JSON.stringify(preview, null, 2)}
+                  : data}
             </pre>
             <p className={`m-0 mt-2 text-xs ${mutedTextClass}`}>
               The export time is set when you download.

@@ -70,6 +70,8 @@ export type EvidenceSession = {
     eventCount: number;
     possibleEventCount: number;
   } | null;
+  /** Whether exportable words were removed from this session. */
+  transcriptFiltered?: boolean;
   transcript?: { speaker: string; startSeconds: number; endSeconds: number; text: string }[];
 };
 
@@ -104,8 +106,12 @@ export function speakerKey(
     return `id:${segment.speakerId}`;
   }
   return segment.speakerLabel
-    ? `label:${sessionId}:${segment.speakerLabel}`
+    ? `label:${speakerKeyPart(sessionId)}:${speakerKeyPart(segment.speakerLabel)}`
     : `${UNATTRIBUTED_SPEAKER}:${sessionId}`;
+}
+
+function speakerKeyPart(value: string) {
+  return value.replaceAll("%", "%25").replaceAll(":", "%3A");
 }
 
 /** Segments that can appear in an exported transcript. */
@@ -118,13 +124,13 @@ function isExportable(segment: { isFinal: boolean; text: string }) {
  * controls. Session-scoped speakers carry their session's date when several sessions are listed.
  */
 export function transcriptSpeakersOf(sessions: SessionRecord[]) {
+  const labels = speakerLabels(sessions);
   const speakers = new Map<string, string>();
   for (const session of sessions) {
     for (const segment of session.segments.filter(isExportable)) {
       const id = speakerKey(segment, session.id);
       if (!speakers.has(id)) {
-        const label =
-          segment.speakerLabel ?? (segment.speakerId ? segment.speakerId : "Unattributed");
+        const label = labels.get(id) ?? (segment.speakerId ? segment.speakerId : "Unattributed");
         speakers.set(
           id,
           segment.speakerId || sessions.length === 1 ? label : `${label} (${session.startedAt})`,
@@ -133,6 +139,22 @@ export function transcriptSpeakersOf(sessions: SessionRecord[]) {
     }
   }
   return [...speakers].map(([id, label]) => ({ id, label }));
+}
+
+function speakerLabels(sessions: SessionRecord[]) {
+  const labels = new Map<string, string>();
+  const ordered = [...sessions].sort(
+    (left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt),
+  );
+  for (const session of ordered) {
+    for (const segment of session.segments) {
+      const key = speakerKey(segment, session.id);
+      if (segment.speakerLabel && !labels.has(key)) {
+        labels.set(key, segment.speakerLabel);
+      }
+    }
+  }
+  return labels;
 }
 
 export function buildEvidenceExport(
@@ -144,15 +166,7 @@ export function buildEvidenceExport(
     .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
   // One display name per speaker, resolved before mapping, so a speaker whose label appears on
   // only some segments is not split into two.
-  const labels = new Map<string, string>();
-  for (const session of selected) {
-    for (const segment of session.segments) {
-      const key = speakerKey(segment, session.id);
-      if (segment.speakerLabel && !labels.has(key)) {
-        labels.set(key, segment.speakerLabel);
-      }
-    }
-  }
+  const labels = speakerLabels(selected);
   const pseudonyms = new Map<string, string>();
   const speakerName = (id: string) => {
     // A missing label still needs a distinct name, or separate speakers would merge.
@@ -217,8 +231,15 @@ export function buildEvidenceExport(
           : null,
       };
       if (options.includeTranscripts) {
-        evidence.transcript = session.segments
-          .filter(isExportable)
+        const exportable = session.segments.filter(isExportable);
+        evidence.transcriptFiltered =
+          options.transcriptSpeakers !== "all" &&
+          exportable.some(
+            (segment) =>
+              options.transcriptSpeakers !== "all" &&
+              !options.transcriptSpeakers.includes(speakerKey(segment, session.id)),
+          );
+        evidence.transcript = exportable
           .filter(
             (segment) =>
               options.transcriptSpeakers === "all" ||
@@ -254,14 +275,14 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
       `  Context: language ${oneLine(session.context.spokenLanguage)}; task ${oneLine(describeTask(session.context))}; condition ${oneLine(describeCondition(session.context))}`,
       `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
       `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute over ${session.sample.durationSeconds} s`,
-      `  Analysis: ${estimate.analyzer}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForSavedSession ? "verified for the full saved session (all speakers)" : "NOT verified for the saved session"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
+      `  Analysis: ${oneLine(estimate.analyzer)}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForSavedSession ? "verified for the full saved session (all speakers)" : "NOT verified for the saved session"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
       session.humanReference
         ? `  Human reference (${session.humanReference.authorRole}, ${session.humanReference.annotatedAt}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`
         : "  Human reference: none",
     );
     if (session.transcript) {
       lines.push(
-        evidence.included.transcriptSpeakers === "selected"
+        session.transcriptFiltered
           ? "  Transcript (only the selected speakers' words; other speakers removed; the counts above still cover all speakers):"
           : "  Transcript:",
       );

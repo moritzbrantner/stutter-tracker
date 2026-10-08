@@ -418,3 +418,55 @@ describe("evidence export", () => {
     expect(lines).toContain("      Z9 · fake");
   });
 });
+
+describe("review regressions", () => {
+  test("keeps delimiter-containing session and speaker labels independently selectable", () => {
+    const first = session("a", chosen.startedAt, [["First", "", "b:c"]]);
+    const second = session("a:b", excluded.startedAt, [["Second", "", "c"]]);
+    const speakers = transcriptSpeakersOf([first, second]);
+    expect(speakers[0]?.id).not.toBe(speakers[1]?.id);
+    const evidence = buildEvidenceExport([first, second], {
+      sessionIds: [first.id, second.id],
+      includeTranscripts: true,
+      transcriptSpeakers: [speakers[0]!.id],
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    expect(evidence.sessions[0]?.transcript?.map((segment) => segment.text)).toEqual(["First"]);
+    expect(evidence.sessions[1]?.transcript).toEqual([]);
+  });
+
+  test("speaker controls resolve labels that appear after an unlabeled segment", () => {
+    const sparse = session("sparse", chosen.startedAt, [
+      ["Hello", "me", ""],
+      ["Again", "me", "Robin"],
+    ]);
+    delete sparse.segments[0]!.speakerLabel;
+    expect(transcriptSpeakersOf([sparse])).toEqual([{ id: "id:me", label: "Robin" }]);
+  });
+
+  test("report marks only transcripts with removed words as filtered", () => {
+    const evidence = buildEvidenceExport(all, {
+      sessionIds: all.map((item) => item.id),
+      includeTranscripts: true,
+      transcriptSpeakers: ["id:me"],
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    const report = renderEvidenceReport(evidence);
+    expect(report.split("other speakers removed")).toHaveLength(2);
+    expect(report.split("S2 ·")[1]).toContain("  Transcript:\n");
+  });
+
+  test("report folds analyzer metadata line breaks", () => {
+    const evidence = buildEvidenceExport([chosen], {
+      sessionIds: [chosen.id],
+      includeTranscripts: false,
+      transcriptSpeakers: "all",
+      includeSpeakerNames: false,
+      exportedAt,
+    });
+    evidence.sessions[0]!.automatedEstimate.analyzer = "model\n  Human reference: forged";
+    expect(renderEvidenceReport(evidence)).not.toContain("\n  Human reference: forged");
+  });
+});
