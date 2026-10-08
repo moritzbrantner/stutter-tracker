@@ -376,6 +376,7 @@ describe("App integration", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Choose sessions" }));
     const panel = screen.getByRole("region", { name: "Export for review" });
+    expect(within(panel).getByRole("button", { name: /Download report/ })).toBeDisabled();
     const checkboxes = within(panel).getAllByRole("checkbox");
     await userEvent.click(checkboxes[0]);
     await userEvent.click(within(panel).getByRole("checkbox", { name: "Transcripts" }));
@@ -386,6 +387,10 @@ describe("App integration", () => {
     expect(preview).not.toHaveTextContent("Private sentence elsewhere");
     expect(preview).toHaveTextContent("Automated estimate (model, not a judgment)");
     expect(within(panel).getByRole("button", { name: /Download report/ })).toBeEnabled();
+
+    await userEvent.click(within(panel).getByRole("button", { name: "Data (JSON)" }));
+    expect(preview).toHaveTextContent('"schema": "vox-evidence-export"');
+    expect(preview).not.toHaveTextContent("Private sentence elsewhere");
   });
 
   it("keeps external-server transcription settings in web mode", async () => {

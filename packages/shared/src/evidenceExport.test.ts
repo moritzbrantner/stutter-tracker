@@ -147,7 +147,11 @@ describe("evidence export", () => {
       exportedAt,
     }).sessions;
 
-    expect(item.sample.durationMinutes).toBeGreaterThan(0);
+    expect(item.sample.durationSeconds).toBeGreaterThan(0);
+    expect(item.automatedEstimate.eventsPerMinute).toBe(
+      Math.round(((item.automatedEstimate.eventCount * 60) / item.sample.durationSeconds) * 100) /
+        100,
+    );
     expect(item.automatedEstimate.verifiedForTranscript).toBe(true);
     expect(item.automatedEstimate.analyzer).toBe("onDevice:shared-fallback:1");
     expect(item.humanReference).toEqual({
@@ -173,5 +177,81 @@ describe("evidence export", () => {
     expect(report).toContain("not a diagnosis");
     expect(report).toContain("a single change is not evidence of improvement");
     expect(report.toLowerCase()).not.toMatch(/severity: |cured|improved by/);
+  });
+
+  test("keeps trained-task and aid settings, orders by instant, and marks filtered transcripts", () => {
+    const practised = {
+      ...session("p", "2026-01-01T01:00:00+02:00", [["Hello there", "me", "Robin"]]),
+      context: {
+        spokenLanguage: "en",
+        task: { kind: "reading" as const, trained: true },
+        condition: { kind: "assisted" as const, aidId: "daf", settings: { delayMs: 80 } },
+      },
+    };
+    const later = session("l", "2025-12-31T23:30:00Z", [
+      ["Later words", "me", "Robin"],
+      ["Other words", "friend", "Kim"],
+    ]);
+    const evidence = buildEvidenceExport([later, practised], {
+      sessionIds: ["p", "l"],
+      includeTranscripts: true,
+      transcriptSpeakers: ["me"],
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+
+    expect(evidence.sessions.map((item) => item.startedAt)).toEqual([
+      "2026-01-01T01:00:00+02:00",
+      "2025-12-31T23:30:00Z",
+    ]);
+    expect(evidence.sessions[0].context).toMatchObject({
+      trainedTask: true,
+      condition: "assisted",
+      aid: "daf",
+      aidSettings: { delayMs: 80 },
+    });
+    expect(evidence.included.transcriptSpeakers).toBe("selected");
+    const report = renderEvidenceReport(evidence);
+    expect(report).toContain("task reading (practised)");
+    expect(report).toContain("assisted (daf; delayMs 80)");
+    expect(report).toContain("only the selected speakers' words; other speakers removed");
+  });
+
+  test("names unlabeled speakers distinctly and drops speaker metadata without transcripts", () => {
+    const unlabeled = createSessionRecord({
+      id: "u",
+      startedAt: "2026-10-01T09:00:00.000Z",
+      segments: [
+        { text: "First", startSeconds: 0, endSeconds: 1, isFinal: true, speakerId: "x" },
+        { text: "Second", startSeconds: 1, endSeconds: 2, isFinal: true, speakerId: "y" },
+      ],
+      pauses: [],
+      report: fallbackAnalyze({ segments: [], pauses: [] }),
+      run: { id: "r", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    });
+    const named = buildEvidenceExport([unlabeled], {
+      sessionIds: ["u"],
+      includeTranscripts: true,
+      transcriptSpeakers: "all",
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    expect(named.sessions[0].transcript?.map((line) => line.speaker)).toEqual([
+      "Speaker 1",
+      "Speaker 2",
+    ]);
+
+    const withoutTranscripts = buildEvidenceExport([unlabeled], {
+      sessionIds: ["u"],
+      includeTranscripts: false,
+      transcriptSpeakers: ["x"],
+      includeSpeakerNames: true,
+      exportedAt,
+    });
+    expect(withoutTranscripts.included).toEqual({
+      transcripts: false,
+      speakerNames: false,
+      transcriptSpeakers: null,
+    });
   });
 });

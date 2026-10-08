@@ -32,12 +32,19 @@ export type EvidenceSession = {
   startedAt: string;
   context: {
     spokenLanguage: string;
+    /** Task kind, or "not recorded". */
     task: string;
+    /** Whether the task was practised; untrained tasks measure transfer. Null when not recorded. */
+    trainedTask: boolean | null;
+    /** "unassisted", "assisted", or "not recorded". */
     condition: string;
+    aid: string | null;
+    /** Aid settings as recorded (e.g. delay), so different settings stay distinguishable. */
+    aidSettings: Record<string, number | string | boolean> | null;
   };
   sample: {
-    /** The denominator behind per-minute rates. */
-    durationMinutes: number;
+    /** The denominator behind per-minute rates, in seconds. */
+    durationSeconds: number;
     wordCount: number;
   };
   /** Model estimate from the app's automated analysis; not a clinical judgment. */
@@ -68,7 +75,8 @@ export type EvidencePackage = {
   included: {
     transcripts: boolean;
     speakerNames: boolean;
-    transcriptSpeakers: "all" | number;
+    /** "all", "selected" (some speakers' words removed), or null without transcripts. */
+    transcriptSpeakers: "all" | "selected" | null;
   };
   sessions: EvidenceSession[];
 };
@@ -99,11 +107,12 @@ export function buildEvidenceExport(
 ): EvidencePackage {
   const selected = sessions
     .filter((session) => options.sessionIds.includes(session.id))
-    .sort((left, right) => left.startedAt.localeCompare(right.startedAt));
+    .sort((left, right) => Date.parse(left.startedAt) - Date.parse(right.startedAt));
   const pseudonyms = new Map<string, string>();
   const speakerName = (id: string, label: string | undefined) => {
-    if (options.includeSpeakerNames) {
-      return label ?? (id === UNATTRIBUTED_SPEAKER ? "Unattributed" : "Speaker");
+    // A missing label still needs a distinct name, or separate speakers would merge.
+    if (options.includeSpeakerNames && label) {
+      return label;
     }
     if (!pseudonyms.has(id)) {
       pseudonyms.set(id, `Speaker ${pseudonyms.size + 1}`);
@@ -118,11 +127,16 @@ export function buildEvidenceExport(
     included: {
       transcripts: options.includeTranscripts,
       speakerNames: options.includeTranscripts && options.includeSpeakerNames,
-      transcriptSpeakers:
-        options.transcriptSpeakers === "all" ? "all" : options.transcriptSpeakers.length,
+      transcriptSpeakers: !options.includeTranscripts
+        ? null
+        : options.transcriptSpeakers === "all"
+          ? "all"
+          : "selected",
     },
     sessions: selected.map((session, index) => {
-      const minutes = Math.max(0, session.report.totalDurationSeconds) / 60;
+      // The exported denominator and the rate derived from it stay consistent.
+      const seconds = round(Math.max(0, session.report.totalDurationSeconds));
+      const condition = session.context.condition;
       const reference = acceptedAnnotation(session);
       const evidence: EvidenceSession = {
         ref: `S${index + 1}`,
@@ -130,16 +144,15 @@ export function buildEvidenceExport(
         context: {
           spokenLanguage: session.context.spokenLanguage,
           task: session.context.task?.kind ?? "not recorded",
-          condition: session.context.condition
-            ? session.context.condition.kind === "assisted"
-              ? `assisted (${session.context.condition.aidId})`
-              : "unassisted"
-            : "not recorded",
+          trainedTask: session.context.task?.trained ?? null,
+          condition: condition?.kind ?? "not recorded",
+          aid: condition?.kind === "assisted" ? condition.aidId : null,
+          aidSettings: condition?.kind === "assisted" ? { ...(condition.settings ?? {}) } : null,
         },
-        sample: { durationMinutes: round(minutes), wordCount: session.report.wordCount },
+        sample: { durationSeconds: seconds, wordCount: session.report.wordCount },
         automatedEstimate: {
           eventCount: session.report.stutterCount,
-          eventsPerMinute: minutes > 0 ? round(session.report.stutterCount / minutes) : 0,
+          eventsPerMinute: seconds > 0 ? round((session.report.stutterCount * 60) / seconds) : 0,
           eventsByKind: { ...session.report.byKind },
           analyzer: analyzerKey(session),
           analysisRuns: sessionAnalysisRuns(session).length,
@@ -191,16 +204,20 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
     lines.push(
       "",
       `${session.ref} · ${session.startedAt}`,
-      `  Context: language ${session.context.spokenLanguage}; task ${session.context.task}; condition ${session.context.condition}`,
-      `  Sample: ${session.sample.durationMinutes} min, ${session.sample.wordCount} words`,
-      `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute over ${session.sample.durationMinutes} min`,
+      `  Context: language ${session.context.spokenLanguage}; task ${describeTask(session.context)}; condition ${describeCondition(session.context)}`,
+      `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
+      `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute over ${session.sample.durationSeconds} s`,
       `  Analysis: ${estimate.analyzer}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForTranscript ? "verified for this transcript" : "NOT verified for this transcript"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
       session.humanReference
         ? `  Human reference (${session.humanReference.authorRole}, ${session.humanReference.annotatedAt}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`
         : "  Human reference: none",
     );
     if (session.transcript) {
-      lines.push("  Transcript:");
+      lines.push(
+        evidence.included.transcriptSpeakers === "selected"
+          ? "  Transcript (only the selected speakers' words; other speakers removed):"
+          : "  Transcript:",
+      );
       for (const segment of session.transcript) {
         lines.push(`    [${segment.startSeconds.toFixed(1)}s] ${segment.speaker}: ${segment.text}`);
       }
@@ -211,6 +228,24 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
     "Differences between sessions can come from the task, language, condition, recording or analyzer; a single change is not evidence of improvement.",
   );
   return lines.join("\n");
+}
+
+function describeTask(context: EvidenceSession["context"]) {
+  if (context.trainedTask === null) {
+    return context.task;
+  }
+  return `${context.task} (${context.trainedTask ? "practised" : "not practised"})`;
+}
+
+function describeCondition(context: EvidenceSession["context"]) {
+  if (context.condition !== "assisted") {
+    return context.condition;
+  }
+  const settings = Object.entries(context.aidSettings ?? {})
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, value]) => `${key} ${value}`)
+    .join(", ");
+  return `assisted (${context.aid}${settings ? `; ${settings}` : ""})`;
 }
 
 function round(value: number) {

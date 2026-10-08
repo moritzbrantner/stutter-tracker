@@ -18,23 +18,37 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
   const [includeTranscripts, setIncludeTranscripts] = useState(false);
   const [includeSpeakerNames, setIncludeSpeakerNames] = useState(false);
   const [excludedSpeakers, setExcludedSpeakers] = useState<string[]>([]);
+  const [previewFormat, setPreviewFormat] = useState<"report" | "data">("report");
 
-  const selected = sessions.filter((session) => selectedIds.includes(session.id));
-  const speakers = useMemo(() => transcriptSpeakersOf(selected), [selected]);
-  const evidence = useMemo(
-    () =>
-      buildEvidenceExport(sessions, {
-        sessionIds: selectedIds,
-        includeTranscripts,
-        transcriptSpeakers: excludedSpeakers.length
-          ? speakers.map((speaker) => speaker.id).filter((id) => !excludedSpeakers.includes(id))
-          : "all",
-        includeSpeakerNames,
-        exportedAt: new Date(),
-      }),
-    [sessions, selectedIds, includeTranscripts, includeSpeakerNames, excludedSpeakers, speakers],
+  // Nothing is built while the panel is closed, so recording renders do no export work.
+  const selected = useMemo(
+    () => (open ? sessions.filter((session) => selectedIds.includes(session.id)) : []),
+    [open, sessions, selectedIds],
   );
-  const report = renderEvidenceReport(evidence);
+  const speakers = useMemo(() => transcriptSpeakersOf(selected), [selected]);
+  const exportOptions = useMemo(() => {
+    // Exclusions only count for speakers present in the current selection.
+    const present = speakers.map((speaker) => speaker.id);
+    const excluded = excludedSpeakers.filter((id) => present.includes(id));
+    return {
+      sessionIds: selected.map((session) => session.id),
+      includeTranscripts,
+      transcriptSpeakers: excluded.length
+        ? present.filter((id) => !excluded.includes(id))
+        : ("all" as const),
+      includeSpeakerNames,
+    };
+  }, [selected, speakers, excludedSpeakers, includeTranscripts, includeSpeakerNames]);
+  // The preview is stamped when built; downloads are rebuilt and stamped at click time.
+  const preview = useMemo(
+    () =>
+      open ? buildEvidenceExport(sessions, { ...exportOptions, exportedAt: new Date() }) : null,
+    [open, sessions, exportOptions],
+  );
+  const report = useMemo(() => (preview ? renderEvidenceReport(preview) : ""), [preview]);
+  const hasSessions = (preview?.sessions.length ?? 0) > 0;
+  const buildForDownload = () =>
+    buildEvidenceExport(sessions, { ...exportOptions, exportedAt: new Date() });
 
   const toggle = (list: string[], id: string) =>
     list.includes(id) ? list.filter((item) => item !== id) : [...list, id];
@@ -95,7 +109,7 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
                     />
                     Speaker names (otherwise "Speaker 1", "Speaker 2")
                   </label>
-                  {speakers.length > 1 && (
+                  {speakers.length > 0 && (
                     <div className="mt-1 pl-6">
                       <p className={`m-0 text-sm ${mutedTextClass}`}>
                         Words of these speakers are included:
@@ -122,8 +136,14 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
               <button
                 type="button"
                 className={buttonClass}
-                disabled={selectedIds.length === 0}
-                onClick={() => downloadFile("speaking-evidence.txt", report, "text/plain")}
+                disabled={!hasSessions}
+                onClick={() =>
+                  downloadFile(
+                    "speaking-evidence.txt",
+                    renderEvidenceReport(buildForDownload()),
+                    "text/plain",
+                  )
+                }
               >
                 <FileDown size={16} />
                 Download report
@@ -131,11 +151,11 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
               <button
                 type="button"
                 className={buttonClass}
-                disabled={selectedIds.length === 0}
+                disabled={!hasSessions}
                 onClick={() =>
                   downloadFile(
                     "speaking-evidence.json",
-                    JSON.stringify(evidence, null, 2),
+                    JSON.stringify(buildForDownload(), null, 2),
                     "application/json",
                   )
                 }
@@ -146,13 +166,35 @@ export function EvidenceExportPanel({ sessions }: { sessions: SavedSession[] }) 
             </div>
           </div>
           <div>
-            <h3 className="m-0 mb-2 font-semibold">Preview: exactly what will be exported</h3>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <h3 className="m-0 font-semibold">Preview: exactly what will be exported</h3>
+              <div role="group" aria-label="Preview format" className="flex gap-1">
+                {(["report", "data"] as const).map((format) => (
+                  <button
+                    key={format}
+                    type="button"
+                    aria-pressed={previewFormat === format}
+                    className={`${buttonClass} ${previewFormat === format ? "font-semibold" : ""}`}
+                    onClick={() => setPreviewFormat(format)}
+                  >
+                    {format === "report" ? "Report" : "Data (JSON)"}
+                  </button>
+                ))}
+              </div>
+            </div>
             <pre
               aria-label="Export preview"
               className="m-0 max-h-96 overflow-auto rounded-lg bg-[#f5f7f5] p-3 text-xs whitespace-pre-wrap"
             >
-              {selectedIds.length ? report : "Select at least one session."}
+              {!hasSessions
+                ? "Select at least one session."
+                : previewFormat === "report"
+                  ? report
+                  : JSON.stringify(preview, null, 2)}
             </pre>
+            <p className={`m-0 mt-2 text-xs ${mutedTextClass}`}>
+              The export time is set when you download.
+            </p>
           </div>
         </div>
       )}
