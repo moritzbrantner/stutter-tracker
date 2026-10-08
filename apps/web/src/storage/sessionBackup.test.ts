@@ -1,5 +1,7 @@
 import {
+  annotateSession,
   type LegacySessionRecord,
+  observationFingerprint,
   migrateSessionRecord,
   reanalyzeSession,
   SHARED_ANALYSIS_VERSION,
@@ -197,6 +199,64 @@ describe("session backup", () => {
     expect(parseSessionBackup({ sessions: [withSettings(undefined)] })).toHaveLength(1);
     for (const bad of [{ delayMs: [] }, "fast", { delayMs: Number.NaN }]) {
       expect(() => parseSessionBackup({ sessions: [withSettings(bad)] })).toThrow(
+        "Backup session 1 is invalid.",
+      );
+    }
+  });
+
+  test("roundtrips annotation revisions and completes older records without them", () => {
+    const annotated = annotateSession(session, {
+      id: "ann-1",
+      createdAt: "2026-10-08T10:00:00.000Z",
+      author: { role: "self" },
+      basedOnRunId: session.analysis.id,
+      events: [{ kind: "block", startSeconds: 1.2, endSeconds: 2, certainty: "possible" }],
+      status: "accepted",
+      supersedes: null,
+    });
+    const [restored] = parseSessionBackup(
+      JSON.parse(JSON.stringify(createSessionBackup([annotated]))),
+    );
+    expect(restored.annotations).toEqual(annotated.annotations);
+
+    const { annotations: _none, ...older } = session;
+    expect(parseSessionBackup({ sessions: [older] })[0].annotations).toEqual([]);
+  });
+
+  test("rejects malformed or dangling annotation revisions", () => {
+    const valid = {
+      id: "ann-1",
+      createdAt: "2026-10-08T10:00:00.000Z",
+      author: { role: "clinician" },
+      basedOnRunId: null,
+      inputId: observationFingerprint(session.segments, session.pauses),
+      events: [],
+      status: "accepted",
+      supersedes: null,
+    };
+    expect(parseSessionBackup({ sessions: [{ ...session, annotations: [valid] }] })).toHaveLength(
+      1,
+    );
+    for (const annotations of [
+      [{ ...valid, author: { role: "robot" } }],
+      [
+        {
+          ...valid,
+          events: [{ kind: "block", startSeconds: 2, endSeconds: 1, certainty: "certain" }],
+        },
+      ],
+      [{ ...valid, supersedes: "missing" }],
+      [{ ...valid, supersedes: "ann-1" }],
+      [{ ...valid, inputId: "another observation" }],
+      [
+        { ...valid, supersedes: "ann-2" },
+        { ...valid, id: "ann-2", supersedes: null },
+      ],
+      [{ ...valid, basedOnRunId: "run-x" }],
+      [valid, valid],
+      "not a list",
+    ]) {
+      expect(() => parseSessionBackup({ sessions: [{ ...session, annotations }] })).toThrow(
         "Backup session 1 is invalid.",
       );
     }

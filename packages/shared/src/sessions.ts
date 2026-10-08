@@ -1,7 +1,7 @@
 // Canonical saved-session record: original observations, the analysis that interpreted them and
 // every superseded analysis stay distinct. A rerun appends; it never rewrites an earlier result.
 import type { RecordingDescriptor } from "./capture";
-import type { AnalysisReport, PauseSpan, TranscriptSegment } from "./index";
+import type { AnalysisReport, PauseSpan, StutterKind, TranscriptSegment } from "./index";
 import {
   type AssistanceCondition,
   type SpeakingTask,
@@ -62,6 +62,33 @@ export type SessionRecord = {
   analysis: AnalysisRunIdentity;
   /** Superseded runs, oldest first. Append-only. */
   priorAnalyses: AnalysisRun[];
+  /** Human annotation revisions, oldest first. Append-only; analysis never changes them. */
+  annotations: AnnotationRevision[];
+};
+
+export type AnnotatorRole = "self" | "clinician" | "researcher";
+
+export type AnnotatedEvent = {
+  kind: StutterKind;
+  startSeconds: number;
+  endSeconds: number;
+  /** "possible" for uncertain labels, e.g. a silent block the audio alone cannot establish. */
+  certainty: "certain" | "possible";
+  note?: string;
+};
+
+export type AnnotationRevision = {
+  id: string;
+  createdAt: string;
+  author: { role: AnnotatorRole; id?: string };
+  /** Analysis run shown while annotating; null when annotated without one (blind). */
+  basedOnRunId: string | null;
+  /** Fingerprint of the observation the annotation describes. */
+  inputId: string;
+  events: AnnotatedEvent[];
+  status: "draft" | "accepted";
+  /** Earlier revision this one replaces; the earlier one stays in the history. */
+  supersedes: string | null;
 };
 
 /** Version-1 records: what the web app stored before this schema. */
@@ -110,6 +137,7 @@ export function createSessionRecord(input: {
       inputId: input.run.inputId ?? observationFingerprint(input.segments, input.pauses),
     },
     priorAnalyses: [],
+    annotations: [],
   };
 }
 
@@ -122,7 +150,8 @@ export function migrateSessionRecord(record: LegacySessionRecord | SessionRecord
     if (record.schemaVersion !== SESSION_SCHEMA_VERSION) {
       throw new Error(`Unsupported session schema version ${String(record.schemaVersion)}.`);
     }
-    return record;
+    // Version-2 records saved before annotations existed have none.
+    return record.annotations ? record : { ...record, annotations: [] };
   }
   return {
     schemaVersion: SESSION_SCHEMA_VERSION,
@@ -143,6 +172,7 @@ export function migrateSessionRecord(record: LegacySessionRecord | SessionRecord
       audioId: null,
     },
     priorAnalyses: [],
+    annotations: [],
   };
 }
 
@@ -164,6 +194,60 @@ export function reanalyzeSession(
     analysis: { ...run, inputId: observationFingerprint(record.segments, record.pauses) },
     priorAnalyses: [...record.priorAnalyses, { ...record.analysis, report: record.report }],
   };
+}
+
+/**
+ * Records a human annotation revision. Earlier revisions are kept; a revision may replace one
+ * earlier revision (`supersedes`). Analysis runs never change annotations.
+ */
+export function annotateSession(
+  record: SessionRecord,
+  revision: Omit<AnnotationRevision, "inputId">,
+): SessionRecord {
+  if (!revision.id || !Number.isFinite(Date.parse(revision.createdAt))) {
+    throw new Error("Annotation revisions need a non-empty id and a valid createdAt timestamp.");
+  }
+  if (record.annotations.some((existing) => existing.id === revision.id)) {
+    throw new Error(`Annotation revision ${revision.id} is already recorded.`);
+  }
+  if (
+    revision.supersedes !== null &&
+    !record.annotations.some((existing) => existing.id === revision.supersedes)
+  ) {
+    throw new Error(`Annotation revision ${revision.supersedes} does not exist.`);
+  }
+  const runIds = sessionAnalysisRuns(record).map((run) => run.id);
+  if (revision.basedOnRunId !== null && !runIds.includes(revision.basedOnRunId)) {
+    throw new Error(`Analysis run ${revision.basedOnRunId} is not part of session ${record.id}.`);
+  }
+  for (const event of revision.events) {
+    if (
+      !Number.isFinite(event.startSeconds) ||
+      !Number.isFinite(event.endSeconds) ||
+      event.endSeconds < event.startSeconds
+    ) {
+      throw new Error("Annotated events need finite times with end >= start.");
+    }
+  }
+  return {
+    ...record,
+    annotations: [
+      ...record.annotations,
+      { ...revision, inputId: observationFingerprint(record.segments, record.pauses) },
+    ],
+  };
+}
+
+/** Revisions not replaced by a later one, oldest first. */
+export function currentAnnotations(record: SessionRecord): AnnotationRevision[] {
+  const superseded = new Set(record.annotations.map((revision) => revision.supersedes));
+  return record.annotations.filter((revision) => !superseded.has(revision.id));
+}
+
+/** The latest current revision accepted as a human reference, if any. */
+export function acceptedAnnotation(record: SessionRecord): AnnotationRevision | null {
+  const accepted = currentAnnotations(record).filter((revision) => revision.status === "accepted");
+  return accepted.at(-1) ?? null;
 }
 
 /** Every run, oldest first, ending with the current one. */

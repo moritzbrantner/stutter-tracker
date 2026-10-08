@@ -2,7 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import { fallbackAnalyze } from "./index";
 import {
+  acceptedAnnotation,
+  annotateSession,
   audioFingerprint,
+  currentAnnotations,
   createSessionRecord,
   type LegacySessionRecord,
   migrateSessionRecord,
@@ -50,6 +53,7 @@ describe("session records", () => {
         audioId: null,
       },
       priorAnalyses: [],
+      annotations: [],
     });
   });
 
@@ -169,5 +173,81 @@ describe("session records", () => {
     expect(observationFingerprint(segments, [{ ...pauses[0], afterText: "world" }])).not.toBe(
       observationFingerprint(segments, pauses),
     );
+  });
+});
+
+describe("annotation revisions", () => {
+  const record = migrateSessionRecord(legacy);
+  const event = {
+    kind: "wordRepetition" as const,
+    startSeconds: 0,
+    endSeconds: 0.6,
+    certainty: "certain" as const,
+  };
+  const revision = (id: string, patch: Partial<Parameters<typeof annotateSession>[1]> = {}) => ({
+    id,
+    createdAt: "2026-10-08T10:00:00.000Z",
+    author: { role: "clinician" as const },
+    basedOnRunId: record.analysis.id,
+    events: [event],
+    status: "accepted" as const,
+    supersedes: null,
+    ...patch,
+  });
+
+  test("migrated version-2 records without annotations read as having none", () => {
+    const { annotations: _dropped, ...older } = record;
+    expect(migrateSessionRecord(older as typeof record).annotations).toEqual([]);
+  });
+
+  test("appends revisions with the observation they describe and keeps replaced ones", () => {
+    const first = annotateSession(record, revision("a-1", { status: "draft" }));
+    const second = annotateSession(first, revision("a-2", { supersedes: "a-1" }));
+
+    expect(second.annotations.map((item) => item.id)).toEqual(["a-1", "a-2"]);
+    expect(second.annotations[1].inputId).toBe(observationFingerprint(segments, pauses));
+    expect(currentAnnotations(second).map((item) => item.id)).toEqual(["a-2"]);
+    expect(acceptedAnnotation(second)?.id).toBe("a-2");
+    expect(acceptedAnnotation(first)).toBeNull();
+  });
+
+  test("reanalysis keeps an accepted annotation and the run it was made against", () => {
+    const annotated = annotateSession(record, revision("a-1"));
+    const rerun = reanalyzeSession(
+      annotated,
+      {
+        id: "run-2",
+        createdAt: "2026-10-09T00:00:00.000Z",
+        analyzer: onDevice,
+        usedAudio: false,
+        audioId: null,
+      },
+      { ...report, stutterCount: 0 },
+    );
+
+    expect(rerun.annotations).toEqual(annotated.annotations);
+    expect(acceptedAnnotation(rerun)?.basedOnRunId).toBe(record.analysis.id);
+    expect(rerun.analysis.id).toBe("run-2");
+  });
+
+  test("rejects duplicate ids, unknown references and invalid event times", () => {
+    const annotated = annotateSession(record, revision("a-1"));
+    expect(() => annotateSession(annotated, revision("a-1"))).toThrow("already recorded");
+    expect(() => annotateSession(record, revision("a-2", { supersedes: "missing" }))).toThrow(
+      "does not exist",
+    );
+    expect(() => annotateSession(record, revision("a-3", { basedOnRunId: "run-x" }))).toThrow(
+      "not part of session",
+    );
+    expect(() =>
+      annotateSession(record, revision("a-4", { events: [{ ...event, endSeconds: -1 }] })),
+    ).toThrow("end >= start");
+    expect(() => annotateSession(record, revision(""))).toThrow("non-empty id");
+    expect(() => annotateSession(record, revision("a-6", { createdAt: "soon" }))).toThrow(
+      "valid createdAt",
+    );
+    expect(
+      annotateSession(record, revision("a-5", { basedOnRunId: null })).annotations,
+    ).toHaveLength(1);
   });
 });
