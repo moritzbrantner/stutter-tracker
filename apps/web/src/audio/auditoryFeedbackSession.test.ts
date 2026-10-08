@@ -5,6 +5,7 @@ import {
 } from "./auditoryFeedback";
 
 type RecorderMode = "normal" | "hang" | "throw" | "errorThenStop";
+let recorderStartThrows = false;
 
 class FakeParam {
   constructor(public value = 1) {}
@@ -62,6 +63,9 @@ class FakeRecorder extends EventTarget {
     recorders.push(this);
   }
   start() {
+    if (recorderStartThrows) {
+      throw new DOMException("inactive stream", "InvalidStateError");
+    }
     this.state = "recording";
     const event = new Event("dataavailable") as Event & { data: Blob };
     event.data = new Blob(["chunk"]);
@@ -166,6 +170,7 @@ const originals = {
 
 beforeEach(() => {
   recorderMode = "normal";
+  recorderStartThrows = false;
   recorders.length = 0;
   pitchWorklet = false;
   duringWorkletLoad = () => undefined;
@@ -406,6 +411,32 @@ describe("auditory feedback session lifecycle", () => {
     }
     expect(stream.tracks[0].stopped).toBe(true);
     expect(context.state).toBe("closed");
+  });
+
+  it("reports local capture unavailable when recorders cannot start", async () => {
+    recorderStartThrows = true;
+    const session = await startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS);
+
+    expect(session.capabilities.localCapture).toBe(false);
+    expect(await session.stop()).toEqual({ raw: null, processed: null });
+  });
+
+  it("refuses to start when audio devices change while permission is pending", async () => {
+    let grant = (_: FakeStream) => {};
+    mediaDevices.getUserMedia.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          grant = resolve;
+        }),
+    );
+    const starting = startAuditoryFeedbackSession(DEFAULT_AUDITORY_FEEDBACK_SETTINGS);
+
+    mediaDevices.dispatchEvent(new Event("devicechange"));
+    grant(stream);
+
+    await expect(starting).rejects.toThrow(/devices changed/);
+    expect(stream.tracks[0].stopped).toBe(true);
+    expect(recorders).toHaveLength(0);
   });
 
   it("surfaces permission rejection without creating an audio context", async () => {

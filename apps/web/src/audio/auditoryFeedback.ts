@@ -88,10 +88,9 @@ export async function startAuditoryFeedbackSession(
     throw new Error("Live audio feedback is unavailable in this browser");
   }
 
-  const stream = await acquireMicrophone(signal);
-
-  // Interruptions are watched from the moment the microphone is held. Until the session exists
-  // they only record why setup must not continue; afterwards they stop the session.
+  // Interruptions are watched before the permission prompt opens: a route change while it is
+  // open must still stop the start. Until the session exists they only record why setup must not
+  // continue; afterwards they stop the session.
   let interruption: string | null = null;
   // Settles a pending setup step as soon as the start is cancelled or interrupted, so a hung
   // browser call cannot keep the microphone held.
@@ -109,10 +108,19 @@ export async function startAuditoryFeedbackSession(
   };
   const onTrackEnded = () => onInterruption(TRACK_ENDED_REASON);
   const onDeviceChange = () => onInterruption(DEVICE_CHANGE_REASON);
+  navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
+
+  let stream: MediaStream;
+  try {
+    stream = await acquireMicrophone(signal);
+  } catch (error) {
+    signal?.removeEventListener("abort", onSetupAbort);
+    navigator.mediaDevices.removeEventListener?.("devicechange", onDeviceChange);
+    throw error;
+  }
   for (const track of stream.getTracks()) {
     track.addEventListener("ended", onTrackEnded);
   }
-  navigator.mediaDevices.addEventListener?.("devicechange", onDeviceChange);
   const unwatch = () => {
     signal?.removeEventListener("abort", onSetupAbort);
     for (const track of stream.getTracks()) {
@@ -202,10 +210,8 @@ export async function startAuditoryFeedbackSession(
   outputGain.connect(context.destination);
   outputGain.connect(captureDestination);
 
-  const rawCapture = createRecorderCapture(stream);
-  const processedCapture = createRecorderCapture(captureDestination.stream);
-  startRecorderCapture(rawCapture);
-  startRecorderCapture(processedCapture);
+  const rawCapture = startRecorderCapture(createRecorderCapture(stream));
+  const processedCapture = startRecorderCapture(createRecorderCapture(captureDestination.stream));
 
   let stopped = false;
   let stopPromise: Promise<AuditoryFeedbackRecording> | null = null;
@@ -313,11 +319,16 @@ function createRecorderCapture(stream: MediaStream): RecorderCapture | null {
   }
 }
 
-function startRecorderCapture(capture: RecorderCapture | null) {
+// Returns the capture only if recording actually started, so capabilities stay honest.
+function startRecorderCapture(capture: RecorderCapture | null): RecorderCapture | null {
+  if (!capture) {
+    return null;
+  }
   try {
-    capture?.recorder.start(250);
+    capture.recorder.start(250);
+    return capture;
   } catch {
-    // An unstartable recorder yields an empty capture instead of failing the session.
+    return null;
   }
 }
 
