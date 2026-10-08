@@ -110,11 +110,12 @@ fn detector_revision() -> Option<stutter_bench::DetectorRevision> {
             .map(|output| String::from_utf8_lossy(&output.stdout).trim().to_owned())
     };
     let commit = git(&["rev-parse", "HEAD"])?;
-    // Source mode rewrites Cargo.lock; the pins it reflects are recorded separately below.
+    // Untracked (not ignored) files count: Cargo compiles e.g. an untracked build.rs. Source mode
+    // rewrites Cargo.lock; the pins it reflects are recorded separately below.
     let dirty = git(&[
         "status",
         "--porcelain",
-        "--untracked-files=no",
+        "--untracked-files=normal",
         "--",
         ".",
         ":(exclude)apps/desktop/src-tauri/Cargo.lock",
@@ -182,7 +183,7 @@ fn compiled_source_checkouts(cargo_config: &str) -> Vec<stutter_bench::SourceChe
             continue;
         }
         let commit = git(&top, &["rev-parse", "HEAD"]).unwrap_or_default();
-        let dirty = git(&top, &["status", "--porcelain", "--untracked-files=no"])
+        let dirty = git(&top, &["status", "--porcelain", "--untracked-files=normal"])
             .map(|status| !status.is_empty())
             .unwrap_or(true);
         checkouts.insert(top, (commit, dirty));
