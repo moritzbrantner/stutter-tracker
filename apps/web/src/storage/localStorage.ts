@@ -1,3 +1,11 @@
+import {
+  type ConsentLedger,
+  EMPTY_CONSENT_LEDGER,
+  hasConsent,
+  parseConsentLedger,
+  recordConsent,
+  withdrawOtherScopes,
+} from "@stutter-tracker/shared";
 import type {
   SavedSession,
   SpeakerProfile,
@@ -10,12 +18,76 @@ export const STORE_KEY = "stutter-tracker:sessions";
 export const VOICE_KEY = "stutter-tracker:voiceprint";
 export const SPEAKERS_KEY = "stutter-tracker:speakers";
 export const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
+/** Pre-ledger storage: the one server URL that had remote-analysis consent. Migrated on read. */
 export const REMOTE_CONSENT_KEY = "stutter-tracker:remote-analysis-consent";
+export const CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger";
+export const UNREADABLE_CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger:unreadable";
+
+/** Loads the consent ledger, folding in a legacy remote-analysis grant once. */
+export function loadConsentLedger(storage: Storage = localStorage): ConsentLedger {
+  let ledger: ConsentLedger | null;
+  const raw = storage.getItem(CONSENT_LEDGER_KEY);
+  try {
+    ledger = parseConsentLedger(JSON.parse(raw ?? "[]"));
+  } catch {
+    ledger = null;
+  }
+  if (!ledger) {
+    // Unreadable means no consent. Keep the raw value so the next write cannot erase it.
+    try {
+      if (raw && !storage.getItem(UNREADABLE_CONSENT_LEDGER_KEY)) {
+        storage.setItem(UNREADABLE_CONSENT_LEDGER_KEY, raw);
+      }
+    } catch {
+      // Storage unavailable.
+    }
+    // A legacy grant must not be revived on top of a ledger whose later decisions are unknown,
+    // now or after the next write replaces the corrupt ledger, so it is retired here.
+    try {
+      storage.removeItem(REMOTE_CONSENT_KEY);
+    } catch {
+      // Storage unavailable.
+    }
+    return EMPTY_CONSENT_LEDGER;
+  }
+  try {
+    const legacyUrl = storage.getItem(REMOTE_CONSENT_KEY);
+    if (legacyUrl) {
+      // The legacy key is only trusted while the ledger holds no remote-analysis decision at all;
+      // otherwise the ledger is authoritative and the legacy grant is dropped, never added beside
+      // another server's grant.
+      const ledgerDecides = ledger.some((entry) => entry.purpose === "remoteAnalysis");
+      if (!ledgerDecides && isHttpUrl(legacyUrl)) {
+        ledger = recordConsent(ledger, {
+          purpose: "remoteAnalysis",
+          granted: true,
+          scope: legacyUrl,
+        });
+        storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
+      }
+      storage.removeItem(REMOTE_CONSENT_KEY);
+    }
+  } catch {
+    // Storage unavailable: the legacy grant stays where it was and is retried next load.
+  }
+  return ledger;
+}
+
+export function recordConsentDecision(
+  decision: Parameters<typeof recordConsent>[1],
+  storage: Storage = localStorage,
+) {
+  const ledger = recordConsent(loadConsentLedger(storage), decision);
+  storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
+  return ledger;
+}
 
 /** Remote-analysis consent is bound to one server URL; another URL needs consent again. */
 export function loadRemoteConsent(serverUrl: string, storage: Storage = localStorage) {
   try {
-    return Boolean(serverUrl) && storage.getItem(REMOTE_CONSENT_KEY) === serverUrl;
+    return (
+      Boolean(serverUrl) && hasConsent(loadConsentLedger(storage), "remoteAnalysis", serverUrl)
+    );
   } catch {
     return false;
   }
@@ -26,10 +98,24 @@ export function saveRemoteConsent(
   granted: boolean,
   storage: Storage = localStorage,
 ) {
+  let ledger = loadConsentLedger(storage);
   if (granted) {
-    storage.setItem(REMOTE_CONSENT_KEY, serverUrl);
-  } else {
-    storage.removeItem(REMOTE_CONSENT_KEY);
+    // Consent covers one server at a time; returning to an earlier server needs consent again.
+    ledger = withdrawOtherScopes(ledger, "remoteAnalysis", serverUrl);
+  }
+  ledger = recordConsent(ledger, { purpose: "remoteAnalysis", granted, scope: serverUrl });
+  try {
+    storage.setItem(CONSENT_LEDGER_KEY, JSON.stringify(ledger));
+  } catch {
+    // Appending can fail when storage is full. Any decision that cannot be stored (a withdrawal,
+    // or a grant that also withdraws another server) falls back to dropping the ledger: no grants
+    // at all, which needs no quota.
+    try {
+      storage.removeItem(CONSENT_LEDGER_KEY);
+      storage.removeItem(REMOTE_CONSENT_KEY);
+    } catch {
+      // Storage unavailable: reading it fails too, which also means no consent.
+    }
   }
 }
 
@@ -114,4 +200,13 @@ export function normalizeSpeakerProfiles(speakers: SpeakerProfile[]) {
       Array.isArray(speaker.embeddings) &&
       speaker.embeddings.length > 0,
   );
+}
+
+function isHttpUrl(value: string) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }

@@ -1,8 +1,10 @@
 import { createComputeClient, processingPolicyForServerUrl } from "@stutter-tracker/compute-client";
-import type {
-  AnalysisReport,
-  TranscriptionEngineId,
-  TranscriptionModelStatus,
+import {
+  type AnalysisReport,
+  type ConsentLedger,
+  EMPTY_CONSENT_LEDGER,
+  type TranscriptionEngineId,
+  type TranscriptionModelStatus,
 } from "@stutter-tracker/shared";
 import {
   AudioModule,
@@ -12,6 +14,7 @@ import {
   useAudioRecorderState,
 } from "expo-audio";
 import { File } from "expo-file-system";
+import { hasRemoteConsent, setRemoteConsent, withdrawOtherServerConsent } from "./src/consent";
 import type React from "react";
 import { useEffect, useMemo, useState } from "react";
 import {
@@ -52,9 +55,8 @@ export default function App() {
   const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
   const recorderState = useAudioRecorderState(audioRecorder);
   // Consent is bound to the exact URL it was given for; editing the URL withdraws it.
-  const [remoteConsentUrl, setRemoteConsentUrl] = useState("");
-  const normalizedServerUrl = serverUrl.trim().replace(/\/+$/, "");
-  const remoteConsent = remoteConsentUrl !== "" && remoteConsentUrl === normalizedServerUrl;
+  const [consentLedger, setConsentLedger] = useState<ConsentLedger>(EMPTY_CONSENT_LEDGER);
+  const remoteConsent = hasRemoteConsent(consentLedger, serverUrl);
   // Each run captures one client, so an endpoint edit cannot redirect an in-flight run.
   const client = useMemo(
     () =>
@@ -198,7 +200,10 @@ export default function App() {
           <Field
             label="Server URL"
             value={serverUrl}
-            onChangeText={setServerUrl}
+            onChangeText={(url) => {
+              setServerUrl(url);
+              setConsentLedger((ledger) => withdrawOtherServerConsent(ledger, url));
+            }}
             editable={!busy}
           />
           <Field
@@ -220,7 +225,9 @@ export default function App() {
               disabled={busy}
               accessibilityRole="switch"
               accessibilityState={{ checked: remoteConsent }}
-              onPress={() => setRemoteConsentUrl(remoteConsent ? "" : normalizedServerUrl)}
+              onPress={() =>
+                setConsentLedger((ledger) => setRemoteConsent(ledger, serverUrl, !remoteConsent))
+              }
             >
               <Text style={styles.buttonText}>
                 {remoteConsent
