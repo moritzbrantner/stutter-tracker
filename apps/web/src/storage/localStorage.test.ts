@@ -83,6 +83,24 @@ describe("local storage helpers", () => {
     expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
   });
 
+  it("still withdraws consent when storage is full", () => {
+    const storage = memoryStorage({});
+    saveRemoteConsent("https://a.example.com", true, storage);
+    const full: Storage = {
+      ...storage,
+      getItem: (key) => storage.getItem(key),
+      removeItem: (key) => storage.removeItem(key),
+      setItem: () => {
+        throw new DOMException("full", "QuotaExceededError");
+      },
+    };
+
+    expect(() => saveRemoteConsent("https://a.example.com", false, full)).not.toThrow();
+    expect(loadRemoteConsent("https://a.example.com", storage)).toBe(false);
+    expect(() => saveRemoteConsent("https://b.example.com", true, full)).not.toThrow();
+    expect(loadRemoteConsent("https://b.example.com", storage)).toBe(false);
+  });
+
   it("treats a corrupt ledger as no consent and keeps the corrupt copy", () => {
     const corrupt = JSON.stringify([
       {
