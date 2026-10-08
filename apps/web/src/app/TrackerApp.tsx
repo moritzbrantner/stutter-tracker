@@ -141,6 +141,8 @@ export function App() {
   const [speakersReady, setSpeakersReady] = useState(false);
   // Counts removals, so a slow startup load can tell its snapshot is stale.
   const speakerRemovalsRef = useRef(0);
+  const removedSpeakerIdsRef = useRef(new Set<string>());
+  const reloadSpeakersRef = useRef<(() => void) | null>(null);
   const speakerMutationTailRef = useRef<Promise<unknown>>(Promise.resolve());
   const [corpusAnalysis, setCorpusAnalysis] = useState<SpeechCorpusAnalysis>(() =>
     emptyCorpusAnalysis(),
@@ -346,31 +348,41 @@ export function App() {
 
   useEffect(() => {
     let cancelled = false;
-    const removalsAtStart = speakerRemovalsRef.current;
-    const isStale = () => cancelled || speakerRemovalsRef.current !== removalsAtStart;
-    // A stalled server must not block local removal forever; the load then cannot apply or
-    // re-upload its snapshot once a removal has happened.
+    let latestRequest = 0;
     const readyTimer = setTimeout(() => setSpeakersReady(true), SPEAKER_LOAD_GRACE_MS);
-    loadPersistedSpeakerProfiles(isStale, (profiles) =>
-      queueSpeakerMutation(async () => {
-        if (isStale()) return [];
-        return savePersistedSpeakerProfiles(profiles);
-      }),
-    )
-      .then((persistedSpeakers) => {
-        if (!isStale()) {
-          setSpeakers(persistedSpeakers);
-        }
-      })
-      .catch(() => undefined)
-      .finally(() => {
-        clearTimeout(readyTimer);
-        if (!cancelled) {
-          setSpeakersReady(true);
-        }
-      });
+    const hydrate = () => {
+      const request = ++latestRequest;
+      const removalsAtStart = speakerRemovalsRef.current;
+      const isStale = () =>
+        cancelled || request !== latestRequest || speakerRemovalsRef.current !== removalsAtStart;
+      loadPersistedSpeakerProfiles(isStale, (profiles) =>
+        queueSpeakerMutation(async () => {
+          if (isStale()) return [];
+          return savePersistedSpeakerProfiles(
+            profiles.filter((profile) => !removedSpeakerIdsRef.current.has(profile.id)),
+          );
+        }),
+      )
+        .then((persistedSpeakers) => {
+          if (!isStale()) {
+            const next = persistedSpeakers.filter(
+              (profile) => !removedSpeakerIdsRef.current.has(profile.id),
+            );
+            speakersRef.current = next;
+            setSpeakers(next);
+          }
+        })
+        .catch(() => undefined)
+        .finally(() => {
+          clearTimeout(readyTimer);
+          if (!cancelled) setSpeakersReady(true);
+        });
+    };
+    reloadSpeakersRef.current = hydrate;
+    hydrate();
     return () => {
       cancelled = true;
+      reloadSpeakersRef.current = null;
     };
   }, []);
 
@@ -1095,11 +1107,16 @@ export function App() {
       return Promise.resolve();
     }
     speakerRemovalsRef.current += 1;
-    return queueSpeakerMutation(() => removeSpeakerLocally(speaker)).then((removed) =>
-      // The server deletion runs outside the queue: a stalled server must not hold up later
-      // local changes.
-      removed ? deleteSpeakerRemotely(speaker) : undefined,
-    );
+    return queueSpeakerMutation(() => removeSpeakerLocally(speaker)).then((removed) => {
+      if (!removed) {
+        speakerRemovalsRef.current -= 1;
+        reloadSpeakersRef.current?.();
+        return;
+      }
+      removedSpeakerIdsRef.current.add(speaker.id);
+      // Remote deletion remains outside the queue so a stalled server does not block local changes.
+      return deleteSpeakerRemotely(speaker);
+    });
   }
 
   function queueSpeakerMutation<T>(mutation: () => Promise<T>): Promise<T> {
@@ -2440,7 +2457,8 @@ function removeLocalSpeakerCopy(id: string) {
           typeof candidate === "object" &&
           candidate !== null &&
           "id" in candidate &&
-          candidate.id === id
+          typeof candidate.id === "string" &&
+          candidate.id.trim() === id.trim()
         ),
     );
     if (kept.length !== stored.length) {

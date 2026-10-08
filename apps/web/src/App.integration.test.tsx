@@ -734,3 +734,62 @@ it("finishes startup migration before deleting its voiceprint", async () => {
   await waitFor(() => expect(deleted).toHaveBeenCalledWith(profile.id));
   expect(serverIds.has(profile.id)).toBe(false);
 }, 15000);
+
+it("removes canonical server IDs from whitespace-padded persisted profiles", async () => {
+  const profile = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([{ ...profile, id: " alex " }]));
+  listSpeakersHook = async () => [profile];
+  const deleted = vi.fn(async () => "deleted" as const);
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  fireEvent.click(await screen.findByRole("button", { name: "Remove speaker Alex" }));
+  await waitFor(() => expect(deleted).toHaveBeenCalledWith("alex"));
+  expect(JSON.parse(localStorage.getItem("stutter-tracker:speakers")!)).toEqual([]);
+});
+
+it("reloads server-only profiles after a failed local removal during hydration", async () => {
+  const alex = {
+    id: "alex",
+    label: "Alex",
+    embeddings: [[1, 0]],
+    sampleRate: 16000,
+    sampleCount: 1,
+  };
+  const blair = { ...alex, id: "blair", label: "Blair" };
+  localStorage.setItem("stutter-tracker:speakers", JSON.stringify([alex]));
+  let finishLoad: ((profiles: (typeof alex)[]) => void) | undefined;
+  let requests = 0;
+  listSpeakersHook = () =>
+    ++requests === 1
+      ? new Promise((resolve) => {
+          finishLoad = resolve;
+        })
+      : Promise.resolve([alex, blair]);
+  const deleted = vi.fn(async () => "deleted" as const);
+  deleteSpeakerHook = deleted;
+  vi.spyOn(window, "confirm").mockReturnValue(true);
+  renderApp();
+  const remove = await screen.findByRole(
+    "button",
+    { name: "Remove speaker Alex" },
+    { timeout: 6500 },
+  );
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw new Error("Quota full");
+  });
+  fireEvent.click(remove);
+  await act(async () => {
+    await Promise.resolve();
+    finishLoad?.([alex, blair]);
+  });
+  expect(await screen.findByRole("button", { name: "Remove speaker Blair" })).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
+  expect(deleted).not.toHaveBeenCalled();
+}, 15000);
