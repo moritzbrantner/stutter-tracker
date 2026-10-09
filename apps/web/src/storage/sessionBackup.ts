@@ -292,7 +292,7 @@ function isLegacySession(value: unknown): value is LegacySessionRecord & Record<
   );
 }
 
-function isTranscriptSegment(value: unknown) {
+export function isTranscriptSegment(value: unknown) {
   return (
     isRecord(value) &&
     typeof value.text === "string" &&
@@ -307,7 +307,7 @@ function isTranscriptSegment(value: unknown) {
   );
 }
 
-function isPauseSpan(value: unknown) {
+export function isPauseSpan(value: unknown) {
   return (
     isRecord(value) &&
     isFiniteNumber(value.startSeconds) &&
@@ -472,7 +472,7 @@ function isOptionalDateString(value: unknown) {
   return value == null || isValidDateString(value);
 }
 
-function isValidDateString(value: unknown): value is string {
+export function isValidDateString(value: unknown): value is string {
   return typeof value === "string" && Number.isFinite(Date.parse(value));
 }
 

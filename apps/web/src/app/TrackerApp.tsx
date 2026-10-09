@@ -24,6 +24,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
 import { InsightsSidebar } from "../components/InsightsSidebar";
+import { InterruptedCaptureNotice } from "../components/InterruptedCaptureNotice";
 import { LowerDashboard } from "../components/LowerDashboard";
 import { RecordingWorkspace } from "../components/RecordingWorkspace";
 import { StatusMetrics } from "../components/StatusMetrics";
@@ -61,6 +62,14 @@ import {
   loadSessionsFromStorage,
   saveRemoteConsent,
 } from "../storage/localStorage";
+import {
+  type CaptureCheckpoint,
+  type StoredCaptureCheckpoint,
+  clearCaptureCheckpoint,
+  hasCheckpointedObservation,
+  readCaptureCheckpoint,
+  writeCaptureCheckpoint,
+} from "../storage/captureCheckpoint";
 export { formatTime } from "../utils/formatting";
 
 const STORE_KEY = "stutter-tracker:sessions";
@@ -137,6 +146,16 @@ export function App() {
   const [reportRun, setReportRun] = useState<AnalysisRunIdentity | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
+  // A capture that was not saved when the app last closed (or that the workspace set aside), until
+  // the user recovers or discards it.
+  const [interruptedCapture, setInterruptedCapture] = useState<Exclude<
+    StoredCaptureCheckpoint,
+    { kind: "none" }
+  > | null>(() => detectInterruptedCapture(sessions));
+  // Set while checkpointing the unsaved capture fails, so an interruption would lose it.
+  const [checkpointError, setCheckpointError] = useState<string | null>(null);
+  // Id of the unsaved capture in the workspace; null when the workspace holds no unsaved capture.
+  const captureIdRef = useRef<string | null>(null);
   const [failedSpeakerDeletions, setFailedSpeakerDeletions] = useState<SpeakerProfile[]>([]);
   const [pendingSpeakerDeletionIds, setPendingSpeakerDeletionIds] = useState<ReadonlySet<string>>(
     new Set(),
@@ -404,6 +423,35 @@ export function App() {
     pausesRef.current = pauses;
   }, [segments, pauses]);
 
+  // Checkpoints the unsaved capture on every observation change, so closing the tab, a crash or a
+  // reload loses at most the change in flight. Failures stay visible until a write succeeds.
+  useEffect(() => {
+    const id = captureIdRef.current;
+    if (!id || viewedSessionRef.current) {
+      return;
+    }
+    if (!hasCheckpointedObservation({ segments, pauses })) {
+      clearCaptureCheckpoint(id);
+      return;
+    }
+    try {
+      writeCaptureCheckpoint({
+        version: 1,
+        id,
+        startedAt: (startedAtRef.current ?? new Date()).toISOString(),
+        updatedAt: new Date().toISOString(),
+        language: sessionLanguageRef.current,
+        segments,
+        pauses,
+      });
+      setCheckpointError(null);
+    } catch {
+      setCheckpointError(
+        "This recording is not being kept safe: browser storage is full or unavailable. Save it as soon as it is finished; closing the app now would lose it.",
+      );
+    }
+  }, [segments, pauses]);
+
   useEffect(() => {
     speakersRef.current = speakers;
   }, [speakers]);
@@ -547,6 +595,11 @@ export function App() {
     if (isRecording || isFinishingCapture) {
       return;
     }
+    // A new capture would replace the only copy of the interrupted one.
+    if (interruptedCapture) {
+      setMessage("Recover or discard the interrupted recording before starting a new one");
+      return;
+    }
     try {
       if (selectedEngine.id !== "browser") {
         const ready = await ensureSelectedModelReady(transcription);
@@ -571,6 +624,13 @@ export function App() {
       resetChunkTranscription();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
+      // Starting over discards the previous unsaved capture, as it always has; its checkpoint goes
+      // with it so it is not offered for recovery later.
+      if (captureIdRef.current) {
+        clearCaptureCheckpoint(captureIdRef.current);
+      }
+      captureIdRef.current = crypto.randomUUID();
+      setCheckpointError(null);
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -923,8 +983,14 @@ export function App() {
       await saveLoadedSession(loaded);
       return;
     }
+    // A capture is saved under its checkpoint id, so a checkpoint left behind by a crash between the
+    // save and its removal is recognized as saved instead of being recovered as a duplicate.
+    const captureId = captureIdRef.current;
     const session: SavedSession = createSessionRecord({
-      id: crypto.randomUUID(),
+      id:
+        captureId && !sessionsRef.current.some((candidate) => candidate.id === captureId)
+          ? captureId
+          : crypto.randomUUID(),
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
       segments,
       pauses,
@@ -950,6 +1016,11 @@ export function App() {
     } catch {
       setMessage("Could not save the session: browser storage is full or unavailable");
       return;
+    }
+    if (captureId) {
+      clearCaptureCheckpoint(captureId);
+      captureIdRef.current = null;
+      setCheckpointError(null);
     }
     activeSessionIdRef.current = session.id;
     // Later saves of this workspace append runs to this record instead of creating copies.
@@ -1211,6 +1282,66 @@ export function App() {
     }
   }
 
+  // Loading a saved session replaces the workspace; an unsaved capture there is offered for
+  // recovery instead of being dropped.
+  function setAsideUnsavedCapture() {
+    const id = captureIdRef.current;
+    captureIdRef.current = null;
+    setCheckpointError(null);
+    if (!id) {
+      return;
+    }
+    const stored = readCaptureCheckpoint();
+    if (stored.kind === "checkpoint" && stored.checkpoint.id === id) {
+      setInterruptedCapture(stored);
+    }
+  }
+
+  function recoverInterruptedCapture(checkpoint: CaptureCheckpoint) {
+    if (captureInProgress) {
+      return;
+    }
+    startedAtRef.current = new Date(checkpoint.startedAt);
+    activeSessionIdRef.current = null;
+    // Audio was never checkpointed; analysis of the recovered capture uses its transcript only.
+    samplesRef.current = [];
+    resetChunkTranscription();
+    sessionLanguageRef.current = checkpoint.language;
+    loadedSessionRef.current = null;
+    setViewedSession(null);
+    captureIdRef.current = checkpoint.id;
+    setSegments(checkpoint.segments);
+    setPauses(checkpoint.pauses);
+    setReport(emptyReport());
+    setReportRun(null);
+    setInterimText("");
+    setSpeakerMatch(null);
+    setInterruptedCapture(null);
+    setMessage(
+      "Recovered the interrupted recording's transcript; its audio was not kept. Save it to keep it.",
+    );
+  }
+
+  function discardInterruptedCapture() {
+    const pending = interruptedCapture;
+    if (!pending) {
+      return;
+    }
+    if (
+      !window.confirm(
+        "Discard the interrupted recording? Its transcript cannot be recovered afterwards.",
+      )
+    ) {
+      return;
+    }
+    if (!clearCaptureCheckpoint(pending.kind === "checkpoint" ? pending.checkpoint.id : null)) {
+      setMessage("Could not discard the interrupted recording: browser storage is unavailable");
+      return;
+    }
+    setInterruptedCapture(null);
+    setMessage("Interrupted recording discarded");
+  }
+
   async function deleteSession(session: SavedSession) {
     setDeletingSessionId(session.id);
     try {
@@ -1221,6 +1352,11 @@ export function App() {
         const analysis = await deleteSpeechCorpusSession(session.id, remainingSessions);
         const next = sessionsRef.current.filter((candidate) => candidate.id !== session.id);
         persistSessions(next);
+        // A checkpoint of this capture that outlived its save must not bring it back.
+        clearCaptureCheckpoint(session.id);
+        setInterruptedCapture((current) =>
+          current?.kind === "checkpoint" && current.checkpoint.id === session.id ? null : current,
+        );
         if (activeSessionIdRef.current === session.id) {
           startedAtRef.current = null;
           samplesRef.current = [];
@@ -1523,6 +1659,15 @@ export function App() {
 
       <StatusMetrics report={report} speechStats={speechStats} blockerStats={blockerStats} />
 
+      {interruptedCapture && (
+        <InterruptedCaptureNotice
+          capture={interruptedCapture}
+          recoverDisabled={captureInProgress}
+          onRecover={recoverInterruptedCapture}
+          onDiscard={discardInterruptedCapture}
+        />
+      )}
+
       <section className="mb-4 flex items-stretch gap-4 max-lg:flex-col">
         <RecordingWorkspace
           isNative={isNative}
@@ -1548,6 +1693,7 @@ export function App() {
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
           saveDisabled={captureInProgress || isAnalyzing}
+          storageWarning={checkpointError}
           onExport={exportJson}
         />
 
@@ -1597,6 +1743,7 @@ export function App() {
           if (captureInProgress) {
             return;
           }
+          setAsideUnsavedCapture();
           startedAtRef.current = new Date(session.startedAt);
           activeSessionIdRef.current = session.id;
           setSegments(session.segments);
@@ -2564,6 +2711,28 @@ async function savePersistedSpeakerProfiles(speakers: SpeakerProfile[]): Promise
     localStorage.setItem(SPEAKERS_KEY, JSON.stringify(normalized));
     return normalized;
   }
+}
+
+/**
+ * The checkpoint of a capture that was never saved. A checkpoint of a session that was saved (the
+ * app stopped before removing it) or one without any observation is removed instead.
+ */
+function detectInterruptedCapture(
+  sessions: SavedSession[],
+): Exclude<StoredCaptureCheckpoint, { kind: "none" }> | null {
+  const stored = readCaptureCheckpoint();
+  if (stored.kind === "none") {
+    return null;
+  }
+  if (
+    stored.kind === "checkpoint" &&
+    (sessions.some((session) => session.id === stored.checkpoint.id) ||
+      !hasCheckpointedObservation(stored.checkpoint))
+  ) {
+    clearCaptureCheckpoint(stored.checkpoint.id);
+    return null;
+  }
+  return stored;
 }
 
 function loadSessions(): SavedSession[] {
