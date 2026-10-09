@@ -74,6 +74,26 @@ export function listCaptureCheckpoints(storage: Storage = localStorage): Interru
   return found.sort((left, right) => startedAtOf(left) - startedAtOf(right));
 }
 
+/** The checkpoint stored under `key` now; null when there is none. */
+export function readCaptureCheckpoint(
+  key: string,
+  storage: Storage = localStorage,
+): InterruptedCapture | null | "unavailable" {
+  let raw: string | null;
+  try {
+    raw = storage.getItem(key);
+  } catch {
+    return "unavailable";
+  }
+  if (raw === null) {
+    return null;
+  }
+  const checkpoint = parseRawCheckpoint(raw);
+  return checkpoint && captureCheckpointKey(checkpoint.id) === key
+    ? { key, kind: "checkpoint", checkpoint }
+    : { key, kind: "unreadable" };
+}
+
 function startedAtOf(capture: InterruptedCapture) {
   return capture.kind === "checkpoint" ? Date.parse(capture.checkpoint.startedAt) : 0;
 }

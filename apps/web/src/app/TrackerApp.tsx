@@ -71,6 +71,7 @@ import {
   hasCheckpointedObservation,
   heldCaptureIds,
   listCaptureCheckpoints,
+  readCaptureCheckpoint,
   removeCaptureCheckpoint,
   writeCaptureCheckpoint,
 } from "../storage/captureCheckpoint";
@@ -159,6 +160,8 @@ export function App() {
   const captureIdRef = useRef<string | null>(null);
   // Releases this window's claim on the workspace capture.
   const releaseCaptureRef = useRef<(() => void) | null>(null);
+  // Set while recovery waits for ownership of a capture; other workspace changes wait for it.
+  const workspaceClaimPendingRef = useRef(false);
   // The workspace capture as last checkpointed successfully, so setting it aside can tell whether
   // the stored copy is current.
   const checkpointedRef = useRef<{ state: string; checkpoint: CaptureCheckpoint | null } | null>(
@@ -470,9 +473,19 @@ export function App() {
       }
     });
     const onStorage = (event: StorageEvent) => {
-      if (event.key?.startsWith(CAPTURE_CHECKPOINT_PREFIX) && event.newValue === null) {
-        setInterruptedCaptures((current) => current.filter((item) => item.key !== event.key));
+      const key = event.key;
+      if (!key?.startsWith(CAPTURE_CHECKPOINT_PREFIX)) {
+        return;
       }
+      const updated = event.newValue === null ? null : readCaptureCheckpoint(key);
+      if (updated === "unavailable") {
+        return;
+      }
+      setInterruptedCaptures((current) =>
+        updated
+          ? current.map((item) => (item.key === key ? updated : item))
+          : current.filter((item) => item.key !== key),
+      );
     };
     window.addEventListener("storage", onStorage);
     return () => {
@@ -623,7 +636,7 @@ export function App() {
 
   async function startRecording() {
     // A new capture would reset the refs the previous one is still finishing with.
-    if (isRecording || isFinishingCapture) {
+    if (isRecording || isFinishingCapture || workspaceClaimPendingRef.current) {
       return;
     }
     // Starting over sets the previous unsaved capture aside for recovery, which needs a current
@@ -1311,10 +1324,14 @@ export function App() {
   // The workspace capture as a checkpoint. The analysis is kept only when it is the finished
   // analysis of exactly this observation and audio, because it cannot be recomputed after recovery.
   function workspaceCheckpoint(id: string): CaptureCheckpoint {
+    // The query's data belongs to the current request (observation and audio), so a run that came
+    // from it matches the current audio without fingerprinting the samples again.
     const analysis =
       reportRun &&
-      reportRun.inputId === observationFingerprint(segments, pauses) &&
-      reportRun.audioId === currentAudioId()
+      analysisQuery.data &&
+      !analysisQuery.isFetching &&
+      reportRun.id === analysisQuery.data.runId &&
+      reportRun.inputId === observationFingerprint(segments, pauses)
         ? { report, run: reportRun }
         : null;
     return {
@@ -1395,6 +1412,12 @@ export function App() {
     releaseWorkspaceCapture();
   }
 
+  function replaceInterruptedCapture(capture: InterruptedCapture) {
+    setInterruptedCaptures((current) =>
+      current.map((item) => (item.key === capture.key ? capture : item)),
+    );
+  }
+
   function dropInterruptedCapture(key: string) {
     setInterruptedCaptures((current) => current.filter((item) => item.key !== key));
   }
@@ -1415,15 +1438,44 @@ export function App() {
   }
 
   async function recoverInterruptedCapture(capture: InterruptedCapture) {
-    if (captureInProgress || capture.kind !== "checkpoint" || !canSetAsideWorkspaceCapture()) {
+    if (
+      workspaceClaimPendingRef.current ||
+      captureInProgress ||
+      capture.kind !== "checkpoint" ||
+      !canSetAsideWorkspaceCapture()
+    ) {
       return;
     }
-    const { checkpoint } = capture;
-    const release = await claimCapture(checkpoint.id);
+    // Other workspace changes wait until ownership is settled, so the checks above stay true.
+    workspaceClaimPendingRef.current = true;
+    let release: (() => void) | null;
+    try {
+      release = await claimCapture(capture.checkpoint.id);
+    } finally {
+      workspaceClaimPendingRef.current = false;
+    }
     if (!release) {
       setMessage("This recording is open in another window");
       return;
     }
+    // Another window may have recovered, changed or removed it before releasing it.
+    const current = readCaptureCheckpoint(capture.key);
+    if (current === "unavailable") {
+      release();
+      setMessage("Could not recover the recording: browser storage is unavailable");
+      return;
+    }
+    if (current?.kind !== "checkpoint") {
+      release();
+      if (current) {
+        replaceInterruptedCapture(current);
+      } else {
+        dropInterruptedCapture(capture.key);
+      }
+      setMessage("This recording changed in another window; check it again");
+      return;
+    }
+    const { checkpoint } = current;
     if (sessionsRef.current.some((session) => session.id === checkpoint.id)) {
       release();
       removeCaptureCheckpoint(capture.key);
@@ -1928,7 +1980,7 @@ export function App() {
           if (captureInProgress) {
             return;
           }
-          if (!canSetAsideWorkspaceCapture()) {
+          if (workspaceClaimPendingRef.current || !canSetAsideWorkspaceCapture()) {
             return;
           }
           setAsideUnsavedCapture();

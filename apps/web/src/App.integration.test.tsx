@@ -1496,6 +1496,43 @@ describe("interrupted capture recovery", () => {
     expect(screen.queryByText("Other session", { selector: "p, span" })).toBeNull();
   });
 
+  it("recovers the checkpoint as stored now, not as first offered", async () => {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    const user = userEvent.setup();
+    renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    // Another window recovered it, added to it and closed again.
+    localStorage.setItem(
+      CHECKPOINT_KEY,
+      JSON.stringify({
+        ...checkpoint,
+        segments: [{ ...checkpoint.segments[0], text: "Newer words from another window" }],
+      }),
+    );
+
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+
+    expect((await screen.findAllByText("Newer words from another window")).length).toBeGreaterThan(
+      0,
+    );
+    expect(screen.queryByText("Recovered words")).not.toBeInTheDocument();
+  });
+
+  it("does not recover a checkpoint another window already removed", async () => {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    localStorage.removeItem(CHECKPOINT_KEY);
+
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+
+    expect(await screen.findByText(/changed in another window/)).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "Interrupted recording" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Recovered words")).not.toBeInTheDocument();
+    expect(container.querySelectorAll(".session-row")).toHaveLength(0);
+  });
+
   it("keeps the workspace capture while its analysis is still running", async () => {
     const { createSessionRecord } = await import("@stutter-tracker/shared");
     const other = createSessionRecord({
