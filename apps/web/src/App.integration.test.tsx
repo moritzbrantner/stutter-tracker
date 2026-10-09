@@ -1634,6 +1634,36 @@ describe("interrupted capture recovery", () => {
     expect(localStorage.getItem(CHECKPOINT_KEY)).toBeNull();
   });
 
+  it("keeps sessions another window saved while a recovered capture waits", async () => {
+    const { createSessionRecord } = await import("@stutter-tracker/shared");
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+    const other = createSessionRecord({
+      id: "session-from-other-window",
+      startedAt: "2026-10-09T11:00:00.000Z",
+      segments: checkpoint.segments,
+      pauses: [],
+      report: fallbackAnalyze({ segments: checkpoint.segments, pauses: [] }),
+      run: { id: "run-other", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    });
+    const value = JSON.stringify([other]);
+    localStorage.setItem(STORE_KEY, value);
+    act(() => {
+      window.dispatchEvent(new StorageEvent("storage", { key: STORE_KEY, newValue: value }));
+    });
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(container.querySelectorAll(".session-row")).toHaveLength(2));
+    const ids = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]").map(
+      (session: { id: string }) => session.id,
+    );
+    expect(ids).toEqual([checkpoint.id, "session-from-other-window"]);
+  });
+
   it("keeps the workspace capture while its analysis is still running", async () => {
     const { createSessionRecord } = await import("@stutter-tracker/shared");
     const other = createSessionRecord({

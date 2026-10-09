@@ -506,6 +506,18 @@ export function App() {
     detect();
     const onStorage = (event: StorageEvent) => {
       const key = event.key;
+      // Another window saved or deleted sessions: later saves here build on its list instead of
+      // overwriting it with this window's older copy.
+      if (key === STORE_KEY) {
+        try {
+          const stored = loadSessionsFromStorage();
+          sessionsRef.current = stored;
+          setSessions(stored);
+        } catch {
+          // Unreadable now; keep this window's list rather than dropping it.
+        }
+        return;
+      }
       if (!key?.startsWith(CAPTURE_CHECKPOINT_PREFIX)) {
         return;
       }
