@@ -156,6 +156,8 @@ export function App() {
   const [interruptedCaptures, setInterruptedCaptures] = useState<InterruptedCapture[]>([]);
   // Set while checkpointing the unsaved capture fails, so an interruption would lose it.
   const [checkpointError, setCheckpointError] = useState<string | null>(null);
+  // Set when this window could not take ownership of its capture.
+  const [claimError, setClaimError] = useState<string | null>(null);
   // Id of the unsaved capture in the workspace; null when the workspace holds no unsaved capture.
   const captureIdRef = useRef<string | null>(null);
   // Releases this window's claim on the workspace capture.
@@ -465,13 +467,26 @@ export function App() {
   }, [segments, pauses, report, reportRun]);
 
   // Offers captures that no live window owns, and drops ones another window saved or discarded.
+  // A window that closes or crashes releases its lock without any event, so ownership is checked
+  // again when this window regains focus or becomes visible, when another window writes a
+  // checkpoint this one does not offer yet, and periodically.
   useEffect(() => {
     let cancelled = false;
-    void detectInterruptedCaptures(sessionsRef.current).then((found) => {
-      if (!cancelled) {
-        setInterruptedCaptures((current) => mergeInterruptedCaptures(current, found));
-      }
-    });
+    const detect = () => {
+      void detectInterruptedCaptures(sessionsRef.current).then((found) => {
+        if (cancelled) {
+          return;
+        }
+        const own = captureIdRef.current ? captureCheckpointKey(captureIdRef.current) : null;
+        setInterruptedCaptures((current) =>
+          mergeInterruptedCaptures(
+            current,
+            found.filter((item) => item.key !== own),
+          ),
+        );
+      });
+    };
+    detect();
     const onStorage = (event: StorageEvent) => {
       const key = event.key;
       if (!key?.startsWith(CAPTURE_CHECKPOINT_PREFIX)) {
@@ -486,11 +501,25 @@ export function App() {
           ? current.map((item) => (item.key === key ? updated : item))
           : current.filter((item) => item.key !== key),
       );
+      if (updated) {
+        detect();
+      }
     };
+    const onVisible = () => {
+      if (document.visibilityState === "visible") {
+        detect();
+      }
+    };
+    const interval = window.setInterval(detect, 30_000);
     window.addEventListener("storage", onStorage);
+    window.addEventListener("focus", detect);
+    document.addEventListener("visibilitychange", onVisible);
     return () => {
       cancelled = true;
+      window.clearInterval(interval);
       window.removeEventListener("storage", onStorage);
+      window.removeEventListener("focus", detect);
+      document.removeEventListener("visibilitychange", onVisible);
       releaseCaptureRef.current?.();
       releaseCaptureRef.current = null;
     };
@@ -1354,10 +1383,14 @@ export function App() {
       releaseCaptureRef.current = release;
     } else {
       void claimCapture(id).then((claimed) => {
-        if (captureIdRef.current === id && !releaseCaptureRef.current) {
+        if (captureIdRef.current !== id || releaseCaptureRef.current) {
+          claimed?.();
+        } else if (claimed) {
           releaseCaptureRef.current = claimed;
         } else {
-          claimed?.();
+          setClaimError(
+            "This recording could not be reserved for this window, so another open window may offer it for recovery. Save it as soon as it is finished.",
+          );
         }
       });
     }
@@ -1366,6 +1399,7 @@ export function App() {
   function releaseWorkspaceCapture() {
     releaseCaptureRef.current?.();
     releaseCaptureRef.current = null;
+    setClaimError(null);
     captureIdRef.current = null;
     checkpointedRef.current = null;
     setCheckpointError(null);
@@ -1930,7 +1964,7 @@ export function App() {
           onEnroll={saveSpeakerProfile}
           onSave={saveSession}
           saveDisabled={captureInProgress || isAnalyzing}
-          storageWarning={checkpointError}
+          storageWarning={checkpointError ?? claimError}
           onExport={exportJson}
         />
 

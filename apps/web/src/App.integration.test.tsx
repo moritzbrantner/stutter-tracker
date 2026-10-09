@@ -1533,6 +1533,52 @@ describe("interrupted capture recovery", () => {
     expect(container.querySelectorAll(".session-row")).toHaveLength(0);
   });
 
+  it("offers a capture left by a window that closed after this one started", async () => {
+    renderApp();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.queryByRole("region", { name: "Interrupted recording" })).not.toBeInTheDocument();
+
+    // Another window checkpointed a recording, then closed without saving it.
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: CHECKPOINT_KEY,
+          newValue: JSON.stringify(checkpoint),
+        }),
+      );
+    });
+
+    expect(
+      await screen.findByRole("region", { name: "Interrupted recording" }),
+    ).toBeInTheDocument();
+  });
+
+  it("warns when this window cannot reserve its recording", async () => {
+    vi.spyOn(recorderModule, "createBrowserRecorder").mockResolvedValue({
+      sampleRate: 16000,
+      stop: async () => {},
+    });
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      locks: {
+        request: async () => {
+          throw new DOMException("inactive", "InvalidStateError");
+        },
+        query: async () => ({ held: [] }),
+      },
+    });
+    const user = userEvent.setup();
+    renderApp();
+
+    await user.click(screen.getByRole("button", { name: /^record$/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/could not be reserved/);
+    vi.unstubAllGlobals();
+  });
+
   it("keeps the workspace capture while its analysis is still running", async () => {
     const { createSessionRecord } = await import("@stutter-tracker/shared");
     const other = createSessionRecord({
