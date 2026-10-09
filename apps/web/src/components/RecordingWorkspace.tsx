@@ -56,6 +56,8 @@ type RecordingWorkspaceProps = {
   onSave: () => void;
   /** Saving waits until capture and transcription have finished. */
   saveDisabled?: boolean;
+  /** Shown while the unsaved capture cannot be checkpointed. */
+  storageWarning?: string | null;
   onExport: () => void;
 };
 
@@ -83,6 +85,7 @@ export function RecordingWorkspace({
   onEnroll,
   onSave,
   saveDisabled = false,
+  storageWarning = null,
   onExport,
 }: RecordingWorkspaceProps) {
   const restoreDisabled =
@@ -190,6 +193,15 @@ export function RecordingWorkspace({
           {interimText && <span className="text-[#7b8780]"> {interimText}</span>}
         </div>
       </div>
+
+      {storageWarning && (
+        <p
+          className="mt-4 mb-0 rounded-md border border-[#e3c9a8] bg-[#fbf3e8] p-3 text-sm text-[#7a4a12]"
+          role="alert"
+        >
+          {storageWarning}
+        </p>
+      )}
 
       <div className="mt-4 flex flex-wrap gap-3">
         <button className={buttonClass} onClick={onEnroll} disabled={!canEnroll}>
