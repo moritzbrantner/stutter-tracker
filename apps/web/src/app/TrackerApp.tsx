@@ -63,11 +63,15 @@ import {
   saveRemoteConsent,
 } from "../storage/localStorage";
 import {
+  CAPTURE_CHECKPOINT_PREFIX,
   type CaptureCheckpoint,
-  type StoredCaptureCheckpoint,
-  clearCaptureCheckpoint,
+  type InterruptedCapture,
+  captureCheckpointKey,
+  claimCapture,
   hasCheckpointedObservation,
-  readCaptureCheckpoint,
+  heldCaptureIds,
+  listCaptureCheckpoints,
+  removeCaptureCheckpoint,
   writeCaptureCheckpoint,
 } from "../storage/captureCheckpoint";
 export { formatTime } from "../utils/formatting";
@@ -146,16 +150,20 @@ export function App() {
   const [reportRun, setReportRun] = useState<AnalysisRunIdentity | null>(null);
   const [sessions, setSessions] = useState<SavedSession[]>(() => loadSessions());
   const [speakers, setSpeakers] = useState<SpeakerProfile[]>(() => loadSpeakerProfiles());
-  // A capture that was not saved when the app last closed (or that the workspace set aside), until
-  // the user recovers or discards it.
-  const [interruptedCapture, setInterruptedCapture] = useState<Exclude<
-    StoredCaptureCheckpoint,
-    { kind: "none" }
-  > | null>(() => detectInterruptedCapture(sessions));
+  // Captures that were not saved when a window last closed (or that the workspace set aside), until
+  // the user recovers or discards them. Filled once startup knows which captures live windows own.
+  const [interruptedCaptures, setInterruptedCaptures] = useState<InterruptedCapture[]>([]);
   // Set while checkpointing the unsaved capture fails, so an interruption would lose it.
   const [checkpointError, setCheckpointError] = useState<string | null>(null);
   // Id of the unsaved capture in the workspace; null when the workspace holds no unsaved capture.
   const captureIdRef = useRef<string | null>(null);
+  // Releases this window's claim on the workspace capture.
+  const releaseCaptureRef = useRef<(() => void) | null>(null);
+  // The workspace capture as last checkpointed successfully, so setting it aside can tell whether
+  // the stored copy is current.
+  const checkpointedRef = useRef<{ state: string; checkpoint: CaptureCheckpoint | null } | null>(
+    null,
+  );
   const [failedSpeakerDeletions, setFailedSpeakerDeletions] = useState<SpeakerProfile[]>([]);
   const [pendingSpeakerDeletionIds, setPendingSpeakerDeletionIds] = useState<ReadonlySet<string>>(
     new Set(),
@@ -423,34 +431,57 @@ export function App() {
     pausesRef.current = pauses;
   }, [segments, pauses]);
 
-  // Checkpoints the unsaved capture on every observation change, so closing the tab, a crash or a
-  // reload loses at most the change in flight. Failures stay visible until a write succeeds.
+  // Checkpoints the unsaved capture on every observation or analysis change, so closing the tab, a
+  // crash or a reload loses at most the change in flight. Failures stay visible until a write
+  // succeeds.
   useEffect(() => {
     const id = captureIdRef.current;
     if (!id || viewedSessionRef.current) {
       return;
     }
-    if (!hasCheckpointedObservation({ segments, pauses })) {
-      clearCaptureCheckpoint(id);
+    const checkpoint = workspaceCheckpoint(id);
+    const state = checkpointState(checkpoint);
+    if (!hasCheckpointedObservation(checkpoint)) {
+      if (removeCaptureCheckpoint(captureCheckpointKey(id))) {
+        checkpointedRef.current = { state, checkpoint: null };
+        setCheckpointError(null);
+      }
       return;
     }
     try {
-      writeCaptureCheckpoint({
-        version: 1,
-        id,
-        startedAt: (startedAtRef.current ?? new Date()).toISOString(),
-        updatedAt: new Date().toISOString(),
-        language: sessionLanguageRef.current,
-        segments,
-        pauses,
-      });
+      writeCaptureCheckpoint(checkpoint);
+      checkpointedRef.current = { state, checkpoint };
       setCheckpointError(null);
     } catch {
       setCheckpointError(
         "This recording is not being kept safe: browser storage is full or unavailable. Save it as soon as it is finished; closing the app now would lose it.",
       );
     }
-  }, [segments, pauses]);
+    // workspaceCheckpoint reads exactly these values from this render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [segments, pauses, report, reportRun]);
+
+  // Offers captures that no live window owns, and drops ones another window saved or discarded.
+  useEffect(() => {
+    let cancelled = false;
+    void detectInterruptedCaptures(sessionsRef.current).then((found) => {
+      if (!cancelled) {
+        setInterruptedCaptures((current) => mergeInterruptedCaptures(current, found));
+      }
+    });
+    const onStorage = (event: StorageEvent) => {
+      if (event.key?.startsWith(CAPTURE_CHECKPOINT_PREFIX) && event.newValue === null) {
+        setInterruptedCaptures((current) => current.filter((item) => item.key !== event.key));
+      }
+    };
+    window.addEventListener("storage", onStorage);
+    return () => {
+      cancelled = true;
+      window.removeEventListener("storage", onStorage);
+      releaseCaptureRef.current?.();
+      releaseCaptureRef.current = null;
+    };
+  }, []);
 
   useEffect(() => {
     speakersRef.current = speakers;
@@ -595,9 +626,9 @@ export function App() {
     if (isRecording || isFinishingCapture) {
       return;
     }
-    // A new capture would replace the only copy of the interrupted one.
-    if (interruptedCapture) {
-      setMessage("Recover or discard the interrupted recording before starting a new one");
+    // Starting over sets the previous unsaved capture aside for recovery, which needs a current
+    // checkpoint of it.
+    if (!canSetAsideWorkspaceCapture()) {
       return;
     }
     try {
@@ -622,15 +653,10 @@ export function App() {
       loadedSessionRef.current = null;
       setViewedSession(null);
       resetChunkTranscription();
+      setAsideUnsavedCapture();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
-      // Starting over discards the previous unsaved capture, as it always has; its checkpoint goes
-      // with it so it is not offered for recovery later.
-      if (captureIdRef.current) {
-        clearCaptureCheckpoint(captureIdRef.current);
-      }
-      captureIdRef.current = crypto.randomUUID();
-      setCheckpointError(null);
+      takeWorkspaceCapture(crypto.randomUUID(), null);
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -1018,9 +1044,9 @@ export function App() {
       return;
     }
     if (captureId) {
-      clearCaptureCheckpoint(captureId);
-      captureIdRef.current = null;
-      setCheckpointError(null);
+      // Left behind if this fails; the next start recognizes it as saved and removes it.
+      removeCaptureCheckpoint(captureCheckpointKey(captureId));
+      releaseWorkspaceCapture();
     }
     activeSessionIdRef.current = session.id;
     // Later saves of this workspace append runs to this record instead of creating copies.
@@ -1282,51 +1308,195 @@ export function App() {
     }
   }
 
-  // Loading a saved session replaces the workspace; an unsaved capture there is offered for
-  // recovery instead of being dropped.
-  function setAsideUnsavedCapture() {
-    const id = captureIdRef.current;
-    captureIdRef.current = null;
-    setCheckpointError(null);
-    if (!id) {
-      return;
-    }
-    const stored = readCaptureCheckpoint();
-    if (stored.kind === "checkpoint" && stored.checkpoint.id === id) {
-      setInterruptedCapture(stored);
+  // The workspace capture as a checkpoint. The analysis is kept only when it is the finished
+  // analysis of exactly this observation and audio, because it cannot be recomputed after recovery.
+  function workspaceCheckpoint(id: string): CaptureCheckpoint {
+    const analysis =
+      reportRun &&
+      reportRun.inputId === observationFingerprint(segments, pauses) &&
+      reportRun.audioId === currentAudioId()
+        ? { report, run: reportRun }
+        : null;
+    return {
+      version: 1,
+      id,
+      startedAt: (startedAtRef.current ?? new Date()).toISOString(),
+      updatedAt: new Date().toISOString(),
+      language: sessionLanguageRef.current,
+      segments,
+      pauses,
+      analysis,
+    };
+  }
+
+  // Makes `id` the workspace capture, owned by this window until it is saved or set aside.
+  function takeWorkspaceCapture(id: string, release: (() => void) | null) {
+    releaseWorkspaceCapture();
+    captureIdRef.current = id;
+    if (release) {
+      releaseCaptureRef.current = release;
+    } else {
+      void claimCapture(id).then((claimed) => {
+        if (captureIdRef.current === id && !releaseCaptureRef.current) {
+          releaseCaptureRef.current = claimed;
+        } else {
+          claimed?.();
+        }
+      });
     }
   }
 
-  function recoverInterruptedCapture(checkpoint: CaptureCheckpoint) {
-    if (captureInProgress) {
+  function releaseWorkspaceCapture() {
+    releaseCaptureRef.current?.();
+    releaseCaptureRef.current = null;
+    captureIdRef.current = null;
+    checkpointedRef.current = null;
+    setCheckpointError(null);
+  }
+
+  // False, with a message, when the workspace holds an observation whose checkpoint is missing or
+  // stale: replacing the workspace would lose it.
+  function canSetAsideWorkspaceCapture() {
+    const id = captureIdRef.current;
+    if (!id) {
+      return true;
+    }
+    const checkpoint = workspaceCheckpoint(id);
+    if (
+      !hasCheckpointedObservation(checkpoint) ||
+      checkpointedRef.current?.state === checkpointState(checkpoint)
+    ) {
+      return true;
+    }
+    setMessage(
+      "Save the current recording first: browser storage could not keep a copy of it, so replacing it would lose it",
+    );
+    return false;
+  }
+
+  // Replacing the workspace (a new capture, opening or recovering a recording) offers its unsaved
+  // capture for recovery instead of dropping it. Callers check canSetAsideWorkspaceCapture first.
+  function setAsideUnsavedCapture() {
+    const id = captureIdRef.current;
+    const checkpoint = checkpointedRef.current?.checkpoint;
+    if (id && checkpoint) {
+      setInterruptedCaptures((current) =>
+        mergeInterruptedCaptures(current, [
+          { key: captureCheckpointKey(id), kind: "checkpoint", checkpoint },
+        ]),
+      );
+    }
+    releaseWorkspaceCapture();
+  }
+
+  function dropInterruptedCapture(key: string) {
+    setInterruptedCaptures((current) => current.filter((item) => item.key !== key));
+  }
+
+  function showSavedSession(session: SavedSession) {
+    startedAtRef.current = new Date(session.startedAt);
+    activeSessionIdRef.current = session.id;
+    setSegments(session.segments);
+    setPauses(session.pauses);
+    setReport(session.report);
+    setReportRun(session.analysis);
+    sessionLanguageRef.current = session.context.spokenLanguage;
+    loadedSessionRef.current = session;
+    setViewedSession(session);
+    // Audio is not stored with sessions; keeping the last recording's PCM would analyze
+    // this session against someone else's audio.
+    samplesRef.current = [];
+  }
+
+  async function recoverInterruptedCapture(capture: InterruptedCapture) {
+    if (captureInProgress || capture.kind !== "checkpoint" || !canSetAsideWorkspaceCapture()) {
+      return;
+    }
+    const { checkpoint } = capture;
+    const release = await claimCapture(checkpoint.id);
+    if (!release) {
+      setMessage("This recording is open in another window");
+      return;
+    }
+    if (sessionsRef.current.some((session) => session.id === checkpoint.id)) {
+      release();
+      removeCaptureCheckpoint(capture.key);
+      dropInterruptedCapture(capture.key);
+      setMessage("This recording was already saved");
+      return;
+    }
+    setAsideUnsavedCapture();
+    dropInterruptedCapture(capture.key);
+    if (checkpoint.analysis) {
+      // Its analysis used audio that was not kept, so it is saved as it was rather than reanalyzed
+      // from the transcript alone.
+      await saveRecoveredCapture(checkpoint, checkpoint.analysis, capture.key, release);
       return;
     }
     startedAtRef.current = new Date(checkpoint.startedAt);
     activeSessionIdRef.current = null;
-    // Audio was never checkpointed; analysis of the recovered capture uses its transcript only.
     samplesRef.current = [];
     resetChunkTranscription();
     sessionLanguageRef.current = checkpoint.language;
     loadedSessionRef.current = null;
     setViewedSession(null);
-    captureIdRef.current = checkpoint.id;
+    takeWorkspaceCapture(checkpoint.id, release);
     setSegments(checkpoint.segments);
     setPauses(checkpoint.pauses);
     setReport(emptyReport());
     setReportRun(null);
     setInterimText("");
     setSpeakerMatch(null);
-    setInterruptedCapture(null);
     setMessage(
       "Recovered the interrupted recording's transcript; its audio was not kept. Save it to keep it.",
     );
   }
 
-  function discardInterruptedCapture() {
-    const pending = interruptedCapture;
-    if (!pending) {
+  async function saveRecoveredCapture(
+    checkpoint: CaptureCheckpoint,
+    analysis: NonNullable<CaptureCheckpoint["analysis"]>,
+    key: string,
+    release: () => void,
+  ) {
+    const session = createSessionRecord({
+      id: checkpoint.id,
+      startedAt: checkpoint.startedAt,
+      segments: checkpoint.segments,
+      pauses: checkpoint.pauses,
+      report: analysis.report,
+      run: analysis.run,
+      context: {
+        spokenLanguage: canonicalSpokenLanguage(checkpoint.language),
+        task: null,
+        condition: null,
+      },
+    });
+    try {
+      persistSessions([session, ...sessionsRef.current].slice(0, 50));
+    } catch {
+      release();
+      setInterruptedCaptures((current) =>
+        mergeInterruptedCaptures(current, [{ key, kind: "checkpoint", checkpoint }]),
+      );
+      setMessage("Could not save the recovered recording: browser storage is full or unavailable");
       return;
     }
+    removeCaptureCheckpoint(key);
+    release();
+    setInterimText("");
+    setSpeakerMatch(null);
+    resetChunkTranscription();
+    showSavedSession(session);
+    try {
+      const corpus = await serializeSessionMutation(() => saveSpeechCorpusSession(session));
+      setCorpusAnalysis(corpus);
+    } catch {
+      setCorpusAnalysis(analyzeLocalCorpus(sessionsRef.current));
+    }
+    setMessage("Recovered and saved the interrupted recording; its audio was not kept.");
+  }
+
+  async function discardInterruptedCapture(capture: InterruptedCapture) {
     if (
       !window.confirm(
         "Discard the interrupted recording? Its transcript cannot be recovered afterwards.",
@@ -1334,11 +1504,18 @@ export function App() {
     ) {
       return;
     }
-    if (!clearCaptureCheckpoint(pending.kind === "checkpoint" ? pending.checkpoint.id : null)) {
+    const release = await claimCapture(capture.key.slice(CAPTURE_CHECKPOINT_PREFIX.length));
+    if (!release) {
+      setMessage("This recording is open in another window");
+      return;
+    }
+    const removed = removeCaptureCheckpoint(capture.key);
+    release();
+    if (!removed) {
       setMessage("Could not discard the interrupted recording: browser storage is unavailable");
       return;
     }
-    setInterruptedCapture(null);
+    dropInterruptedCapture(capture.key);
     setMessage("Interrupted recording discarded");
   }
 
@@ -1346,17 +1523,18 @@ export function App() {
     setDeletingSessionId(session.id);
     try {
       const corpus = await serializeSessionMutation(async () => {
+        // A checkpoint of this capture that outlived its save would bring it back as an
+        // interrupted recording, so deletion stops while it cannot be removed.
+        if (!removeCaptureCheckpoint(captureCheckpointKey(session.id))) {
+          throw new Error("its unsaved copy in browser storage could not be removed");
+        }
+        dropInterruptedCapture(captureCheckpointKey(session.id));
         const remainingSessions = sessionsRef.current.filter(
           (candidate) => candidate.id !== session.id,
         );
         const analysis = await deleteSpeechCorpusSession(session.id, remainingSessions);
         const next = sessionsRef.current.filter((candidate) => candidate.id !== session.id);
         persistSessions(next);
-        // A checkpoint of this capture that outlived its save must not bring it back.
-        clearCaptureCheckpoint(session.id);
-        setInterruptedCapture((current) =>
-          current?.kind === "checkpoint" && current.checkpoint.id === session.id ? null : current,
-        );
         if (activeSessionIdRef.current === session.id) {
           startedAtRef.current = null;
           samplesRef.current = [];
@@ -1659,14 +1837,15 @@ export function App() {
 
       <StatusMetrics report={report} speechStats={speechStats} blockerStats={blockerStats} />
 
-      {interruptedCapture && (
+      {interruptedCaptures.map((capture) => (
         <InterruptedCaptureNotice
-          capture={interruptedCapture}
+          key={capture.key}
+          capture={capture}
           recoverDisabled={captureInProgress}
-          onRecover={recoverInterruptedCapture}
-          onDiscard={discardInterruptedCapture}
+          onRecover={() => void recoverInterruptedCapture(capture)}
+          onDiscard={() => void discardInterruptedCapture(capture)}
         />
-      )}
+      ))}
 
       <section className="mb-4 flex items-stretch gap-4 max-lg:flex-col">
         <RecordingWorkspace
@@ -1743,19 +1922,11 @@ export function App() {
           if (captureInProgress) {
             return;
           }
+          if (!canSetAsideWorkspaceCapture()) {
+            return;
+          }
           setAsideUnsavedCapture();
-          startedAtRef.current = new Date(session.startedAt);
-          activeSessionIdRef.current = session.id;
-          setSegments(session.segments);
-          setPauses(session.pauses);
-          setReport(session.report);
-          setReportRun(session.analysis);
-          sessionLanguageRef.current = session.context.spokenLanguage;
-          loadedSessionRef.current = session;
-          setViewedSession(session);
-          // Audio is not stored with sessions; keeping the last recording's PCM would analyze
-          // this session against someone else's audio.
-          samplesRef.current = [];
+          showSavedSession(session);
         }}
         onSessionDelete={(session) => void deleteSession(session)}
         onSessionReanalyze={(session) => void reanalyzeSavedSession(session)}
@@ -2714,25 +2885,40 @@ async function savePersistedSpeakerProfiles(speakers: SpeakerProfile[]): Promise
 }
 
 /**
- * The checkpoint of a capture that was never saved. A checkpoint of a session that was saved (the
- * app stopped before removing it) or one without any observation is removed instead.
+ * Checkpoints of captures that were never saved and that no live window owns. A checkpoint of a
+ * session that was saved (the app stopped before removing it) or one without any observation is
+ * removed instead.
  */
-function detectInterruptedCapture(
-  sessions: SavedSession[],
-): Exclude<StoredCaptureCheckpoint, { kind: "none" }> | null {
-  const stored = readCaptureCheckpoint();
-  if (stored.kind === "none") {
-    return null;
-  }
-  if (
-    stored.kind === "checkpoint" &&
-    (sessions.some((session) => session.id === stored.checkpoint.id) ||
-      !hasCheckpointedObservation(stored.checkpoint))
-  ) {
-    clearCaptureCheckpoint(stored.checkpoint.id);
-    return null;
-  }
-  return stored;
+async function detectInterruptedCaptures(sessions: SavedSession[]): Promise<InterruptedCapture[]> {
+  const held = await heldCaptureIds();
+  return listCaptureCheckpoints().filter((capture) => {
+    if (held.has(capture.key.slice(CAPTURE_CHECKPOINT_PREFIX.length))) {
+      return false;
+    }
+    if (
+      capture.kind === "checkpoint" &&
+      (sessions.some((session) => session.id === capture.checkpoint.id) ||
+        !hasCheckpointedObservation(capture.checkpoint))
+    ) {
+      removeCaptureCheckpoint(capture.key);
+      return false;
+    }
+    return true;
+  });
+}
+
+function mergeInterruptedCaptures(current: InterruptedCapture[], added: InterruptedCapture[]) {
+  const keys = new Set(current.map((item) => item.key));
+  return [...current, ...added.filter((item) => !keys.has(item.key))];
+}
+
+// What a checkpoint holds, ignoring its write time.
+function checkpointState(checkpoint: CaptureCheckpoint) {
+  return JSON.stringify([
+    checkpoint.id,
+    observationFingerprint(checkpoint.segments, checkpoint.pauses),
+    checkpoint.analysis?.run.id ?? null,
+  ]);
 }
 
 function loadSessions(): SavedSession[] {

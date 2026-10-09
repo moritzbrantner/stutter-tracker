@@ -1,11 +1,11 @@
 import { History, Trash2 } from "lucide-react";
-import type { CaptureCheckpoint, StoredCaptureCheckpoint } from "../storage/captureCheckpoint";
+import type { InterruptedCapture } from "../storage/captureCheckpoint";
 import { buttonClass, mutedTextClass, panelClass, primaryButtonClass } from "./styles";
 
 type InterruptedCaptureNoticeProps = {
-  capture: Exclude<StoredCaptureCheckpoint, { kind: "none" }>;
+  capture: InterruptedCapture;
   recoverDisabled?: boolean;
-  onRecover: (checkpoint: CaptureCheckpoint) => void;
+  onRecover: () => void;
   onDiscard: () => void;
 };
 
@@ -28,8 +28,10 @@ export function InterruptedCaptureNotice({
           A recording started {new Date(checkpoint.startedAt).toLocaleString()} was not saved (
           {checkpoint.segments.length} transcript segment
           {checkpoint.segments.length === 1 ? "" : "s"}, last kept{" "}
-          {new Date(checkpoint.updatedAt).toLocaleTimeString()}). Recovering restores its transcript
-          and pauses; the audio was not kept, so analysis uses the transcript only.
+          {new Date(checkpoint.updatedAt).toLocaleTimeString()}).{" "}
+          {checkpoint.analysis
+            ? "Recovering saves it with the analysis it had; the audio was not kept."
+            : "Recovering restores its transcript and pauses; the audio was not kept, so analysis uses the transcript only."}
         </p>
       ) : (
         <p className={`mt-1 mb-3 text-sm ${mutedTextClass}`}>
@@ -39,11 +41,7 @@ export function InterruptedCaptureNotice({
       )}
       <div className="flex flex-wrap gap-3">
         {checkpoint && (
-          <button
-            className={primaryButtonClass}
-            onClick={() => onRecover(checkpoint)}
-            disabled={recoverDisabled}
-          >
+          <button className={primaryButtonClass} onClick={onRecover} disabled={recoverDisabled}>
             <History size={17} />
             Recover recording
           </button>

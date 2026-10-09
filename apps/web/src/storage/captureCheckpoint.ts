@@ -1,11 +1,24 @@
-// Checkpoint of the capture in the workspace that has not been saved yet, so a closed tab, crash
-// or reload does not lose its transcript. Audio is not checkpointed (sessions never store it), so
-// a recovered capture is the observation only: nothing is invented for the missing audio.
-import type { PauseSpan, TranscriptSegment } from "../types";
-import { isPauseSpan, isTranscriptSegment, isValidDateString } from "./sessionBackup";
+// Checkpoints of captures in the workspace that have not been saved yet, so a closed tab, crash or
+// reload does not lose their observation. Audio is not checkpointed (sessions never store it), so a
+// recovered capture is the observation only: nothing is invented for the missing audio.
+//
+// Each capture has its own key, so captures in different windows never overwrite each other. A
+// window holds a Web Lock named after the capture while it owns it; a checkpoint whose lock is held
+// belongs to a live window and is not offered for recovery elsewhere. Closing or crashing the window
+// releases the lock.
+import type { AnalysisRunIdentity } from "@stutter-tracker/shared";
+import type { AnalysisReport, PauseSpan, TranscriptSegment } from "../types";
+import {
+  isAnalysisReport,
+  isAnalysisRunIdentity,
+  isPauseSpan,
+  isTranscriptSegment,
+  isValidDateString,
+} from "./sessionBackup";
 
-export const CAPTURE_CHECKPOINT_KEY = "stutter-tracker:capture-checkpoint";
+export const CAPTURE_CHECKPOINT_PREFIX = "stutter-tracker:capture-checkpoint:";
 export const CAPTURE_CHECKPOINT_VERSION = 1;
+const CAPTURE_LOCK_PREFIX = "stutter-tracker:capture:";
 
 export type CaptureCheckpoint = {
   version: typeof CAPTURE_CHECKPOINT_VERSION;
@@ -17,30 +30,59 @@ export type CaptureCheckpoint = {
   language: string | null;
   segments: TranscriptSegment[];
   pauses: PauseSpan[];
+  /**
+   * The finished analysis of exactly this observation (including its audio), when there was one.
+   * It cannot be recomputed after recovery because the audio is gone.
+   */
+  analysis: { report: AnalysisReport; run: AnalysisRunIdentity } | null;
 };
 
-export type StoredCaptureCheckpoint =
-  | { kind: "none" }
-  | { kind: "checkpoint"; checkpoint: CaptureCheckpoint }
+/** A stored checkpoint offered for recovery, identified by its storage key. */
+export type InterruptedCapture =
+  | { key: string; kind: "checkpoint"; checkpoint: CaptureCheckpoint }
   /** Present but not readable by this build; kept until the user discards it. */
-  | { kind: "unreadable" };
+  | { key: string; kind: "unreadable" };
 
-export function readCaptureCheckpoint(storage: Storage = localStorage): StoredCaptureCheckpoint {
-  let raw: string | null;
+export function captureCheckpointKey(id: string) {
+  return `${CAPTURE_CHECKPOINT_PREFIX}${id}`;
+}
+
+/** Every stored checkpoint, oldest first. Storage that cannot be read yields none. */
+export function listCaptureCheckpoints(storage: Storage = localStorage): InterruptedCapture[] {
+  const found: InterruptedCapture[] = [];
   try {
-    raw = storage.getItem(CAPTURE_CHECKPOINT_KEY);
+    for (let index = 0; index < storage.length; index += 1) {
+      const key = storage.key(index);
+      if (!key?.startsWith(CAPTURE_CHECKPOINT_PREFIX)) {
+        continue;
+      }
+      const raw = storage.getItem(key);
+      if (raw === null) {
+        continue;
+      }
+      const checkpoint = parseRawCheckpoint(raw);
+      found.push(
+        checkpoint && captureCheckpointKey(checkpoint.id) === key
+          ? { key, kind: "checkpoint", checkpoint }
+          : { key, kind: "unreadable" },
+      );
+    }
   } catch {
     // Storage unavailable: nothing can be recovered, and nothing is overwritten either.
-    return { kind: "none" };
+    return [];
   }
-  if (raw === null) {
-    return { kind: "none" };
-  }
+  return found.sort((left, right) => startedAtOf(left) - startedAtOf(right));
+}
+
+function startedAtOf(capture: InterruptedCapture) {
+  return capture.kind === "checkpoint" ? Date.parse(capture.checkpoint.startedAt) : 0;
+}
+
+function parseRawCheckpoint(raw: string) {
   try {
-    const checkpoint = parseCaptureCheckpoint(JSON.parse(raw));
-    return checkpoint ? { kind: "checkpoint", checkpoint } : { kind: "unreadable" };
+    return parseCaptureCheckpoint(JSON.parse(raw));
   } catch {
-    return { kind: "unreadable" };
+    return null;
   }
 }
 
@@ -64,7 +106,8 @@ export function parseCaptureCheckpoint(value: unknown): CaptureCheckpoint | null
     !Array.isArray(record.segments) ||
     !record.segments.every(isTranscriptSegment) ||
     !Array.isArray(record.pauses) ||
-    !record.pauses.every(isPauseSpan)
+    !record.pauses.every(isPauseSpan) ||
+    !(record.analysis === null || isCheckpointAnalysis(record.analysis))
   ) {
     return null;
   }
@@ -76,14 +119,30 @@ export function parseCaptureCheckpoint(value: unknown): CaptureCheckpoint | null
     language: record.language,
     segments: record.segments as TranscriptSegment[],
     pauses: record.pauses as PauseSpan[],
+    analysis: record.analysis as CaptureCheckpoint["analysis"],
   };
+}
+
+function isCheckpointAnalysis(value: unknown) {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "report" in value &&
+    "run" in value &&
+    isAnalysisReport(value.report) &&
+    isAnalysisRunIdentity(value.run)
+  );
 }
 
 /** True when the checkpoint holds any observation worth recovering. */
 export function hasCheckpointedObservation(
-  checkpoint: Pick<CaptureCheckpoint, "segments" | "pauses">,
+  checkpoint: Pick<CaptureCheckpoint, "segments" | "pauses" | "analysis">,
 ) {
-  return checkpoint.segments.length > 0 || checkpoint.pauses.length > 0;
+  return (
+    checkpoint.segments.length > 0 ||
+    checkpoint.pauses.length > 0 ||
+    (checkpoint.analysis?.report.events.length ?? 0) > 0
+  );
 }
 
 /**
@@ -94,25 +153,60 @@ export function writeCaptureCheckpoint(
   checkpoint: CaptureCheckpoint,
   storage: Storage = localStorage,
 ) {
-  storage.setItem(CAPTURE_CHECKPOINT_KEY, JSON.stringify(checkpoint));
+  storage.setItem(captureCheckpointKey(checkpoint.id), JSON.stringify(checkpoint));
 }
 
-/**
- * Removes the checkpoint of capture `id` only, so a late clear from an earlier capture cannot drop
- * a newer one. With `id` null it removes whatever is stored (an explicit discard). Returns false
- * when storage refused the removal.
- */
-export function clearCaptureCheckpoint(id: string | null, storage: Storage = localStorage) {
+/** Removes one stored checkpoint by key. Returns false when storage refused the removal. */
+export function removeCaptureCheckpoint(key: string, storage: Storage = localStorage) {
   try {
-    if (id !== null) {
-      const stored = readCaptureCheckpoint(storage);
-      if (stored.kind !== "checkpoint" || stored.checkpoint.id !== id) {
-        return true;
-      }
-    }
-    storage.removeItem(CAPTURE_CHECKPOINT_KEY);
+    storage.removeItem(key);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Claims capture `id` for this window until the returned release runs. Resolves to null when
+ * another window holds it. Without Web Locks every claim succeeds, as there is no way to tell.
+ */
+export async function claimCapture(id: string): Promise<(() => void) | null> {
+  const locks = webLocks();
+  if (!locks) {
+    return () => {};
+  }
+  return new Promise((resolve) => {
+    void locks
+      .request(CAPTURE_LOCK_PREFIX + id, { ifAvailable: true }, (lock) => {
+        if (!lock) {
+          resolve(null);
+          return;
+        }
+        return new Promise<void>((release) => resolve(() => release()));
+      })
+      .catch(() => resolve(() => {}));
+  });
+}
+
+/** Ids of captures that a live window currently owns. */
+export async function heldCaptureIds(): Promise<Set<string>> {
+  const locks = webLocks();
+  if (!locks) {
+    return new Set();
+  }
+  try {
+    const { held = [] } = await locks.query();
+    return new Set(
+      held
+        .map((lock) => lock.name)
+        .filter((name): name is string => !!name?.startsWith(CAPTURE_LOCK_PREFIX))
+        .map((name) => name.slice(CAPTURE_LOCK_PREFIX.length)),
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+function webLocks(): LockManager | null {
+  return typeof navigator !== "undefined" && navigator.locks ? navigator.locks : null;
 }

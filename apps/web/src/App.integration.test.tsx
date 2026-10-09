@@ -1201,7 +1201,10 @@ it("keeps a re-enrolled native ID visible after another removal refresh", async 
 });
 
 describe("interrupted capture recovery", () => {
-  const CHECKPOINT_KEY = "stutter-tracker:capture-checkpoint";
+  const CHECKPOINT_PREFIX = "stutter-tracker:capture-checkpoint:";
+  const CHECKPOINT_KEY = `${CHECKPOINT_PREFIX}capture-interrupted`;
+  const storedCheckpointKeys = () =>
+    Object.keys(localStorage).filter((key) => key.startsWith(CHECKPOINT_PREFIX));
   const checkpoint = {
     version: 1,
     id: "capture-interrupted",
@@ -1218,6 +1221,7 @@ describe("interrupted capture recovery", () => {
       },
     ],
     pauses: [{ startSeconds: 2, endSeconds: 3, afterText: "words" }],
+    analysis: null,
   };
 
   it("recovers an interrupted capture once and saves it under its checkpoint id", async () => {
@@ -1279,7 +1283,7 @@ describe("interrupted capture recovery", () => {
     const { unmount } = renderApp();
     await user.click(screen.getByRole("button", { name: /^record$/i }));
     await waitFor(() => expect(recognitions).toHaveLength(1));
-    expect(localStorage.getItem(CHECKPOINT_KEY)).toBeNull();
+    expect(storedCheckpointKeys()).toEqual([]);
 
     act(() => {
       recognitions[0]!.onresult!({
@@ -1292,11 +1296,10 @@ describe("interrupted capture recovery", () => {
       });
     });
 
-    await waitFor(() =>
-      expect(JSON.parse(localStorage.getItem(CHECKPOINT_KEY) ?? "null")).toMatchObject({
-        segments: [expect.objectContaining({ text: "spoken before the crash" })],
-      }),
-    );
+    await waitFor(() => expect(storedCheckpointKeys()).toHaveLength(1));
+    expect(JSON.parse(localStorage.getItem(storedCheckpointKeys()[0]!)!)).toMatchObject({
+      segments: [expect.objectContaining({ text: "spoken before the crash" })],
+    });
     // The app stops without saving; the next start offers the capture.
     unmount();
     vi.unstubAllGlobals();
@@ -1321,9 +1324,9 @@ describe("interrupted capture recovery", () => {
 
     const { container } = renderApp();
 
+    await waitFor(() => expect(localStorage.getItem(CHECKPOINT_KEY)).toBeNull());
     expect(container.querySelectorAll(".session-row")).toHaveLength(1);
     expect(screen.queryByRole("region", { name: "Interrupted recording" })).not.toBeInTheDocument();
-    expect(localStorage.getItem(CHECKPOINT_KEY)).toBeNull();
   });
 
   it("discards an interrupted capture only after confirmation", async () => {
@@ -1363,34 +1366,164 @@ describe("interrupted capture recovery", () => {
   });
 
   it("offers an unreadable checkpoint for discard without recovering or deleting it", async () => {
-    localStorage.setItem(CHECKPOINT_KEY, "{truncated");
+    localStorage.setItem(`${CHECKPOINT_PREFIX}from-a-newer-version`, "{truncated");
     renderApp();
     const notice = await screen.findByRole("region", { name: "Interrupted recording" });
     expect(within(notice).getByText(/format this version cannot read/)).toBeInTheDocument();
     expect(
       within(notice).queryByRole("button", { name: "Recover recording" }),
     ).not.toBeInTheDocument();
-    expect(localStorage.getItem(CHECKPOINT_KEY)).toBe("{truncated");
+    expect(localStorage.getItem(`${CHECKPOINT_PREFIX}from-a-newer-version`)).toBe("{truncated");
   });
 
-  it("does not start a new capture over an interrupted one", async () => {
+  it("starts a new capture without touching an interrupted one", async () => {
     localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
-    const createRecorder = vi.spyOn(recorderModule, "createBrowserRecorder");
+    const createRecorder = vi
+      .spyOn(recorderModule, "createBrowserRecorder")
+      .mockResolvedValue({ sampleRate: 16000, stop: async () => {} });
     const user = userEvent.setup();
     renderApp();
     await screen.findByRole("region", { name: "Interrupted recording" });
 
     await user.click(screen.getByRole("button", { name: /^record$/i }));
 
-    expect(
-      await screen.findByText(
-        "Recover or discard the interrupted recording before starting a new one",
-      ),
-    ).toBeInTheDocument();
-    expect(createRecorder).not.toHaveBeenCalled();
-    expect(JSON.parse(localStorage.getItem(CHECKPOINT_KEY) ?? "null")).toMatchObject({
-      id: checkpoint.id,
+    await waitFor(() => expect(createRecorder).toHaveBeenCalled());
+    expect(screen.getByRole("region", { name: "Interrupted recording" })).toBeInTheDocument();
+    expect(JSON.parse(localStorage.getItem(CHECKPOINT_KEY) ?? "null")).toEqual(checkpoint);
+  });
+
+  it("does not offer a capture that another open window owns", async () => {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      locks: {
+        request: async (_name: string, _options: unknown, callback: (lock: null) => unknown) =>
+          callback(null),
+        query: async () => ({ held: [{ name: "stutter-tracker:capture:capture-interrupted" }] }),
+      },
     });
+    renderApp();
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByRole("region", { name: "Interrupted recording" })).not.toBeInTheDocument();
+    expect(localStorage.getItem(CHECKPOINT_KEY)).not.toBeNull();
+    vi.unstubAllGlobals();
+  });
+
+  it("saves a recovered capture with the audio analysis it had", async () => {
+    const report = {
+      totalDurationSeconds: 3,
+      wordCount: 0,
+      stutterCount: 1,
+      stuttersPerMinute: 20,
+      severity: "mild",
+      events: [
+        {
+          kind: "block",
+          startSeconds: 0.5,
+          endSeconds: 1.4,
+          text: "",
+          detail: "Acoustic-only block",
+          confidence: 0.7,
+        },
+      ],
+      byKind: { block: 1 },
+    };
+    const run = {
+      id: "run-audio",
+      createdAt: "2026-10-09T10:01:00.000Z",
+      analyzer: null,
+      usedAudio: true,
+      audioId: "audio-gone",
+      inputId: "input",
+    };
+    localStorage.setItem(
+      CHECKPOINT_KEY,
+      JSON.stringify({ ...checkpoint, segments: [], pauses: [], analysis: { report, run } }),
+    );
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    expect(within(notice).getByText(/saves it with the analysis it had/)).toBeInTheDocument();
+
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+
+    await waitFor(() => expect(container.querySelectorAll(".session-row")).toHaveLength(1));
+    const [stored] = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    expect(stored.id).toBe(checkpoint.id);
+    expect(stored.report.events).toEqual(report.events);
+    expect(stored.analysis).toMatchObject({ id: "run-audio", audioId: "audio-gone" });
+    expect(localStorage.getItem(CHECKPOINT_KEY)).toBeNull();
+    expect(await screen.findByText("Acoustic-only block")).toBeInTheDocument();
+  });
+
+  it("refuses to replace an unsaved capture whose checkpoint failed", async () => {
+    const { createSessionRecord } = await import("@stutter-tracker/shared");
+    const other = createSessionRecord({
+      id: "session-other",
+      startedAt: "2026-10-08T10:00:00.000Z",
+      segments: [
+        { text: "Other session", startSeconds: 0, endSeconds: 1, confidence: 0.9, isFinal: true },
+      ],
+      pauses: [],
+      report: fallbackAnalyze({ segments: [], pauses: [] }),
+      run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    });
+    localStorage.setItem(STORE_KEY, JSON.stringify([other]));
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key, value) {
+      if (key.startsWith(CHECKPOINT_PREFIX)) {
+        throw new DOMException("full", "QuotaExceededError");
+      }
+      return setItem.call(this, key, value);
+    });
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+    // The recovered transcript is in the workspace, but its latest state could not be stored.
+    await screen.findByRole("alert");
+    // Make the workspace differ from the stored checkpoint.
+    localStorage.removeItem(CHECKPOINT_KEY);
+
+    await user.click(container.querySelector<HTMLButtonElement>(".session-row")!);
+
+    expect(await screen.findByText(/Save the current recording first/)).toBeInTheDocument();
+    expect(screen.getAllByText("Recovered words").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Other session", { selector: "p, span" })).toBeNull();
+  });
+
+  it("stops deleting a session while its leftover checkpoint cannot be removed", async () => {
+    const { createSessionRecord } = await import("@stutter-tracker/shared");
+    const saved = createSessionRecord({
+      id: checkpoint.id,
+      startedAt: checkpoint.startedAt,
+      segments: checkpoint.segments,
+      pauses: checkpoint.pauses,
+      report: fallbackAnalyze({ segments: checkpoint.segments, pauses: checkpoint.pauses }),
+      run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    });
+    localStorage.setItem(STORE_KEY, JSON.stringify([saved]));
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    // A leftover appears after startup (written by a window that crashed after saving).
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    vi.spyOn(Storage.prototype, "removeItem").mockImplementation(() => {
+      throw new DOMException("blocked", "SecurityError");
+    });
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    await user.click(screen.getByRole("button", { name: /Delete saved session from/ }));
+
+    expect(await screen.findByText(/Delete failed/)).toBeInTheDocument();
+    expect(container.querySelectorAll(".session-row")).toHaveLength(1);
+    expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1);
   });
 
   it("keeps a full-storage checkpoint failure visible until the capture is saved", async () => {

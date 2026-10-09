@@ -254,7 +254,7 @@ function isCaptureInterval(value: unknown) {
   );
 }
 
-function isAnalysisRunIdentity(value: unknown) {
+export function isAnalysisRunIdentity(value: unknown) {
   return (
     isRecord(value) &&
     typeof value.id === "string" &&
@@ -317,7 +317,7 @@ export function isPauseSpan(value: unknown) {
   );
 }
 
-function isAnalysisReport(value: unknown) {
+export function isAnalysisReport(value: unknown) {
   return (
     isRecord(value) &&
     isOptionalDateString(value.sessionStartedAt) &&
