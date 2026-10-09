@@ -164,6 +164,8 @@ export function App() {
   const releaseCaptureRef = useRef<(() => void) | null>(null);
   // Set while recovery waits for ownership of a capture; other workspace changes wait for it.
   const workspaceClaimPendingRef = useRef(false);
+  // Set while a recording start waits for the model or the microphone.
+  const startPendingRef = useRef(false);
   // The workspace capture as last checkpointed successfully, so setting it aside can tell whether
   // the stored copy is current.
   const checkpointedRef = useRef<{ state: string; checkpoint: CaptureCheckpoint | null } | null>(
@@ -462,9 +464,19 @@ export function App() {
         "This recording is not being kept safe: browser storage is full or unavailable. Save it as soon as it is finished; closing the app now would lose it.",
       );
     }
-    // workspaceCheckpoint reads exactly these values from this render.
+    // workspaceCheckpoint reads exactly these values from this render. The query state is a
+    // dependency too: a new request (such as the final audio after stopping) invalidates the kept
+    // analysis until its own run arrives.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [segments, pauses, report, reportRun]);
+  }, [
+    segments,
+    pauses,
+    report,
+    reportRun,
+    analysisRequest,
+    analysisQuery.isFetching,
+    analysisQuery.data,
+  ]);
 
   // Offers captures that no live window owns, and drops ones another window saved or discarded.
   // A window that closes or crashes releases its lock without any event, so ownership is checked
@@ -673,6 +685,8 @@ export function App() {
     if (!canSetAsideWorkspaceCapture()) {
       return;
     }
+    // Recovery must not replace the workspace while this start is still waiting.
+    startPendingRef.current = true;
     try {
       if (selectedEngine.id !== "browser") {
         const ready = await ensureSelectedModelReady(transcription);
@@ -723,6 +737,8 @@ export function App() {
       setIsTranscribing(false);
       setLevel(0);
       setMessage(recordingErrorMessage(error));
+    } finally {
+      startPendingRef.current = false;
     }
   }
 
@@ -1022,7 +1038,7 @@ export function App() {
   }
 
   async function saveSession() {
-    if (!segments.length && !report.events.length) {
+    if (!segments.length && !pauses.length && !report.events.length) {
       setMessage("Nothing to save");
       return;
     }
@@ -1474,6 +1490,7 @@ export function App() {
   async function recoverInterruptedCapture(capture: InterruptedCapture) {
     if (
       workspaceClaimPendingRef.current ||
+      startPendingRef.current ||
       captureInProgress ||
       capture.kind !== "checkpoint" ||
       !canSetAsideWorkspaceCapture()
@@ -1490,6 +1507,12 @@ export function App() {
     }
     if (!release) {
       setMessage("This recording is open in another window");
+      return;
+    }
+    // A recording may have started meanwhile; replacing its workspace would mix its live input into
+    // the recovered capture.
+    if (startPendingRef.current || isRecordingRef.current) {
+      release();
       return;
     }
     // Another window may have recovered, changed or removed it before releasing it.

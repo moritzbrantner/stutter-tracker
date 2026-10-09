@@ -1579,6 +1579,34 @@ describe("interrupted capture recovery", () => {
     vi.unstubAllGlobals();
   });
 
+  it("saves a recovered capture that holds only pauses", async () => {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify({ ...checkpoint, segments: [] }));
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+
+    await user.click(screen.getByRole("button", { name: "Save" }));
+
+    await waitFor(() => expect(container.querySelectorAll(".session-row")).toHaveLength(1));
+    const [stored] = JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]");
+    expect(stored.pauses).toEqual(checkpoint.pauses);
+  });
+
+  it("does not recover into the workspace while a recording is starting", async () => {
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    vi.spyOn(recorderModule, "createBrowserRecorder").mockReturnValue(new Promise(() => {}));
+    const user = userEvent.setup();
+    renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    await user.click(screen.getByRole("button", { name: /^record$/i }));
+
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+
+    expect(screen.getByRole("region", { name: "Interrupted recording" })).toBeInTheDocument();
+    expect(screen.queryByText("Recovered words")).not.toBeInTheDocument();
+  });
+
   it("keeps the workspace capture while its analysis is still running", async () => {
     const { createSessionRecord } = await import("@stutter-tracker/shared");
     const other = createSessionRecord({
