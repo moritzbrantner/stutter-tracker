@@ -495,9 +495,11 @@ export function App() {
           return;
         }
         const own = captureIdRef.current ? captureCheckpointKey(captureIdRef.current) : null;
+        // Notices whose checkpoint is gone (for example removed above as already saved) go too;
+        // ones still stored stay, as their owner may only be busy.
         setInterruptedCaptures((current) =>
           mergeInterruptedCaptures(
-            current,
+            current.filter((item) => readCaptureCheckpoint(item.key) !== null),
             found.filter((item) => item.key !== own),
           ),
         );
