@@ -1496,6 +1496,39 @@ describe("interrupted capture recovery", () => {
     expect(screen.queryByText("Other session", { selector: "p, span" })).toBeNull();
   });
 
+  it("keeps the workspace capture while its analysis is still running", async () => {
+    const { createSessionRecord } = await import("@stutter-tracker/shared");
+    const other = createSessionRecord({
+      id: "session-other",
+      startedAt: "2026-10-08T10:00:00.000Z",
+      segments: [
+        { text: "Other session", startSeconds: 0, endSeconds: 1, confidence: 0.9, isFinal: true },
+      ],
+      pauses: [],
+      report: fallbackAnalyze({ segments: [], pauses: [] }),
+      run: { id: "run", createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+    });
+    localStorage.setItem(STORE_KEY, JSON.stringify([other]));
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    let analysisStarted = false;
+    analysisHook = () => {
+      analysisStarted = true;
+      return new Promise(() => {});
+    };
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+    await waitFor(() => expect(analysisStarted).toBe(true));
+
+    await user.click(container.querySelector<HTMLButtonElement>(".session-row")!);
+
+    expect(
+      await screen.findByText("Wait for the analysis of the current recording to finish first"),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Recovered words").length).toBeGreaterThan(0);
+  });
+
   it("stops deleting a session while its leftover checkpoint cannot be removed", async () => {
     const { createSessionRecord } = await import("@stutter-tracker/shared");
     const saved = createSessionRecord({

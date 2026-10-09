@@ -178,6 +178,19 @@ describe("capture ownership", () => {
     expect(await heldCaptureIds()).toEqual(new Set());
   });
 
+  it("treats a failed lock request as owned elsewhere", async () => {
+    vi.stubGlobal("navigator", {
+      ...navigator,
+      locks: {
+        request: async () => {
+          throw new DOMException("inactive", "InvalidStateError");
+        },
+        query: async () => ({ held: [] }),
+      },
+    });
+    expect(await claimCapture("capture-1")).toBeNull();
+  });
+
   it("refuses a capture another window holds and lists held captures", async () => {
     const held = new Set<string>();
     vi.stubGlobal("navigator", {

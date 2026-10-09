@@ -168,7 +168,8 @@ export function removeCaptureCheckpoint(key: string, storage: Storage = localSto
 
 /**
  * Claims capture `id` for this window until the returned release runs. Resolves to null when
- * another window holds it. Without Web Locks every claim succeeds, as there is no way to tell.
+ * another window holds it or the lock request fails. Without Web Locks every claim succeeds, as
+ * there is no way to tell.
  */
 export async function claimCapture(id: string): Promise<(() => void) | null> {
   const locks = webLocks();
@@ -184,7 +185,8 @@ export async function claimCapture(id: string): Promise<(() => void) | null> {
         }
         return new Promise<void>((release) => resolve(() => release()));
       })
-      .catch(() => resolve(() => {}));
+      // Ownership could not be established, so act as if another window holds it.
+      .catch(() => resolve(null));
   });
 }
 

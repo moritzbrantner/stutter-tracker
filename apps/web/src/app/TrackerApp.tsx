@@ -1361,6 +1361,12 @@ export function App() {
     if (!id) {
       return true;
     }
+    // A running analysis may still use the capture's audio, which is not kept; its result would be
+    // lost with the workspace.
+    if (isAnalyzing) {
+      setMessage("Wait for the analysis of the current recording to finish first");
+      return false;
+    }
     const checkpoint = workspaceCheckpoint(id);
     if (
       !hasCheckpointedObservation(checkpoint) ||
