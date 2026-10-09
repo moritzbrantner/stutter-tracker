@@ -452,6 +452,11 @@ export function App() {
       if (removeCaptureCheckpoint(captureCheckpointKey(id))) {
         checkpointedRef.current = { state, checkpoint: null };
         setCheckpointError(null);
+      } else {
+        // The stored copy is now outdated; keep it from being offered as this capture.
+        setCheckpointError(
+          "This recording's stored copy is out of date and browser storage refused to update it. Save the recording before replacing it.",
+        );
       }
       return;
     }
@@ -1435,10 +1440,11 @@ export function App() {
       return false;
     }
     const checkpoint = workspaceCheckpoint(id);
-    if (
-      !hasCheckpointedObservation(checkpoint) ||
-      checkpointedRef.current?.state === checkpointState(checkpoint)
-    ) {
+    if (checkpointedRef.current?.state === checkpointState(checkpoint)) {
+      return true;
+    }
+    // Nothing to keep, unless an outdated stored copy could not be removed and would be offered.
+    if (!hasCheckpointedObservation(checkpoint) && !checkpointedRef.current?.checkpoint) {
       return true;
     }
     setMessage(
@@ -1533,7 +1539,19 @@ export function App() {
       return;
     }
     const { checkpoint } = current;
-    if (sessionsRef.current.some((session) => session.id === checkpoint.id)) {
+    // Another window may have saved sessions since this one loaded them; recovering against a stale
+    // list would also overwrite them on save.
+    let storedSessions: SavedSession[];
+    try {
+      storedSessions = loadSessionsFromStorage();
+    } catch {
+      release();
+      setMessage("Could not recover the recording: saved sessions could not be read");
+      return;
+    }
+    sessionsRef.current = storedSessions;
+    setSessions(storedSessions);
+    if (storedSessions.some((session) => session.id === checkpoint.id)) {
       release();
       removeCaptureCheckpoint(capture.key);
       dropInterruptedCapture(capture.key);

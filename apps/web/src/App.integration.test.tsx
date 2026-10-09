@@ -1607,6 +1607,33 @@ describe("interrupted capture recovery", () => {
     expect(screen.queryByText("Recovered words")).not.toBeInTheDocument();
   });
 
+  it("checks the saved sessions again before recovering", async () => {
+    const { createSessionRecord } = await import("@stutter-tracker/shared");
+    localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
+    const user = userEvent.setup();
+    const { container } = renderApp();
+    const notice = await screen.findByRole("region", { name: "Interrupted recording" });
+    // Another window saved this capture (and another session) but crashed before clearing it.
+    const sessions = [checkpoint.id, "session-from-other-window"].map((id) =>
+      createSessionRecord({
+        id,
+        startedAt: checkpoint.startedAt,
+        segments: checkpoint.segments,
+        pauses: checkpoint.pauses,
+        report: fallbackAnalyze({ segments: checkpoint.segments, pauses: checkpoint.pauses }),
+        run: { id: `run-${id}`, createdAt: null, analyzer: null, usedAudio: null, audioId: null },
+      }),
+    );
+    localStorage.setItem(STORE_KEY, JSON.stringify(sessions));
+
+    await user.click(within(notice).getByRole("button", { name: "Recover recording" }));
+
+    expect(await screen.findByText("This recording was already saved")).toBeInTheDocument();
+    expect(container.querySelectorAll(".session-row")).toHaveLength(2);
+    expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(2);
+    expect(localStorage.getItem(CHECKPOINT_KEY)).toBeNull();
+  });
+
   it("keeps the workspace capture while its analysis is still running", async () => {
     const { createSessionRecord } = await import("@stutter-tracker/shared");
     const other = createSessionRecord({
