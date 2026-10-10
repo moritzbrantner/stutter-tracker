@@ -522,3 +522,50 @@ describe("queued work behind a restore", () => {
     expect(savedIds).not.toContain(target.id);
   });
 });
+
+// --- Implementation regression test (not acceptance): second Codex P1 on vox#99. While the
+// desktop replace is still pending, interrupted-capture detection must not treat the provisional
+// restored ids as saved and drop their checkpoints; a failed restore would lose unsaved speech.
+function makeRegressionCheckpoint(id: string, text: string) {
+  return {
+    version: 1,
+    id,
+    startedAt: "2026-05-19T10:00:00.000Z",
+    updatedAt: "2026-05-19T10:00:05.000Z",
+    language: null,
+    segments: [{ text, startSeconds: 0, endSeconds: 1, confidence: 0.9, isFinal: true }],
+    pauses: [],
+    analysis: null,
+    recording: null,
+  };
+}
+
+describe("checkpoints during a provisional restore", () => {
+  it("keeps an interrupted capture whose id is in the backup when the desktop replace fails", async () => {
+    const replace = deferred<SpeechCorpusAnalysis>();
+    useDesktopInvokeMock({ [REPLACE_COMMAND]: () => replace.promise });
+    seedStoredSessions(currentSessions);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApp();
+    await screen.findAllByTitle("Delete saved session");
+    await settle();
+    const checkpointKey = `stutter-tracker:capture-checkpoint:${backupSessions[0].id}`;
+    localStorage.setItem(
+      checkpointKey,
+      JSON.stringify(makeRegressionCheckpoint(backupSessions[0].id, "unsaved words")),
+    );
+
+    await uploadBackup(backupJson());
+    await waitFor(() => expect(invocations(REPLACE_COMMAND)).toHaveLength(1));
+    // The detector runs on focus while the native replace is still pending.
+    window.dispatchEvent(new Event("focus"));
+    await settle();
+
+    replace.reject(new Error("disk full"));
+    await settle();
+
+    expect(localStorage.getItem(checkpointKey)).not.toBeNull();
+    expect(storedSessions()).toEqual(currentSessions);
+  });
+});

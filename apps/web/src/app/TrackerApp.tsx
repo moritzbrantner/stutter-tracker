@@ -1856,24 +1856,21 @@ export function App() {
     return serializeSessionMutation(async () => {
       const previousSessions = localStorage.getItem(STORE_KEY);
       const previousUnreadable = localStorage.getItem(UNREADABLE_SESSIONS_KEY);
-      const previousList = sessionsRef.current;
       replaceStoredSessions(restored);
-      // Mutations queued behind the restore (e.g. a reanalysis that finished computing) read
-      // sessionsRef, so they must see the restored set, not the replaced one.
+      if (isDesktopApp()) {
+        try {
+          await invoke("replace_speech_corpus_sessions", { sessions: restored });
+        } catch (error) {
+          restoreStorageValue(STORE_KEY, previousSessions);
+          restoreStorageValue(UNREADABLE_SESSIONS_KEY, previousUnreadable);
+          throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
+        }
+      }
+      // Published only once the restore is final: mutations queued behind it must see the
+      // restored set, while nothing that reads sessionsRef during the native replace (such as
+      // interrupted-capture detection) may act on a set that could still be rolled back.
       sessionsRef.current = restored;
       setSessions(restored);
-      if (!isDesktopApp()) {
-        return;
-      }
-      try {
-        await invoke("replace_speech_corpus_sessions", { sessions: restored });
-      } catch (error) {
-        restoreStorageValue(STORE_KEY, previousSessions);
-        restoreStorageValue(UNREADABLE_SESSIONS_KEY, previousUnreadable);
-        sessionsRef.current = previousList;
-        setSessions(previousList);
-        throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
-      }
     });
   }
 
