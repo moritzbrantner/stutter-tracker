@@ -4,6 +4,7 @@ import {
   isRunCaptureQuality,
   observationFingerprint,
   SESSION_SCHEMA_VERSION,
+  TRANSCRIPTION_ENGINES,
 } from "@stutter-tracker/shared";
 import type { SavedSession } from "../types";
 
@@ -264,7 +265,19 @@ export function isAnalysisRunIdentity(value: unknown) {
     (value.analyzer === null || isAnalyzerIdentity(value.analyzer)) &&
     typeof value.inputId === "string" &&
     (value.usedAudio === null || typeof value.usedAudio === "boolean") &&
-    (value.audioId === null || typeof value.audioId === "string")
+    (value.audioId === null || typeof value.audioId === "string") &&
+    (value.transcription === undefined ||
+      value.transcription === null ||
+      isTranscriptionModelIdentity(value.transcription))
+  );
+}
+
+export function isTranscriptionModelIdentity(value: unknown) {
+  return (
+    isRecord(value) &&
+    TRANSCRIPTION_ENGINES.some((engine) => engine.id === value.engine) &&
+    typeof value.model === "string" &&
+    value.model.length > 0
   );
 }
 

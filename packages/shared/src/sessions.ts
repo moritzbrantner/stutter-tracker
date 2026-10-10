@@ -1,7 +1,13 @@
 // Canonical saved-session record: original observations, the analysis that interpreted them and
 // every superseded analysis stay distinct. A rerun appends; it never rewrites an earlier result.
 import type { RecordingDescriptor } from "./capture";
-import type { AnalysisReport, PauseSpan, StutterKind, TranscriptSegment } from "./index";
+import type {
+  AnalysisReport,
+  PauseSpan,
+  StutterKind,
+  TranscriptionModelIdentity,
+  TranscriptSegment,
+} from "./index";
 import {
   type AssistanceCondition,
   type SpeakingTask,
@@ -35,6 +41,11 @@ export type AnalysisRunIdentity = {
   usedAudio: boolean | null;
   /** Fingerprint of the audio the run analyzed (see `audioFingerprint`); null when none or unknown. */
   audioId: string | null;
+  /**
+   * The transcription engine and model that produced the analyzed transcript. Absent or null when
+   * unknown (older records, or a transcript that no local/server model produced).
+   */
+  transcription?: TranscriptionModelIdentity | null;
 };
 
 export type AnalysisRun = AnalysisRunIdentity & { report: AnalysisReport };

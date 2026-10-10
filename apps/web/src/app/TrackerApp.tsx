@@ -14,6 +14,10 @@ import {
   isReplayable,
   reanalyzeSession,
   fallbackAnalyze as sharedFallbackAnalyze,
+  type ModelPreparationFailure,
+  modelPreparationFailure,
+  type TranscriptionModelIdentity,
+  uncheckedModelStatuses,
   observationFingerprint,
   UNKNOWN_INPUT_ID,
   audioFingerprint,
@@ -198,6 +202,11 @@ export function App() {
   );
   const [downloadProgress, setDownloadProgress] = useState<TranscriptionProgressEvent | null>(null);
   const [downloadingModel, setDownloadingModel] = useState<string | null>(null);
+  const [modelPreparationFailures, setModelPreparationFailures] = useState<
+    Record<string, ModelPreparationFailure>
+  >({});
+  // The engine and model that produced the workspace transcript; null when unknown.
+  const transcriptModelRef = useRef<TranscriptionModelIdentity | null>(null);
   const [chunkStats, setChunkStats] = useState<TranscriptionChunkStats>(() => emptyChunkStats());
   const [transcriptionChunks, setTranscriptionChunks] = useState<TranscriptionChunkRecord[]>([]);
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(null);
@@ -332,13 +341,22 @@ export function App() {
       try {
         return await loadTranscriptionModels(transcription.engine);
       } catch {
-        return staticModelStatuses(transcription.engine);
+        // Not checked is not "not downloaded" or "external CLI": say that it is unknown.
+        return uncheckedModelStatuses(transcription.engine);
       }
     },
     staleTime: 10_000,
   });
 
-  const modelStatuses = modelStatusesQuery.data ?? staticModelStatuses(transcription.engine);
+  const modelStatuses = useMemo(
+    () =>
+      (modelStatusesQuery.data ?? staticModelStatuses(transcription.engine)).map((model) => {
+        const failure = modelPreparationFailures[`${transcription.engine}:${model.id}`];
+        // A failed or canceled download never makes a model ready; a cached model is ready.
+        return failure && !model.cached ? { ...model, preparation: failure } : model;
+      }),
+    [modelStatusesQuery.data, transcription.engine, modelPreparationFailures],
+  );
   const isAnalyzing = analysisQuery.isFetching;
   const selectedEngine = getTranscriptionEngine(transcription.engine);
   const selectedModels = modelStatuses.length
@@ -383,6 +401,7 @@ export function App() {
     mutationFn: ({ engine, model }: { engine: TranscriptionEngineId; model: string }) =>
       downloadTranscriptionModel(engine, model),
     onSuccess: async (_result, { engine, model }) => {
+      setModelPreparationFailures(({ [`${engine}:${model}`]: _cleared, ...rest }) => rest);
       await queryClient.invalidateQueries({ queryKey: ["transcription-models", engine] });
       setTranscription((current) => {
         if (current.engine !== engine) {
@@ -394,8 +413,10 @@ export function App() {
       });
       setMessage(`${model} ready`);
     },
-    onError: (error) => {
-      setMessage(`Download failed: ${errorMessage(error)}`);
+    onError: (error, { engine, model }) => {
+      const failure = modelPreparationFailure(error);
+      setModelPreparationFailures((current) => ({ ...current, [`${engine}:${model}`]: failure }));
+      setMessage(`Download ${failure === "failed" ? "failed" : failure}: ${errorMessage(error)}`);
     },
     onSettled: () => {
       setDownloadingModel(null);
@@ -637,6 +658,7 @@ export function App() {
         usedAudio: analysisQuery.data.usedAudio,
         audioId: analysisQuery.data.audioId,
         inputId: analysisQuery.data.inputId,
+        transcription: transcriptModelRef.current,
       });
     }
   }, [analysisQuery.data]);
@@ -1351,6 +1373,8 @@ export function App() {
           analyzer: analysis.analyzer,
           usedAudio: false,
           audioId: null,
+          // The stored transcript is reanalyzed, so its transcription model stays the same.
+          transcription: latest.analysis.transcription ?? null,
         },
         analysis.report,
       );
@@ -1508,6 +1532,7 @@ export function App() {
       analysis,
       recording:
         captureDescriptorRef.current?.sessionId === id ? captureDescriptorRef.current : null,
+      transcription: transcriptModelRef.current,
     };
   }
 
@@ -1600,6 +1625,7 @@ export function App() {
     setPauses(session.pauses);
     setReport(session.report);
     setReportRun(session.analysis);
+    transcriptModelRef.current = session.analysis.transcription ?? null;
     sessionLanguageRef.current = session.context.spokenLanguage;
     loadedSessionRef.current = session;
     setViewedSession(session);
@@ -1690,6 +1716,8 @@ export function App() {
     // The audio is gone, but the capture's provenance and speaker declaration still apply.
     captureDescriptorRef.current = checkpoint.recording;
     resetChunkTranscription();
+    // The recovered transcript keeps the model that produced it.
+    transcriptModelRef.current = checkpoint.transcription ?? null;
     sessionLanguageRef.current = checkpoint.language;
     loadedSessionRef.current = null;
     setViewedSession(null);
@@ -1909,6 +1937,7 @@ export function App() {
 
   function resetChunkTranscription() {
     transcriptionRunIdRef.current += 1;
+    transcriptModelRef.current = null;
     nextChunkStartSampleRef.current = 0;
     chunkIndexRef.current = 0;
     queuedTranscriptionTasksRef.current = 0;
@@ -2005,6 +2034,10 @@ export function App() {
         if (runId !== transcriptionRunIdRef.current) {
           return;
         }
+        transcriptModelRef.current = {
+          engine: result.provider ?? settings.engine,
+          model: result.model ?? settings.model,
+        };
         const chunkSegments = await identifyTranscriptSpeakers(
           result.segments,
           transcriptionSamples,
@@ -2047,6 +2080,8 @@ export function App() {
           lastMessage: `Chunk ${chunkNumber} failed: ${message}`,
         }));
         setMessage(`Chunk ${chunkNumber} failed: ${message}`);
+        // A model that went missing since its last check must not keep showing as ready.
+        void queryClient.invalidateQueries({ queryKey: ["transcription-models", settings.engine] });
       } finally {
         queuedTranscriptionTasksRef.current = Math.max(0, queuedTranscriptionTasksRef.current - 1);
         setChunkStats((current) => ({
@@ -2399,7 +2434,7 @@ async function transcribeAudio(
   sampleRate: number,
   settings: TranscriptionSettings,
   language: string,
-): Promise<{ segments: TranscriptSegment[] }> {
+): Promise<{ segments: TranscriptSegment[]; provider?: TranscriptionEngineId; model?: string }> {
   if (!isDesktopApp()) {
     return computeClient.transcribeAudio({
       samples,
@@ -2409,7 +2444,11 @@ async function transcribeAudio(
       language,
     });
   }
-  return invoke<{ segments: TranscriptSegment[] }>("transcribe_audio", {
+  return invoke<{
+    segments: TranscriptSegment[];
+    provider?: TranscriptionEngineId;
+    model?: string;
+  }>("transcribe_audio", {
     request: {
       samples,
       sampleRate,
@@ -3224,6 +3263,7 @@ function checkpointState(checkpoint: CaptureCheckpoint) {
     checkpoint.id,
     observationFingerprint(checkpoint.segments, checkpoint.pauses),
     checkpoint.analysis?.run.id ?? null,
+    checkpoint.transcription ?? null,
   ]);
 }
 

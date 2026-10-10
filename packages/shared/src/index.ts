@@ -166,6 +166,40 @@ export type TranscriptionModelStatus = {
   label: string;
   cached: boolean;
   downloadable: boolean;
+  /**
+   * "unknown" when the status could not be checked (for example, the compute server is
+   * unreachable); `cached`/`downloadable` are then placeholders, not facts.
+   */
+  availability?: "unknown";
+  /** Outcome of the last failed preparation (download) of a model that is not cached. */
+  preparation?: ModelPreparationFailure;
+};
+
+export type ModelPreparationFailure = "canceled" | "interrupted" | "failed";
+
+/** Classifies a failed model download by its error text; never treats it as prepared. */
+export function modelPreparationFailure(error: unknown): ModelPreparationFailure {
+  const text = (error instanceof Error ? error.message : String(error)).toLowerCase();
+  if (/cancel|abort/.test(text)) {
+    return "canceled";
+  }
+  if (/network|connection|reset|interrupt|timed? ?out|offline|incomplete|partial|eof/.test(text)) {
+    return "interrupted";
+  }
+  return "failed";
+}
+
+/** Model statuses whose availability could not be checked. */
+export function uncheckedModelStatuses(engine: TranscriptionEngineId): TranscriptionModelStatus[] {
+  return staticModelStatuses(engine).map((model) =>
+    engine === "browser" ? model : { ...model, availability: "unknown" as const },
+  );
+}
+
+/** The transcription engine and model that produced a transcript. */
+export type TranscriptionModelIdentity = {
+  engine: TranscriptionEngineId;
+  model: string;
 };
 
 export type TranscriptionProgressEvent = {

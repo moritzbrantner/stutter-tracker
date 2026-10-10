@@ -93,12 +93,24 @@ export function formatPercent(value: number | null) {
   return `${Math.round(value * 100)}%`;
 }
 
+const PREPARATION_FAILURE_LABELS = {
+  canceled: "Not downloaded: download canceled",
+  interrupted: "Not downloaded: download interrupted",
+  failed: "Not downloaded: download failed",
+} as const;
+
 export function modelStatusLabel(model?: TranscriptionModelStatus) {
   if (!model) {
     return "Not checked";
   }
+  if (model.availability === "unknown") {
+    return "Unknown: could not be checked";
+  }
   if (model.cached) {
     return "Ready";
+  }
+  if (model.preparation) {
+    return PREPARATION_FAILURE_LABELS[model.preparation];
   }
   if (model.downloadable) {
     return "Not downloaded";

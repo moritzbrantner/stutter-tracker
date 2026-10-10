@@ -6,13 +6,18 @@
 // window holds a Web Lock named after the capture while it owns it; a checkpoint whose lock is held
 // belongs to a live window and is not offered for recovery elsewhere. Closing or crashing the window
 // releases the lock.
-import type { AnalysisRunIdentity, RecordingDescriptor } from "@stutter-tracker/shared";
+import type {
+  AnalysisRunIdentity,
+  RecordingDescriptor,
+  TranscriptionModelIdentity,
+} from "@stutter-tracker/shared";
 import type { AnalysisReport, PauseSpan, TranscriptSegment } from "../types";
 import {
   isAnalysisReport,
   isAnalysisRunIdentity,
   isPauseSpan,
   isRecordingDescriptor,
+  isTranscriptionModelIdentity,
   isTranscriptSegment,
   isValidDateString,
 } from "./sessionBackup";
@@ -38,6 +43,11 @@ export type CaptureCheckpoint = {
   analysis: { report: AnalysisReport; run: AnalysisRunIdentity } | null;
   /** How the capture was recorded (no audio); null when unknown, e.g. in older checkpoints. */
   recording: RecordingDescriptor | null;
+  /**
+   * The transcription engine and model that produced `segments`; null when unknown, e.g. in older
+   * checkpoints. Kept so a recovered transcript's later analysis still names its model.
+   */
+  transcription?: TranscriptionModelIdentity | null;
 };
 
 /** A stored checkpoint offered for recovery, identified by its storage key. */
@@ -136,6 +146,11 @@ export function parseCaptureCheckpoint(value: unknown): CaptureCheckpoint | null
       record.recording === null ||
       (isRecordingDescriptor(record.recording) &&
         (record.recording as RecordingDescriptor).sessionId === record.id)
+    ) ||
+    !(
+      record.transcription === undefined ||
+      record.transcription === null ||
+      isTranscriptionModelIdentity(record.transcription)
     )
   ) {
     return null;
@@ -150,6 +165,10 @@ export function parseCaptureCheckpoint(value: unknown): CaptureCheckpoint | null
     pauses: record.pauses as PauseSpan[],
     analysis: record.analysis as CaptureCheckpoint["analysis"],
     recording: (record.recording as RecordingDescriptor | undefined) ?? null,
+    // Absent in older checkpoints (unknown); kept absent so they read back unchanged.
+    ...(record.transcription === undefined
+      ? {}
+      : { transcription: record.transcription as TranscriptionModelIdentity | null }),
   };
 }
 
