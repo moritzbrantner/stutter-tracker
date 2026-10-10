@@ -1485,10 +1485,13 @@ describe("browser-local capture measurement", () => {
       "the microphone delivered no input",
     );
     expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
-    expect(await savedCaptureQuality()).toMatchObject({
-      state: "unknown",
-      issues: ["noInput"],
-    });
+    // The verdict comes from the kernel measuring the analyzed window. A silent capture has no
+    // segments, pauses or events, so the existing save gate ("Nothing to save") keeps it unsaved.
+    expect(captureKernelCalls.length).toBeGreaterThan(0);
+    const call = captureKernelCalls.at(-1)!;
+    expect(call.sampleRate).toBe(16000);
+    expect(call.samples).toHaveLength(16000 * 6);
+    expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
   });
 
   it("withholds the score of a clipping browser capture", async () => {
