@@ -245,3 +245,35 @@ describe("mobile recording controller", () => {
     expect(new Set(captures).size).toBe(captures.length);
   });
 });
+
+// Regression for the Codex review of #96 (implementation-authored, not part of the acceptance set).
+describe("mobile recording controller after a rejected native stop", () => {
+  it("keeps the recording handle while the recorder still records, then retries", async () => {
+    let isRecording = false;
+    let stopCalls = 0;
+    const recorder = {
+      async prepareToRecordAsync() {},
+      record() {
+        isRecording = true;
+      },
+      async stop() {
+        stopCalls += 1;
+        if (stopCalls === 1) throw new Error("native stop failed before stopping");
+        isRecording = false;
+      },
+      get isRecording() {
+        return isRecording;
+      },
+      get uri() {
+        return "file:///cache/recording.m4a";
+      },
+    };
+    const controller = createRecordingController(recorder);
+    await controller.start();
+    await expect(controller.stop()).rejects.toThrow("native stop failed");
+    expect(controller.isRecording()).toBe(true);
+    await controller.cancel();
+    expect(stopCalls).toBe(2);
+    expect(controller.isRecording()).toBe(false);
+  });
+});

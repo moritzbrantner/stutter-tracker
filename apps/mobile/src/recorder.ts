@@ -43,9 +43,18 @@ export function createRecordingController(recorder: ControlledRecorder): Recordi
     return run;
   }
 
+  /**
+   * Forgets the native recording only once the recorder has really stopped. When `stop()` rejects
+   * while the recorder still records, the handle stays so a later stop, cancel or start retries.
+   */
   async function stopRecorder() {
+    try {
+      await recorder.stop();
+    } catch (error) {
+      if (!recorder.isRecording) recording = null;
+      throw error;
+    }
     recording = null;
-    await recorder.stop();
   }
 
   function abandon(captureId: string) {
@@ -100,7 +109,8 @@ export function createRecordingController(recorder: ControlledRecorder): Recordi
         try {
           await stopRecorder();
         } catch {
-          // The capture is discarded either way; the recorder no longer records for it.
+          // The capture's results are discarded either way. If the recorder is still running, the
+          // handle is kept and the next stop, cancel or start stops it again.
         }
       });
     },

@@ -297,7 +297,14 @@ function createJobLimiter(maxConcurrentJobs: number) {
  */
 function withValidatedCaptureMetrics(result: TranscribeAudioResult): TranscribeAudioResult {
   const { captureMetrics: measured, ...transcription } = result;
-  if (measured === undefined || measured === null) return transcription;
+  if (measured === undefined || measured === null) {
+    // The worker exits successfully when it cannot measure the file and its stderr is only read
+    // on failure, so this is the server's record that the upload stays unchecked.
+    console.warn(
+      "native worker did not measure the uploaded file; its capture quality is unchecked",
+    );
+    return transcription;
+  }
   const captureMetrics = validateMeasuredCaptureMetrics(measured);
   if (!captureMetrics) {
     console.warn("native worker returned invalid capture metrics for an uploaded file");
