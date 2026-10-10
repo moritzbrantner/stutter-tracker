@@ -231,7 +231,7 @@ export function App() {
   const activeSessionIdRef = useRef<string | null>(null);
   const sessionMutationTailRef = useRef<Promise<void>>(Promise.resolve());
   // True while a restore is running; saves wait for it (their browser write would race the restore).
-  const restorePendingRef = useRef(false);
+  const restorePendingRef = useRef(0);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const browserRecorderRef = useRef<BrowserRecorder | null>(null);
   const startedAtRef = useRef<Date | null>(null);
@@ -1174,7 +1174,7 @@ export function App() {
   }
 
   async function saveSession() {
-    if (restorePendingRef.current) {
+    if (restorePendingRef.current > 0) {
       setMessage("Wait for the session restore to finish before saving");
       return;
     }
@@ -1860,12 +1860,13 @@ export function App() {
   function restoreSessions(restored: SavedSession[]): Promise<void> {
     // The gate covers the queued wait too: a save accepted before the restore starts would write
     // browser storage that the restore then overwrites.
-    restorePendingRef.current = true;
+    // Counted, so a failed restore does not reopen saves while another one is still queued.
+    restorePendingRef.current += 1;
     const operation = serializeSessionMutation(() => applyRestore(restored));
     void operation.then(
       () => undefined,
       () => {
-        restorePendingRef.current = false;
+        restorePendingRef.current -= 1;
       },
     );
     return operation;
