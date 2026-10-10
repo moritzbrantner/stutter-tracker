@@ -349,6 +349,32 @@ pub fn save_speech_corpus_session_impl(
     analyze_store(&store)
 }
 
+/// Replaces the whole corpus with exactly `sessions` (backup restore, owner decision #86 (a)).
+/// Every input is validated before anything is written, and the write is atomic, so a failure
+/// leaves the existing store unchanged.
+pub fn replace_speech_corpus_sessions_impl(
+    path: &Path,
+    sessions: Vec<CorpusSessionInput>,
+) -> Result<SpeechCorpusAnalysis> {
+    let mut ids = std::collections::BTreeSet::new();
+    for session in &sessions {
+        let id = session.id.trim();
+        if id.is_empty() || !ids.insert(id.to_string()) {
+            return Err(CorpusError::InvalidSessionId);
+        }
+    }
+    // The whole store is replaced, so the superseded file is not read: a corrupt corpus can still
+    // be repaired by restoring a valid backup.
+    let mut store = SpeechCorpusStore {
+        sessions: sessions.into_iter().map(normalize_session).collect(),
+    };
+    store
+        .sessions
+        .sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    write_store(path, &store)?;
+    analyze_store(&store)
+}
+
 pub fn delete_speech_corpus_session_impl(
     path: &Path,
     session_id: &str,
@@ -423,7 +449,23 @@ fn write_store(path: &Path, store: &SpeechCorpusStore) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_string_pretty(store)?)?;
+    // Write a sibling temporary file and rename it over the store, so a failed or interrupted
+    // write never leaves a partially written corpus behind.
+    // Unique per process and write, so concurrent writers never share or delete each other's file.
+    static WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(format!(".{}-{nanos}-{sequence}.tmp", std::process::id()));
+    let temporary = std::path::PathBuf::from(temporary);
+    let content = serde_json::to_string_pretty(store)?;
+    if let Err(error) = fs::write(&temporary, content).and_then(|()| fs::rename(&temporary, path)) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
 }
 
@@ -1024,6 +1066,205 @@ mod tests {
             "futureOutcomes",
         ] {
             assert_eq!(session[key], provenance[key], "{key}");
+        }
+    }
+
+    // Acceptance tests for issue #86, decision (a) "replace all": restoring a backup on desktop
+    // replaces the native speech corpus with exactly the restored sessions.
+
+    fn replace_input(id: &str, started_at: &str, text: &str) -> CorpusSessionInput {
+        serde_json::from_value(serde_json::json!({
+            "id": id,
+            "startedAt": started_at,
+            "segments": [{ "text": text, "startSeconds": 0.0, "endSeconds": 2.0, "speakerLabel": "Me", "isFinal": true }],
+            "report": {
+                "totalDurationSeconds": 2.0,
+                "wordCount": 3,
+                "stutterCount": 1,
+                "stuttersPerMinute": 30.0,
+                "captureQuality": { "state": "usable", "issues": [] }
+            },
+            "schemaVersion": 2,
+            "analysis": { "id": format!("run-{id}"), "inputId": format!("obs-{id}") },
+            "priorAnalyses": []
+        }))
+        .unwrap()
+    }
+
+    fn exported_sessions_by_id(path: &Path) -> Vec<serde_json::Value> {
+        let mut sessions = export_speech_corpus_impl(path).unwrap()["sessions"]
+            .as_array()
+            .unwrap()
+            .clone();
+        sessions.sort_by(|left, right| {
+            left["id"]
+                .as_str()
+                .unwrap()
+                .cmp(right["id"].as_str().unwrap())
+        });
+        sessions
+    }
+
+    fn seed_existing_corpus(path: &Path) {
+        for (id, started_at) in [
+            ("current-a", "2026-10-09T10:00:00.000Z"),
+            ("current-b", "2026-10-10T10:00:00.000Z"),
+        ] {
+            save_speech_corpus_session_impl(
+                path,
+                replace_input(id, started_at, "current speech here"),
+            )
+            .unwrap();
+        }
+    }
+
+    fn restored_inputs() -> Vec<CorpusSessionInput> {
+        vec![
+            replace_input("backup-x", "2026-09-01T10:00:00.000Z", "I I want to speak"),
+            replace_input("backup-y", "2026-09-02T10:00:00.000Z", "speech tools help"),
+        ]
+    }
+
+    #[test]
+    fn replaces_the_corpus_with_exactly_the_restored_sessions() {
+        let path = temp_corpus_path("replace");
+        seed_existing_corpus(&path);
+
+        let analysis = replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let replaced = exported_sessions_by_id(&path);
+
+        // The same sessions saved one by one into an empty corpus: replace stores them exactly as
+        // a save would, and nothing of the previous corpus survives.
+        let fresh = temp_corpus_path("replace-fresh");
+        for input in restored_inputs() {
+            save_speech_corpus_session_impl(&fresh, input).unwrap();
+        }
+        let expected = exported_sessions_by_id(&fresh);
+        let _ = fs::remove_file(&path);
+        let _ = fs::remove_file(&fresh);
+
+        assert_eq!(analysis.stats.sessions, 2);
+        assert_eq!(
+            replaced
+                .iter()
+                .map(|session| session["id"].as_str().unwrap())
+                .collect::<Vec<_>>(),
+            vec!["backup-x", "backup-y"]
+        );
+        assert_eq!(replaced, expected);
+    }
+
+    #[test]
+    fn replacing_with_no_sessions_empties_the_corpus() {
+        let path = temp_corpus_path("replace-empty");
+        seed_existing_corpus(&path);
+
+        let analysis = replace_speech_corpus_sessions_impl(&path, Vec::new()).unwrap();
+        let replaced = exported_sessions_by_id(&path);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(analysis.stats.sessions, 0);
+        assert!(replaced.is_empty());
+    }
+
+    // Implementation regression test (not acceptance): Codex P2 on vox#99.
+    #[test]
+    fn replacing_repairs_a_corrupt_corpus_file() {
+        let path = temp_corpus_path("replace-corrupt");
+        fs::write(&path, b"{\"sessions\": [").unwrap();
+
+        let analysis = replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let replaced = exported_sessions_by_id(&path);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(analysis.stats.sessions, 2);
+        assert_eq!(replaced.len(), 2);
+    }
+
+    // Implementation regression test (not acceptance): concurrent writers use distinct temp files.
+    #[test]
+    fn atomic_writes_leave_no_temporary_files_behind() {
+        let path = temp_corpus_path("replace-no-temp");
+        replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let directory = path.parent().unwrap();
+        let prefix = path.file_name().unwrap().to_string_lossy().to_string();
+        let leftovers = fs::read_dir(directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.starts_with(&prefix) && name.ends_with(".tmp")
+            })
+            .count();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(leftovers, 0);
+    }
+
+    #[test]
+    fn replacing_twice_with_the_same_sessions_is_idempotent() {
+        let path = temp_corpus_path("replace-twice");
+        seed_existing_corpus(&path);
+
+        let first = replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let after_first = fs::read(&path).unwrap();
+        let second = replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let after_second = fs::read(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(after_first, after_second);
+        assert_eq!(
+            serde_json::to_value(&first).unwrap(),
+            serde_json::to_value(&second).unwrap()
+        );
+    }
+
+    #[test]
+    fn an_invalid_restored_session_leaves_the_existing_corpus_unchanged() {
+        let path = temp_corpus_path("replace-invalid");
+        seed_existing_corpus(&path);
+        let before = fs::read(&path).unwrap();
+
+        // The second session has no usable id; the whole replace is refused, not applied in part.
+        let mut inputs = restored_inputs();
+        inputs[1].id = "   ".to_owned();
+        let result = replace_speech_corpus_sessions_impl(&path, inputs);
+        let after = fs::read(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert!(result.is_err());
+        assert_eq!(before, after);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_failed_write_leaves_the_existing_corpus_unchanged() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = temp_corpus_path("replace-readonly-dir");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("speech-corpus.json");
+        seed_existing_corpus(&path);
+        let before = fs::read(&path).unwrap();
+
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o555)).unwrap();
+        // Privileged users ignore directory permissions; the failure cannot be provoked then.
+        let probe = dir.join("probe");
+        let unwritable = fs::write(&probe, b"").is_err();
+        let _ = fs::remove_file(&probe);
+
+        let result =
+            unwritable.then(|| replace_speech_corpus_sessions_impl(&path, restored_inputs()));
+        let after = fs::read(&path).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let _ = fs::remove_dir_all(&dir);
+
+        if let Some(result) = result {
+            // An atomic write (temporary file in the same directory, then rename) cannot complete
+            // in a read-only directory, so the replace fails and the old corpus stays intact.
+            assert!(result.is_err());
+            assert_eq!(before, after);
         }
     }
 }

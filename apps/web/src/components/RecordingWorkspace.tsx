@@ -20,6 +20,7 @@ import type {
 import { formatPercent, modelStatusLabel } from "../utils/formatting";
 import { ChunkProgressPanel } from "./ChunkProgressPanel";
 import { SessionRestoreButton } from "./SessionRestoreButton";
+import type { SavedSession } from "../types";
 import {
   buttonClass,
   cx,
@@ -59,6 +60,10 @@ type RecordingWorkspaceProps = {
   /** Shown while the unsaved capture cannot be checkpointed. */
   storageWarning?: string | null;
   onExport: () => void;
+  /** Saved sessions a restore would replace (named in its confirmation). */
+  savedSessionCount: number;
+  /** Replaces every saved session with a validated backup; rejects without changing anything. */
+  onRestoreSessions: (sessions: SavedSession[]) => Promise<void>;
 };
 
 export function RecordingWorkspace({
@@ -87,6 +92,8 @@ export function RecordingWorkspace({
   saveDisabled = false,
   storageWarning = null,
   onExport,
+  savedSessionCount,
+  onRestoreSessions,
 }: RecordingWorkspaceProps) {
   const restoreDisabled =
     isRecording ||
@@ -223,7 +230,11 @@ export function RecordingWorkspace({
           <Download size={17} />
           Export
         </button>
-        <SessionRestoreButton disabled={restoreDisabled} />
+        <SessionRestoreButton
+          disabled={restoreDisabled}
+          currentSessionCount={savedSessionCount}
+          onRestore={onRestoreSessions}
+        />
       </div>
     </div>
   );

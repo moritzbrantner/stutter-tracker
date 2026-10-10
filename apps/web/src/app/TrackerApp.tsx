@@ -69,6 +69,7 @@ import {
   loadRemoteConsent,
   loadSessionsFromStorage,
   loadSoloSpeakerDeclaration,
+  replaceStoredSessions,
   saveRemoteConsent,
   saveSoloSpeakerDeclaration,
 } from "../storage/localStorage";
@@ -229,6 +230,8 @@ export function App() {
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef<string | null>(null);
   const sessionMutationTailRef = useRef<Promise<void>>(Promise.resolve());
+  // True while a restore is running; saves wait for it (their browser write would race the restore).
+  const restorePendingRef = useRef(0);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const browserRecorderRef = useRef<BrowserRecorder | null>(null);
   const startedAtRef = useRef<Date | null>(null);
@@ -1171,6 +1174,10 @@ export function App() {
   }
 
   async function saveSession() {
+    if (restorePendingRef.current > 0) {
+      setMessage("Wait for the session restore to finish before saving");
+      return;
+    }
     if (!segments.length && !pauses.length && !report.events.length) {
       setMessage("Nothing to save");
       return;
@@ -1845,6 +1852,57 @@ export function App() {
     }
   }
 
+  /**
+   * Replaces every saved session with a validated backup (vox#86 (a)). Runs after every queued
+   * save/delete/annotation mutation, writes browser storage first and, on desktop, replaces the
+   * native speech corpus too; a failure leaves both stores as they were.
+   */
+  function restoreSessions(restored: SavedSession[]): Promise<void> {
+    // The gate covers the queued wait too: a save accepted before the restore starts would write
+    // browser storage that the restore then overwrites.
+    // Counted, so a failed restore does not reopen saves while another one is still queued.
+    restorePendingRef.current += 1;
+    const operation = serializeSessionMutation(() => applyRestore(restored));
+    void operation.then(
+      () => undefined,
+      () => {
+        restorePendingRef.current -= 1;
+      },
+    );
+    return operation;
+  }
+
+  async function applyRestore(restored: SavedSession[]) {
+    // The native corpus is replaced first, so browser storage (shared with other windows) never
+    // holds a restore that could still fail; a native failure therefore changes nothing.
+    if (isDesktopApp()) {
+      try {
+        await invoke("replace_speech_corpus_sessions", { sessions: restored });
+      } catch (error) {
+        throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
+      }
+    }
+    try {
+      replaceStoredSessions(restored);
+    } catch (error) {
+      // Browser storage refused the write (quota, blocked storage): put the native corpus back to
+      // this window's sessions, which it mirrored before the restore.
+      if (isDesktopApp()) {
+        try {
+          await invoke("replace_speech_corpus_sessions", { sessions: sessionsRef.current });
+        } catch (rollbackError) {
+          throw new Error(
+            `browser storage refused the restore (${errorMessage(error)}) and the desktop corpus could not be put back (${errorMessage(rollbackError)}); it now holds the backup's sessions, so restore the same backup again once storage has room`,
+          );
+        }
+      }
+      throw error;
+    }
+    // Mutations queued behind the restore must see the restored set.
+    sessionsRef.current = restored;
+    setSessions(restored);
+  }
+
   function exportJson() {
     downloadJsonFile("stutter-tracker-export.json", { sessions, speakers, corpus: corpusAnalysis });
   }
@@ -2167,6 +2225,8 @@ export function App() {
           saveDisabled={captureInProgress || isAnalyzing}
           storageWarning={checkpointError ?? claimError}
           onExport={exportJson}
+          savedSessionCount={sessions.length}
+          onRestoreSessions={restoreSessions}
         />
 
         <InsightsSidebar
