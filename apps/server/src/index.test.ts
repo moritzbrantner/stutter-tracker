@@ -6,6 +6,7 @@ import {
   SHARED_ANALYSIS_VERSION,
   type SpeakerProfile,
   type TranscribeAudioRequest,
+  type TranscribeAudioResult,
 } from "@stutter-tracker/shared";
 import { parseServerConfig, type ServerConfig } from "./config";
 import { HttpError } from "./http";
@@ -710,6 +711,86 @@ describe("transcription worker routes", () => {
     expect(await readdir(uploadTmpDir)).toEqual([]);
   });
 
+  // #94 acceptance: the file-transcription worker measures the decoded upload with the
+  // audio-analysis capture kernel; the route returns that measurement, validated field by field.
+  it("returns the worker's capture metrics of an uploaded file with the transcription", async () => {
+    const measured = measuredCapture({
+      sampleRate: 44_100,
+      samplesPerChannel: 44_100 * 4,
+      durationSeconds: 4,
+      frameSamples: 882,
+      frameCount: 200,
+      noInputSeconds: 4,
+      longestNoInputSeconds: 4,
+    });
+    const handler = createComputeRequestHandler({
+      config: localConfig({ uploadTmpDir: await tempDir() }),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        async transcribeAudioFile(request) {
+          return {
+            text: "",
+            language: request.language,
+            provider: request.provider,
+            model: request.model,
+            segments: [],
+            // Fields outside the measurement contract must not reach clients.
+            captureMetrics: { ...measured, workerDebug: "dropped" } as typeof measured,
+          };
+        },
+      },
+    });
+    const response = await postForm(handler, "/transcriptions/file", uploadForm());
+
+    expect(response.status).toBe(200);
+    const body = await responseJson<{ segments: unknown[]; captureMetrics?: unknown }>(response);
+    expect(body.segments).toEqual([]);
+    expect(body.captureMetrics).toEqual(measured);
+  });
+
+  it("returns a file transcription without capture metrics when the worker's are absent or malformed", async () => {
+    const transcribe = async (captureMetrics: unknown) => {
+      const handler = createComputeRequestHandler({
+        config: localConfig({ uploadTmpDir: await tempDir() }),
+        speakerStore: memorySpeakerStore(),
+        nativeWorker: {
+          ...fakeWorker(),
+          async transcribeAudioFile(request) {
+            const result = {
+              text: "uploaded",
+              language: request.language,
+              provider: request.provider,
+              model: request.model,
+              segments: [{ text: "uploaded", startSeconds: 0, endSeconds: 0.5, isFinal: true }],
+              ...(captureMetrics === undefined ? {} : { captureMetrics }),
+            };
+            return result as unknown as TranscribeAudioResult;
+          },
+        },
+      });
+      const response = await postForm(handler, "/transcriptions/file", uploadForm());
+      expect(response.status).toBe(200);
+      const body = await responseJson<Record<string, unknown>>(response);
+      expect(body.segments).toEqual([
+        { text: "uploaded", startSeconds: 0, endSeconds: 0.5, isFinal: true },
+      ]);
+      return body;
+    };
+
+    expect(await transcribe(undefined)).not.toHaveProperty("captureMetrics");
+    expect(await transcribe(null)).not.toHaveProperty("captureMetrics");
+    expect(await transcribe("loud")).not.toHaveProperty("captureMetrics");
+    expect(await transcribe({ ...measuredCapture(), durationSeconds: "long" })).not.toHaveProperty(
+      "captureMetrics",
+    );
+    expect(await transcribe({ ...measuredCapture(), noInputSeconds: -1 })).not.toHaveProperty(
+      "captureMetrics",
+    );
+    const { config: _config, ...withoutConfig } = measuredCapture();
+    expect(await transcribe(withoutConfig)).not.toHaveProperty("captureMetrics");
+  });
+
   it("cleans temp files after upload worker failure", async () => {
     const uploadTmpDir = await tempDir();
     const handler = createComputeRequestHandler({
@@ -1116,6 +1197,14 @@ function postForm(
       body,
     }),
   );
+}
+
+function uploadForm() {
+  const form = new FormData();
+  form.append("audio", new File(["audio"], "recording.m4a", { type: "audio/mp4" }));
+  form.append("provider", "whisperCpp");
+  form.append("model", "tiny.en");
+  return form;
 }
 
 async function tempDir() {

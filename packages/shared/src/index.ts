@@ -68,7 +68,10 @@ export type AnalysisReport = {
   events: StutterEvent[];
   byKind: Partial<Record<StutterKind, number>>;
   acousticStats?: AcousticStats;
-  /** Native analysis only: audio-analysis capture observations of the analyzed audio window. */
+  /**
+   * audio-analysis capture observations of the analyzed audio window (native analysis, the
+   * compute server's audio-backed analysis, or the mobile app's measured upload).
+   */
   captureMetrics?: import("./capture").MeasuredCaptureMetrics;
   /** Capture-quality gate of the run; reports without it predate the gate. */
   captureQuality?: import("./capture").RunCaptureQuality;
@@ -189,6 +192,11 @@ export type TranscribeAudioResult = {
   segments: TranscriptSegment[];
   provider: TranscriptionEngineId;
   model: string;
+  /**
+   * File transcription only: audio-analysis capture observations of the decoded upload, measured
+   * as native analysis measures its audio. Absent when the server could not measure the file.
+   */
+  captureMetrics?: import("./capture").MeasuredCaptureMetrics;
 };
 
 export const TRANSCRIPTION_ENGINES: TranscriptionEngine[] = [

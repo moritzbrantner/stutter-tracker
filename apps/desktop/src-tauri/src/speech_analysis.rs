@@ -404,13 +404,31 @@ fn measure_capture(request: &AnalyzeSpeechRequest) -> Result<Option<CaptureMetri
 }
 
 fn measure_analyzed_window(samples: &[f32], sample_rate: u32) -> Result<CaptureMetrics> {
+    measure_analyzed_interleaved_window(samples, sample_rate, 1)
+}
+
+/// Interleaved samples per channel count that native analysis measures: the first
+/// `ANALYZED_AUDIO_SECONDS` of the audio.
+pub(crate) fn analyzed_window_len(sample_rate: u32, channels: u16) -> usize {
+    (sample_rate as usize)
+        .saturating_mul(ANALYZED_AUDIO_SECONDS)
+        .saturating_mul(usize::from(channels))
+}
+
+/// The capture measurement of native analysis, for interleaved audio of `channels` channels:
+/// the same kernel, configuration and analyzed window.
+pub(crate) fn measure_analyzed_interleaved_window(
+    samples: &[f32],
+    sample_rate: u32,
+    channels: u16,
+) -> Result<CaptureMetrics> {
     let window = samples
         .len()
-        .min((sample_rate as usize).saturating_mul(ANALYZED_AUDIO_SECONDS));
+        .min(analyzed_window_len(sample_rate, channels));
     capture_metrics(
         &samples[..window],
         sample_rate,
-        1,
+        channels,
         &CaptureMetricsConfig::default(),
     )
     .map_err(|error| SpeechAnalysisError::Invalid(error.to_string()))

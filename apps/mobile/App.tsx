@@ -16,9 +16,10 @@ import {
 import { File } from "expo-file-system";
 import { hasRemoteConsent, setRemoteConsent, withdrawOtherServerConsent } from "./src/consent";
 import type React from "react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
+  Switch,
   SafeAreaView,
   ScrollView,
   StyleSheet,
@@ -32,6 +33,15 @@ import {
   recordingFileInfo,
   transcriptionToAnalysisRequest,
 } from "./src/recording";
+import {
+  captureQualityMessage,
+  mobileMetricRows,
+  mobileRecordingDescriptor,
+  withMobileCaptureQuality,
+} from "./src/captureQuality";
+import { createRecordingController } from "./src/recorder";
+
+const RECORDING_PRESET = RecordingPresets.HIGH_QUALITY;
 
 const providers: Array<Exclude<TranscriptionEngineId, "browser">> = [
   "whisperCpp",
@@ -52,8 +62,19 @@ export default function App() {
   const [report, setReport] = useState<AnalysisReport | null>(null);
   const [lastRecordingUri, setLastRecordingUri] = useState("");
   const [modelStatuses, setModelStatuses] = useState<TranscriptionModelStatus[]>([]);
-  const audioRecorder = useAudioRecorder(RecordingPresets.HIGH_QUALITY);
+  // "Only I speak": without it a result stays unknown, as on the web.
+  const [soloSpeaker, setSoloSpeaker] = useState(false);
+  const audioRecorder = useAudioRecorder(RECORDING_PRESET);
   const recorderState = useAudioRecorderState(audioRecorder);
+  // Start/stop/cancel go through one controller, so a late prepare or upload never attaches to
+  // another capture.
+  const recording = useMemo(() => createRecordingController(audioRecorder), [audioRecorder]);
+  const captureRef = useRef<{ soloSpeaker: boolean } | null>(null);
+  useEffect(() => {
+    return () => {
+      void recording.cancel();
+    };
+  }, [recording]);
   // Consent is bound to the exact URL it was given for; editing the URL withdraws it.
   const [consentLedger, setConsentLedger] = useState<ConsentLedger>(EMPTY_CONSENT_LEDGER);
   const remoteConsent = hasRemoteConsent(consentLedger, serverUrl);
@@ -138,28 +159,51 @@ export default function App() {
     }
     setReport(null);
     setTranscript("");
-    setStatus("Recording");
-    await audioRecorder.prepareToRecordAsync();
-    audioRecorder.record();
-  }
-
-  async function stopRecording() {
+    setStatus("Preparing recording");
+    // The declaration applies to the recording it was made for.
+    const declaration = { soloSpeaker };
     try {
-      setStatus("Stopping recording");
-      await audioRecorder.stop();
-      const uri = audioRecorder.uri;
-      if (!uri) {
-        setStatus("Recording did not produce an audio file");
-        return;
-      }
-      setLastRecordingUri(uri);
-      await uploadRecording(uri);
+      const captureId = await recording.start();
+      if (!captureId) return;
+      captureRef.current = declaration;
+      setStatus("Recording");
     } catch (error) {
       setStatus(mobileErrorMessage(error));
     }
   }
 
-  async function uploadRecording(uri: string) {
+  async function stopRecording() {
+    try {
+      setStatus("Stopping recording");
+      const captureSeconds = recorderState.durationMillis / 1000;
+      const stopped = await recording.stop();
+      if (!stopped) return;
+      setLastRecordingUri(stopped.uri);
+      await uploadRecording(
+        stopped.captureId,
+        stopped.uri,
+        captureSeconds,
+        captureRef.current?.soloSpeaker ?? false,
+      );
+    } catch (error) {
+      setStatus(mobileErrorMessage(error));
+    }
+  }
+
+  async function cancelRecording() {
+    await recording.cancel();
+    setIsUploading(false);
+    setStatus("Recording cancelled");
+  }
+
+  async function uploadRecording(
+    captureId: string,
+    uri: string,
+    captureSeconds: number,
+    declaredSolo: boolean,
+  ) {
+    // Results of a cancelled or superseded capture are dropped.
+    const isCurrent = () => recording.isCurrent(captureId);
     setIsUploading(true);
     setStatus("Uploading and transcribing");
     try {
@@ -173,20 +217,32 @@ export default function App() {
         model,
         language,
       });
+      if (!isCurrent()) return;
       setTranscript(result.segments.map((segment) => segment.text).join(" "));
       setStatus("Analyzing transcript");
-      const nextReport = await client.analyzeSpeechSession(transcriptionToAnalysisRequest(result));
-      setReport(nextReport);
+      const analyzed = await client.analyzeSpeechSession(transcriptionToAnalysisRequest(result));
+      if (!isCurrent()) return;
+      // The server's measurement of the decoded upload is the actual recorded format; the preset
+      // is only what was requested.
+      const descriptor = mobileRecordingDescriptor({
+        sessionId: captureId,
+        runId: `${captureId}-run-1`,
+        sampleRate: result.captureMetrics?.sampleRate ?? RECORDING_PRESET.sampleRate,
+        channelCount: result.captureMetrics?.channels ?? RECORDING_PRESET.numberOfChannels,
+        soloSpeaker: declaredSolo,
+      });
+      setReport(withMobileCaptureQuality(analyzed, result, descriptor, captureSeconds));
       setStatus("Complete");
     } catch (error) {
-      setStatus(mobileErrorMessage(error));
+      if (isCurrent()) setStatus(mobileErrorMessage(error));
     } finally {
-      setIsUploading(false);
+      if (isCurrent()) setIsUploading(false);
     }
   }
 
   const selectedModelStatus = modelStatuses.find((item) => item.id === model);
   const busy = isUploading || recorderState.isRecording;
+  const qualityMessage = report ? captureQualityMessage(report) : null;
 
   return (
     <SafeAreaView style={styles.shell}>
@@ -272,6 +328,15 @@ export default function App() {
             <Text style={styles.status}>{status}</Text>
             {isUploading && <ActivityIndicator />}
           </View>
+          <View style={styles.toggleRow}>
+            <Text style={styles.label}>Only I speak</Text>
+            <Switch
+              value={soloSpeaker}
+              onValueChange={setSoloSpeaker}
+              disabled={busy}
+              accessibilityLabel="Only I speak"
+            />
+          </View>
           <TouchableOpacity
             style={recorderState.isRecording ? styles.stopButton : styles.primaryButton}
             onPress={recorderState.isRecording ? stopRecording : startRecording}
@@ -285,6 +350,11 @@ export default function App() {
               {recorderState.isRecording ? "Stop" : "Record"}
             </Text>
           </TouchableOpacity>
+          {busy && (
+            <TouchableOpacity style={styles.button} onPress={cancelRecording}>
+              <Text style={styles.buttonText}>Cancel</Text>
+            </TouchableOpacity>
+          )}
           {destination.kind !== "server" && (
             <Text style={styles.detail}>
               Recording needs a transcription server: the mobile app has no on-device transcription
@@ -298,10 +368,22 @@ export default function App() {
         <Panel title="Metrics">
           {report ? (
             <View style={styles.metrics}>
-              <Metric label="Events" value={String(report.stutterCount)} />
-              <Metric label="Rate" value={`${report.stuttersPerMinute.toFixed(1)}/min`} />
-              <Metric label="Words" value={String(report.wordCount)} />
-              <Metric label="Severity" value={report.severity} />
+              {mobileMetricRows(report).map((row) => (
+                <Metric key={row.label} label={row.label} value={row.value} />
+              ))}
+              {qualityMessage && (
+                <Text
+                  style={
+                    report.captureQuality?.state === "unknown"
+                      ? styles.qualityWarning
+                      : styles.detail
+                  }
+                  accessibilityRole="summary"
+                  accessibilityLabel="Capture quality"
+                >
+                  {qualityMessage}
+                </Text>
+              )}
             </View>
           ) : (
             <Text style={styles.detail}>No analysis yet.</Text>
@@ -445,6 +527,20 @@ const styles = StyleSheet.create({
   primaryButtonText: {
     color: "#ffffff",
     fontWeight: "800",
+  },
+  toggleRow: {
+    alignItems: "center",
+    flexDirection: "row",
+    justifyContent: "space-between",
+  },
+  qualityWarning: {
+    backgroundColor: "#fbf3e8",
+    borderColor: "#e3c9a8",
+    borderRadius: 8,
+    borderWidth: 1,
+    color: "#7a4a12",
+    fontSize: 13,
+    padding: 12,
   },
   statusRow: {
     alignItems: "center",

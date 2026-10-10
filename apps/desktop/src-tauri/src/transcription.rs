@@ -6,10 +6,12 @@ use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::speech_analysis::{analyzed_window_len, measure_analyzed_interleaved_window};
 use crate::text_analysis_transcription::{
     Transcriber, TranscriptionError, TranscriptionResult, WhisperCliTranscriber, WhisperCppConfig,
     WhisperCppModel, WhisperCppModelStore, WhisperCppTranscriber,
 };
+use audio_analysis_core::CaptureMetrics;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -98,6 +100,10 @@ pub struct TranscribeAudioResult {
     pub segments: Vec<TranscribedSegment>,
     pub provider: TranscriptionProviderResult,
     pub model: String,
+    /// audio-analysis capture observations of the decoded upload (file transcription only),
+    /// measured as native analysis measures its audio. Absent when the file could not be measured.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_metrics: Option<CaptureMetrics>,
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]
@@ -289,7 +295,140 @@ pub fn transcribe_audio_file_impl(
         request.ffmpeg_bin.as_deref(),
     );
     let _ = fs::remove_dir_all(&temp_dir);
-    transcribed
+    let mut transcribed = transcribed?;
+    // A file that cannot be measured is still transcribed; clients then show the capture as
+    // unchecked rather than failing the upload.
+    transcribed.capture_metrics =
+        match audio_file_capture_metrics(&request.path, request.ffmpeg_bin.as_deref()) {
+            Ok(metrics) => Some(metrics),
+            Err(error) => {
+                eprintln!("capture metrics unavailable: {error}");
+                None
+            }
+        };
+    Ok(transcribed)
+}
+
+/// Measures an audio file with the audio-analysis capture kernel, as native analysis measures
+/// its audio (same kernel, configuration and window length), at the file's own sample rate and
+/// channel layout. A file longer than the analyzed window is measured over its last
+/// `ANALYZED_AUDIO_SECONDS`, the part a partial-coverage note names. WAV files are read directly;
+/// other formats are decoded with ffmpeg (`ffmpeg_bin`, `STUTTER_FFMPEG_BIN` or `ffmpeg` on PATH)
+/// without resampling or downmixing.
+pub fn audio_file_capture_metrics(path: &Path, ffmpeg_bin: Option<&str>) -> Result<CaptureMetrics> {
+    validate_input_file(path)?;
+    let direct = if has_wav_extension(path) {
+        read_wav_tail(path).ok()
+    } else {
+        None
+    };
+    let (samples, sample_rate, channels) = match direct {
+        Some(decoded) => decoded,
+        None => {
+            let temp_dir = temp_transcription_dir()?;
+            let decoded = decode_to_float_wav(path, &temp_dir, ffmpeg_bin)
+                .and_then(|wav_path| read_wav_tail(&wav_path));
+            let _ = fs::remove_dir_all(&temp_dir);
+            decoded?
+        }
+    };
+    measure_analyzed_interleaved_window(&samples, sample_rate, channels)
+        .map_err(|error| TranscriptionCommandError::Invalid(error.to_string()))
+}
+
+/// Interleaved samples of the last analyzed window of a WAV file, normalized to [-1, 1].
+fn read_wav_tail(path: &Path) -> Result<(Vec<f32>, u32, u16)> {
+    let mut reader = hound::WavReader::open(path)?;
+    let spec = reader.spec();
+    if spec.sample_rate == 0 || spec.channels == 0 {
+        return Err(TranscriptionCommandError::Invalid(format!(
+            "audio file `{}` has no samples",
+            path.display()
+        )));
+    }
+    let window = analyzed_window_len(spec.sample_rate, spec.channels);
+    let window_frames = window / usize::from(spec.channels);
+    let frames = reader.duration() as usize;
+    if frames > window_frames {
+        reader.seek((frames - window_frames) as u32)?;
+    }
+    let samples = match spec.sample_format {
+        hound::SampleFormat::Float => reader
+            .into_samples::<f32>()
+            .take(window)
+            .collect::<std::result::Result<Vec<_>, _>>()?,
+        hound::SampleFormat::Int => {
+            let scale = 2f32.powi(i32::from(spec.bits_per_sample) - 1);
+            reader
+                .into_samples::<i32>()
+                .take(window)
+                .map(|sample| sample.map(|value| value as f32 / scale))
+                .collect::<std::result::Result<Vec<_>, _>>()?
+        }
+    };
+    // A truncated file can end mid-frame; measure whole sample frames only.
+    let whole = samples.len() - samples.len() % usize::from(spec.channels);
+    let mut samples = samples;
+    samples.truncate(whole);
+    Ok((samples, spec.sample_rate, spec.channels))
+}
+
+/// Decodes the end of `input_path` (slightly more than the analyzed window) to 32-bit float WAV
+/// at its source rate and channel layout.
+fn decode_to_float_wav(
+    input_path: &Path,
+    temp_dir: &Path,
+    ffmpeg_bin: Option<&str>,
+) -> Result<PathBuf> {
+    let wav_path = temp_dir.join("capture.wav");
+    let binary = ffmpeg_binary(ffmpeg_bin);
+    let output = Command::new(&binary)
+        .args([
+            "-nostdin",
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-y",
+            "-sseof",
+        ])
+        .arg(DECODED_TAIL_SECONDS_ARG)
+        .arg("-i")
+        .arg(input_path)
+        .args(["-vn", "-c:a", "pcm_f32le", "-f", "wav"])
+        .arg(&wav_path)
+        .output()
+        .map_err(|error| {
+            TranscriptionCommandError::Invalid(format!(
+                "`{binary}` is required to measure non-WAV audio: {error}"
+            ))
+        })?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(TranscriptionCommandError::Invalid(format!(
+            "`{binary}` failed to decode audio for measurement: {}",
+            stderr.trim()
+        )));
+    }
+    Ok(wav_path)
+}
+
+/// ffmpeg seeks this far before the end of the input (the whole input when it is shorter);
+/// `read_wav_tail` then cuts the analyzed window exactly.
+const DECODED_TAIL_SECONDS_ARG: &str = "-91";
+
+fn has_wav_extension(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
+}
+
+fn ffmpeg_binary(ffmpeg_bin: Option<&str>) -> String {
+    ffmpeg_bin
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .or_else(|| std::env::var("STUTTER_FFMPEG_BIN").ok())
+        .unwrap_or_else(|| "ffmpeg".to_string())
 }
 
 fn transcribe_with_temp_dir(
@@ -398,21 +537,12 @@ fn whisper_cpp_input_path<'a>(
     temp_dir: &'a Path,
     ffmpeg_bin: Option<&str>,
 ) -> Result<PathBuf> {
-    if input_path
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("wav"))
-    {
+    if has_wav_extension(input_path) {
         return Ok(input_path.to_path_buf());
     }
 
     let wav_path = temp_dir.join("input.wav");
-    let binary = ffmpeg_bin
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| std::env::var("STUTTER_FFMPEG_BIN").ok())
-        .unwrap_or_else(|| "ffmpeg".to_string());
+    let binary = ffmpeg_binary(ffmpeg_bin);
     let output = Command::new(&binary)
         .arg("-y")
         .arg("-i")
@@ -496,6 +626,7 @@ fn build_result(
         segments,
         provider,
         model,
+        capture_metrics: None,
     }
 }
 
@@ -622,6 +753,51 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("`whisper` was not found on PATH"));
         assert!(message.contains("whisper.cpp"));
+    }
+
+    #[test]
+    fn file_capture_metrics_measure_the_last_analyzed_window_of_a_long_wav() {
+        let dir = temp_transcription_dir().unwrap();
+        let wav = dir.join("long.wav");
+        let sample_rate = 1_000;
+        // 10 s of full-scale clipping, then 90 s of silence: only the last 90 s are measured.
+        let mut samples = vec![1.0_f32; 10 * sample_rate as usize];
+        samples.extend(vec![0.0_f32; 90 * sample_rate as usize]);
+        write_mono_wav(&wav, &samples, sample_rate).unwrap();
+
+        let metrics = audio_file_capture_metrics(&wav, Some("/definitely/missing/ffmpeg")).unwrap();
+
+        assert_eq!(metrics.samples_per_channel, 90 * sample_rate as usize);
+        assert_eq!(metrics.clipped_sample_count, 0);
+        assert!((metrics.no_input_seconds - 90.0).abs() < 1e-9);
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn file_capture_metrics_normalize_integer_wav() {
+        let dir = temp_transcription_dir().unwrap();
+        let wav = dir.join("int16.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 8_000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut writer = hound::WavWriter::create(&wav, spec).unwrap();
+        for index in 0..8_000 * 2 {
+            writer
+                .write_sample(if index % 2 == 0 { i16::MAX } else { 0 })
+                .unwrap();
+        }
+        writer.finalize().unwrap();
+
+        let metrics = audio_file_capture_metrics(&wav, Some("/definitely/missing/ffmpeg")).unwrap();
+
+        assert_eq!(metrics.channels, 2);
+        assert_eq!(metrics.samples_per_channel, 8_000);
+        assert_eq!(metrics.clipped_sample_count, 8_000);
+        assert!((metrics.clipped_sample_ratio - 0.5).abs() < 1e-12);
+        let _ = fs::remove_dir_all(dir);
     }
 
     #[test]
