@@ -284,7 +284,10 @@ function ChunkAnalysisPanel({
 }
 
 function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
-  const history = buildSessionHistory(sessions);
+  // Sessions whose capture failed the quality gate have no score to trend.
+  const scored = sessions.filter((session) => !isScoreWithheld(session.report));
+  const withheldCount = sessions.length - scored.length;
+  const history = buildSessionHistory(scored);
   const comparability = progressComparability(history);
 
   return (
@@ -295,6 +298,12 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
           <p className={`m-0 mt-1 text-sm ${mutedTextClass}`}>
             Last {history.length || "saved"} sessions · oldest to newest
           </p>
+          {withheldCount > 0 && (
+            <p className={`m-0 mt-1 text-sm ${mutedTextClass}`}>
+              {withheldCount} session{withheldCount === 1 ? "" : "s"} with unknown capture quality
+              left out
+            </p>
+          )}
         </div>
       </div>
       <div className="border-t border-[#edf1ee]">
@@ -474,7 +483,13 @@ function SessionsPanel({
                     <span className="block truncate">
                       {new Date(session.startedAt).toLocaleString()}
                     </span>
-                    {historyPoint && (
+                    {historyPoint && isScoreWithheld(session.report) && (
+                      <span className={`mt-1 block text-xs ${mutedTextClass}`}>
+                        {formatSessionDuration(historyPoint.durationSeconds)} · capture quality
+                        unknown
+                      </span>
+                    )}
+                    {historyPoint && !isScoreWithheld(session.report) && (
                       <span className={`mt-1 block text-xs ${mutedTextClass}`}>
                         {formatSessionDuration(historyPoint.durationSeconds)} ·{" "}
                         {historyPoint.fluencyPercentage == null

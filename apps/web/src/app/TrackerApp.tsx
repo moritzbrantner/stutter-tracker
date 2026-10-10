@@ -22,7 +22,8 @@ import {
 } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { withCaptureQuality } from "../audio/captureQuality";
+import { createGapTracker } from "../audio/captureGaps";
+import { isScoreWithheld, withCaptureQuality } from "../audio/captureQuality";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
 import { InsightsSidebar } from "../components/InsightsSidebar";
@@ -228,6 +229,8 @@ export function App() {
   const samplesRef = useRef<number[]>([]);
   // Describes the capture whose PCM is in samplesRef; cleared together with it.
   const captureDescriptorRef = useRef<RecordingDescriptor | null>(null);
+  // Records the live capture's intervals without samples into its descriptor.
+  const gapTrackerRef = useRef<ReturnType<typeof createGapTracker> | null>(null);
   const [soloSpeaker, setSoloSpeakerState] = useState(loadSoloSpeakerDeclaration);
   // Read when the microphone is acquired, so a change while Record is pending still applies.
   const soloSpeakerRef = useRef(soloSpeaker);
@@ -336,13 +339,14 @@ export function App() {
     () => ({
       segments,
       sessions,
-      events: report.events ?? [],
+      // Events of a capture that failed the quality gate are not evidence to predict from.
+      events: isScoreWithheld(report) ? [] : (report.events ?? []),
       partialText: [transcript, interimText].filter(Boolean).join(" ").trim(),
       maxContexts: 6,
       maxPredictions: 4,
       phraseTokens: 4,
     }),
-    [segments, sessions, report.events, transcript, interimText],
+    [segments, sessions, report, transcript, interimText],
   );
   const intentPredictionsQuery = useQuery({
     queryKey: ["intent-predictions", intentPredictionRequest],
@@ -761,6 +765,7 @@ export function App() {
         discontinuities: [],
         speakerAssessment: soloSpeakerRef.current ? "singleSpeakerDeclared" : "unknown",
       };
+      gapTrackerRef.current = createGapTracker(recorder.sampleRate);
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
@@ -791,6 +796,7 @@ export function App() {
       await browserRecorderRef.current?.stop();
       browserRecorderRef.current = null;
       captureDescriptorRef.current = null;
+      gapTrackerRef.current = null;
       recordingTranscriptionRef.current = null;
       setIsRecording(false);
       setIsTranscribing(false);
@@ -872,6 +878,10 @@ export function App() {
   }, [isRecording]);
 
   function handleRecordedSamples(chunk: Float32Array) {
+    const gap = gapTrackerRef.current?.observe(chunk.length, performance.now() / 1000);
+    if (gap) {
+      captureDescriptorRef.current?.discontinuities.push(gap);
+    }
     const samples = samplesRef.current;
     for (const sample of chunk) {
       samples.push(sample);
@@ -984,6 +994,11 @@ export function App() {
     recognition?.stop();
     await browserRecorderRef.current?.stop();
     browserRecorderRef.current = null;
+    const finalGap = gapTrackerRef.current?.finish(performance.now() / 1000);
+    if (finalGap) {
+      captureDescriptorRef.current?.discontinuities.push(finalGap);
+    }
+    gapTrackerRef.current = null;
     setLevel(0);
     await recognitionEnded;
     if (!shouldTranscribeNative) {
