@@ -64,4 +64,15 @@ describe("createGapTracker", () => {
     expect(createGapTracker(1000, { startedAtSeconds: 10 }).finish(10.1)).toBeNull();
     expect(createGapTracker(1000).finish(14)).toBeNull();
   });
+
+  it("counts audio missing before the first chunk when the start time is known", () => {
+    const tracker = createGapTracker(1000, { startedAtSeconds: 10 });
+    // Nothing for 2 s, then on-time delivery that never catches up.
+    const gaps = feed(tracker, 10, 15, 2);
+    expect(gaps).toHaveLength(1);
+    expect(gaps[0]!.startSeconds).toBeCloseTo(0);
+    expect(gaps[0]!.endSeconds).toBeCloseTo(2);
+    // Normal startup delivers on time and records nothing.
+    expect(feed(createGapTracker(1000, { startedAtSeconds: 10 }), 10, 20)).toEqual([]);
+  });
 });

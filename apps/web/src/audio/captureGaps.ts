@@ -2,7 +2,7 @@ import type { CaptureInterval } from "@stutter-tracker/shared";
 
 /**
  * Detects capture intervals without samples from the arrival of PCM chunks against a wall clock.
- * The first chunk fixes the latency baseline; afterwards the delivered sample count must keep up
+ * The recorder start (or, without it, the first chunk) fixes the baseline; afterwards the delivered sample count must keep up
  * with elapsed time. A shortfall counts as a gap only once it has lasted `settleSeconds`, so a
  * delayed burst that later delivers the buffered samples is not mistaken for lost audio.
  *
@@ -18,7 +18,9 @@ export function createGapTracker(
   }: { thresholdSeconds?: number; settleSeconds?: number; startedAtSeconds?: number } = {},
 ) {
   let samples = 0;
-  let base: number | null = null;
+  // Anchored at the recorder start when known, so audio missing before the first chunk counts.
+  let base: number | null = startedAtSeconds ?? null;
+  let delivered = false;
   let missing = 0;
   let pending: { startSeconds: number; since: number } | null = null;
 
@@ -42,6 +44,7 @@ export function createGapTracker(
       const before = samples / sampleRate;
       samples += length;
       const streamSeconds = samples / sampleRate;
+      delivered = true;
       if (base === null) {
         base = nowSeconds - streamSeconds;
         return null;
@@ -59,7 +62,7 @@ export function createGapTracker(
     },
     /** Call when capture stops: a shortfall still open then is a gap at the end. */
     finish(nowSeconds: number): CaptureInterval | null {
-      if (base === null) {
+      if (!delivered) {
         // No PCM arrived at all: the whole capture since the recorder started has no samples.
         if (startedAtSeconds === undefined || nowSeconds - startedAtSeconds <= thresholdSeconds) {
           return null;
