@@ -3,7 +3,9 @@ import { describe, expect, test } from "bun:test";
 import {
   assessCaptureQuality,
   assessRunCaptureQuality,
+  captureCoverageNote,
   captureMetricsFromMeasurement,
+  isPartialCoverage,
   isRunCaptureQuality,
   type MeasuredCaptureMetrics,
   isUnprocessedInput,
@@ -232,6 +234,32 @@ describe("audio-analysis capture metrics", () => {
     });
   });
 
+  test("a verdict on a shorter analyzed window states the part it covers", () => {
+    const long = assessRunCaptureQuality(descriptor(), measured(), 720);
+    expect(long).toMatchObject({
+      state: "usable",
+      coverage: { measuredSeconds: 6, captureSeconds: 720 },
+    });
+    expect(isPartialCoverage(long)).toBe(true);
+    expect(captureCoverageNote(long)).toBe(
+      "Capture quality was checked for the last 6 s of 12 min of recorded audio; earlier audio was not checked.",
+    );
+    // Rounding between sample rates is not an unchecked part.
+    const whole = assessRunCaptureQuality(descriptor(), measured(), 6.2);
+    expect(isPartialCoverage(whole)).toBe(false);
+    expect(captureCoverageNote(whole)).toBeNull();
+    // The covered window never exceeds the capture, and unknown recorded length means whole.
+    expect(assessRunCaptureQuality(descriptor(), measured()).coverage).toEqual({
+      measuredSeconds: 6,
+      captureSeconds: 6,
+    });
+    expect(assessRunCaptureQuality(descriptor(), undefined, 720)).toEqual({
+      state: "unmeasured",
+      issues: [],
+    });
+    expect(isRunCaptureQuality(long)).toBe(true);
+  });
+
   test("stored run qualities are validated", () => {
     expect(isRunCaptureQuality({ state: "usable", issues: [] })).toBe(true);
     expect(isRunCaptureQuality({ state: "unmeasured", issues: [] })).toBe(true);
@@ -246,6 +274,9 @@ describe("audio-analysis capture metrics", () => {
       { state: "unknown", issues: ["toString"], explanation: "x" },
       { state: "unknown", issues: ["clipping"] },
       { state: "great", issues: [] },
+      { state: "usable", issues: [], coverage: { measuredSeconds: 90 } },
+      { state: "usable", issues: [], coverage: { measuredSeconds: 90, captureSeconds: 30 } },
+      { state: "unmeasured", issues: [], coverage: { measuredSeconds: 1, captureSeconds: 1 } },
     ]) {
       expect(isRunCaptureQuality(invalid)).toBe(false);
     }

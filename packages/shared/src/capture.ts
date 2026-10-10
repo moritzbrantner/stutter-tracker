@@ -182,13 +182,44 @@ export function captureMetricsFromMeasurement(measured: MeasuredCaptureMetrics):
  * the audio could not measure it (for example browser-local or compute-server analysis, which do
  * not yet run the audio-analysis capture kernel); it makes no claim either way.
  */
-export type RunCaptureQuality = CaptureQuality | { state: "unmeasured"; issues: [] };
+export type RunCaptureQuality = (CaptureQuality | { state: "unmeasured"; issues: [] }) & {
+  /** Which part of the capture the measurement covered; absent when nothing was measured. */
+  coverage?: CaptureCoverage;
+};
 
+/**
+ * Analysis measures only the audio window it was sent (the most recent part of a long capture),
+ * so a quality verdict states how much of the recorded audio it is based on.
+ */
+export type CaptureCoverage = {
+  /** Seconds of audio the measurement covered: the end of the capture. */
+  measuredSeconds: number;
+  /** Seconds of audio recorded for the whole capture. */
+  captureSeconds: number;
+};
+
+/** Shorter differences are rounding between sample rates, not an unmeasured part. */
+const COVERAGE_TOLERANCE_SECONDS = 0.5;
+
+/**
+ * Quality of the analyzed window of a capture. `captureSeconds` is the recorded audio of the
+ * whole capture; when the measured window is shorter, the result says so in `coverage`.
+ */
 export function assessRunCaptureQuality(
   descriptor: RecordingDescriptor,
   measured: MeasuredCaptureMetrics | undefined,
+  captureSeconds?: number,
 ): RunCaptureQuality {
-  if (measured) return assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
+  if (measured) {
+    const quality = assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
+    const measuredSeconds = Math.max(0, measured.durationSeconds);
+    const recorded =
+      captureSeconds !== undefined && Number.isFinite(captureSeconds) ? captureSeconds : 0;
+    return {
+      ...quality,
+      coverage: { measuredSeconds, captureSeconds: Math.max(measuredSeconds, recorded) },
+    };
+  }
   // Without measurements the descriptor alone can still rule a capture out.
   const issues = unmeasuredIssues(descriptor);
   return issues.length ? unknownQuality(issues) : { state: "unmeasured", issues: [] };
@@ -199,13 +230,54 @@ export function isRunCaptureQuality(value: unknown): value is RunCaptureQuality 
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const record = value as Record<string, unknown>;
   if (!Array.isArray(record.issues)) return false;
-  if (record.state === "usable" || record.state === "unmeasured") return record.issues.length === 0;
+  if (record.coverage !== undefined && !isCaptureCoverage(record.coverage)) return false;
+  if (record.state === "unmeasured") return record.issues.length === 0 && !record.coverage;
+  if (record.state === "usable") return record.issues.length === 0;
   return (
     record.state === "unknown" &&
     record.issues.length > 0 &&
     record.issues.every((issue) => typeof issue === "string" && Object.hasOwn(ISSUE_TEXT, issue)) &&
     typeof record.explanation === "string"
   );
+}
+
+function isCaptureCoverage(value: unknown): value is CaptureCoverage {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const { measuredSeconds, captureSeconds } = value as Record<string, unknown>;
+  return (
+    typeof measuredSeconds === "number" &&
+    typeof captureSeconds === "number" &&
+    Number.isFinite(measuredSeconds) &&
+    Number.isFinite(captureSeconds) &&
+    measuredSeconds >= 0 &&
+    captureSeconds >= measuredSeconds
+  );
+}
+
+/** True when the quality verdict covers less than the whole recorded capture. */
+export function isPartialCoverage(quality: RunCaptureQuality | undefined) {
+  const coverage = quality?.coverage;
+  return (
+    !!coverage && coverage.captureSeconds - coverage.measuredSeconds > COVERAGE_TOLERANCE_SECONDS
+  );
+}
+
+/**
+ * Reader-facing statement of the window a quality verdict is based on, or null when it covers
+ * the whole capture (or nothing was measured).
+ */
+export function captureCoverageNote(quality: RunCaptureQuality | undefined): string | null {
+  if (!isPartialCoverage(quality) || !quality?.coverage) return null;
+  const { measuredSeconds, captureSeconds } = quality.coverage;
+  return `Capture quality was checked for the last ${formatSeconds(measuredSeconds)} of ${formatSeconds(captureSeconds)} of recorded audio; earlier audio was not checked.`;
+}
+
+function formatSeconds(seconds: number) {
+  const whole = Math.round(seconds);
+  if (whole < 60) return `${whole} s`;
+  const minutes = Math.floor(whole / 60);
+  const rest = whole % 60;
+  return rest ? `${minutes} min ${rest} s` : `${minutes} min`;
 }
 
 export const CAPTURE_QUALITY_LIMITS = {

@@ -85,6 +85,11 @@ export type OutcomeObservation = {
   task: SpeakingTask;
   spokenLanguage: SpokenLanguage;
   sampleDurationSeconds: number;
+  /**
+   * Capture-quality state of the session an observed measure was derived from. Observed values
+   * from a capture whose quality is "unknown" are not scores and are left out of comparisons.
+   */
+  captureQuality?: "usable" | "unknown" | "unmeasured";
 };
 
 export type OutcomeChange = "better" | "worse" | "noClearChange" | "insufficientData";
@@ -110,6 +115,8 @@ export type OutcomeReport = {
   comparisons: OutcomeComparison[];
   /** Observations left out because their timestamp or sample duration is invalid. */
   excludedObservationIds: string[];
+  /** Observed values left out because their capture quality is unknown. */
+  unknownCaptureObservationIds: string[];
   limitations: string[];
 };
 
@@ -142,7 +149,13 @@ export function summarizeOutcomes(
   const threshold = options.minimumChangeFraction ?? 0.1;
   const groups = new Map<string, OutcomeObservation[]>();
   const excludedObservationIds: string[] = [];
+  const unknownCaptureObservationIds: string[] = [];
   for (const observation of observations) {
+    // Self- and clinician ratings do not depend on the recording; observed values do.
+    if (observation.source === "observed" && observation.captureQuality === "unknown") {
+      unknownCaptureObservationIds.push(observation.id);
+      continue;
+    }
     const countBased = observation.scale.unit === "events";
     if (
       !Number.isFinite(Date.parse(observation.recordedAt)) ||
@@ -236,7 +249,14 @@ export function summarizeOutcomes(
     };
   });
 
-  return { comparisons, excludedObservationIds, limitations: [...OUTCOME_REPORT_LIMITATIONS] };
+  const limitations: string[] = [...OUTCOME_REPORT_LIMITATIONS];
+  if (unknownCaptureObservationIds.length) {
+    const count = unknownCaptureObservationIds.length;
+    limitations.push(
+      `${count} observed value${count === 1 ? " was" : "s were"} left out because the capture quality was unknown.`,
+    );
+  }
+  return { comparisons, excludedObservationIds, unknownCaptureObservationIds, limitations };
 }
 
 function round2(value: number) {

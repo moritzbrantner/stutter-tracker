@@ -92,6 +92,7 @@ function emptyCorpusAnalysis(): SpeechCorpusAnalysis {
       stutterCount: 0,
       stuttersPerMinute: 0,
       lexicalDiversity: 0,
+      withheldSessions: 0,
     },
     text: {
       bytes: 0,

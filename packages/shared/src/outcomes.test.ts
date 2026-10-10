@@ -214,6 +214,42 @@ describe("summarizeOutcomes validity", () => {
     expect(report.comparisons[0]).toMatchObject({ latest: 3, valueUnit: "events/min" });
   });
 
+  test("leaves observed values of unknown-quality captures out and says how many", () => {
+    const events = { min: 0, max: 100, betterDirection: "lower", unit: "events" } as const;
+    const observed = (
+      id: string,
+      recordedAt: string,
+      value: number,
+      captureQuality?: "usable" | "unknown",
+    ) =>
+      observation({
+        id,
+        recordedAt,
+        measure: "eventBurden",
+        source: "observed",
+        scale: events,
+        value,
+        sampleDurationSeconds: 60,
+        captureQuality,
+      });
+    const report = summarizeOutcomes([
+      observed("first", "2026-10-01T09:00:00Z", 8, "usable"),
+      // A clipping capture's count is not a score: it must not pass for improvement.
+      observed("clipped", "2026-10-02T09:00:00Z", 0, "unknown"),
+      observed("last", "2026-10-03T09:00:00Z", 8),
+      // Self-ratings do not depend on the recording and stay in.
+      observation({ id: "self", captureQuality: "unknown" }),
+    ]);
+
+    expect(report.unknownCaptureObservationIds).toEqual(["clipped"]);
+    const burden = report.comparisons.find((c) => c.measure === "eventBurden");
+    expect(burden).toMatchObject({ observationCount: 2, baseline: 8, latest: 8 });
+    expect(report.comparisons.find((c) => c.measure === "effort")?.observationCount).toBe(1);
+    expect(report.limitations).toContain(
+      "1 observed value was left out because the capture quality was unknown.",
+    );
+  });
+
   test("excludes observations with invalid timestamps", () => {
     const report = summarizeOutcomes([
       observation({ id: "bad", recordedAt: "", value: 1 }),

@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { Activity, BarChart3, Clock, Sparkles, Waves } from "lucide-react";
+import { captureCoverageNote } from "@stutter-tracker/shared";
 import { isScoreWithheld } from "../audio/captureQuality";
 import type { AnalysisReport, BlockerStats, SpeechStats } from "../types";
 import { titleCase } from "../utils/formatting";
@@ -16,6 +17,7 @@ export function StatusMetrics({ report, speechStats, blockerStats }: StatusMetri
   // A capture that failed the quality gate gets no score: neither fluent nor severe.
   const withheld = isScoreWithheld(report);
   const score = (value: string) => (withheld ? "Unknown" : value);
+  const coverageNote = captureCoverageNote(quality);
   return (
     <>
       <section className="mb-4 grid grid-cols-5 gap-3 max-lg:grid-cols-2 max-sm:grid-cols-1">
@@ -40,6 +42,7 @@ export function StatusMetrics({ report, speechStats, blockerStats }: StatusMetri
           aria-label="Capture quality"
         >
           {quality.explanation}
+          {coverageNote && ` ${coverageNote}`}
         </p>
       ) : quality?.state === "unmeasured" ? (
         <p
@@ -48,6 +51,14 @@ export function StatusMetrics({ report, speechStats, blockerStats }: StatusMetri
           aria-label="Capture quality"
         >
           Capture quality was not checked on this processing path.
+        </p>
+      ) : coverageNote ? (
+        <p
+          className={`${mutedTextClass} mt-0 mb-4 text-sm`}
+          role="status"
+          aria-label="Capture quality"
+        >
+          {coverageNote}
         </p>
       ) : null}
     </>
