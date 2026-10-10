@@ -231,6 +231,8 @@ export function App() {
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef<string | null>(null);
   const sessionMutationTailRef = useRef<Promise<void>>(Promise.resolve());
+  // True while a restore has written browser storage but is not final yet (desktop replace pending).
+  const restorePendingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const browserRecorderRef = useRef<BrowserRecorder | null>(null);
   const startedAtRef = useRef<Date | null>(null);
@@ -567,6 +569,9 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     const detect = () => {
+      if (restorePendingRef.current) {
+        return;
+      }
       void detectInterruptedCaptures(sessionsRef.current).then((found) => {
         if (cancelled) {
           return;
@@ -1639,6 +1644,12 @@ export function App() {
   }
 
   async function recoverInterruptedCapture(capture: InterruptedCapture) {
+    if (restorePendingRef.current) {
+      // Browser storage holds a provisional restore that may still be rolled back; recovering
+      // against it could drop this checkpoint as "already saved".
+      setMessage("Wait for the session restore to finish before recovering this recording");
+      return;
+    }
     if (
       workspaceClaimPendingRef.current ||
       startPendingRef.current ||
@@ -1854,24 +1865,33 @@ export function App() {
    */
   function restoreSessions(restored: SavedSession[]): Promise<void> {
     return serializeSessionMutation(async () => {
-      const previousSessions = localStorage.getItem(STORE_KEY);
-      const previousUnreadable = localStorage.getItem(UNREADABLE_SESSIONS_KEY);
-      replaceStoredSessions(restored);
-      if (isDesktopApp()) {
-        try {
-          await invoke("replace_speech_corpus_sessions", { sessions: restored });
-        } catch (error) {
-          restoreStorageValue(STORE_KEY, previousSessions);
-          restoreStorageValue(UNREADABLE_SESSIONS_KEY, previousUnreadable);
-          throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
-        }
+      restorePendingRef.current = true;
+      try {
+        await applyRestore(restored);
+      } finally {
+        restorePendingRef.current = false;
       }
-      // Published only once the restore is final: mutations queued behind it must see the
-      // restored set, while nothing that reads sessionsRef during the native replace (such as
-      // interrupted-capture detection) may act on a set that could still be rolled back.
-      sessionsRef.current = restored;
-      setSessions(restored);
     });
+  }
+
+  async function applyRestore(restored: SavedSession[]) {
+    const previousSessions = localStorage.getItem(STORE_KEY);
+    const previousUnreadable = localStorage.getItem(UNREADABLE_SESSIONS_KEY);
+    replaceStoredSessions(restored);
+    if (isDesktopApp()) {
+      try {
+        await invoke("replace_speech_corpus_sessions", { sessions: restored });
+      } catch (error) {
+        restoreStorageValue(STORE_KEY, previousSessions);
+        restoreStorageValue(UNREADABLE_SESSIONS_KEY, previousUnreadable);
+        throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
+      }
+    }
+    // Published only once the restore is final: mutations queued behind it must see the
+    // restored set, while nothing that reads sessionsRef during the native replace (such as
+    // interrupted-capture detection) may act on a set that could still be rolled back.
+    sessionsRef.current = restored;
+    setSessions(restored);
   }
 
   function exportJson() {

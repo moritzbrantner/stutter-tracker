@@ -569,3 +569,32 @@ describe("checkpoints during a provisional restore", () => {
     expect(storedSessions()).toEqual(currentSessions);
   });
 });
+
+describe("recovery during a provisional restore", () => {
+  // Implementation regression test (not acceptance): third Codex P1 on vox#99.
+  it("does not recover against provisional storage and keeps the checkpoint when the restore fails", async () => {
+    const replace = deferred<SpeechCorpusAnalysis>();
+    useDesktopInvokeMock({ [REPLACE_COMMAND]: () => replace.promise });
+    seedStoredSessions(currentSessions);
+    const checkpointKey = `stutter-tracker:capture-checkpoint:${backupSessions[0].id}`;
+    localStorage.setItem(
+      checkpointKey,
+      JSON.stringify(makeRegressionCheckpoint(backupSessions[0].id, "unsaved words")),
+    );
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApp();
+    const recover = await screen.findByRole("button", { name: /Recover recording/ });
+
+    await uploadBackup(backupJson());
+    await waitFor(() => expect(invocations(REPLACE_COMMAND)).toHaveLength(1));
+    await userEvent.click(recover);
+    await settle();
+
+    replace.reject(new Error("disk full"));
+    await settle();
+
+    expect(localStorage.getItem(checkpointKey)).not.toBeNull();
+    expect(storedSessions()).toEqual(currentSessions);
+  });
+});
