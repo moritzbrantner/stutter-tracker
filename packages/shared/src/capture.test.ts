@@ -211,6 +211,13 @@ describe("audio-analysis capture metrics", () => {
       issues: [],
     });
     expect(assessRunCaptureQuality(descriptor(), measured()).state).toBe("usable");
+    // The descriptor alone still withholds a score from unconfirmed or mixed speakers.
+    expect(
+      assessRunCaptureQuality(descriptor({ speakerAssessment: "unknown" }), undefined),
+    ).toMatchObject({ state: "unknown", issues: ["speakerUnknown"] });
+    expect(
+      assessRunCaptureQuality(descriptor({ speakerAssessment: "overlapDetected" }), undefined),
+    ).toMatchObject({ state: "unknown", issues: ["speakerOverlap"] });
     const silent = measured({ noInputSeconds: 6, activitySeconds: 0 });
     expect(assessRunCaptureQuality(descriptor(), silent)).toMatchObject({
       state: "unknown",

@@ -1281,6 +1281,16 @@ describe("capture-quality gate", () => {
     );
   });
 
+  it("withholds the score of an undeclared speaker even when nothing was measured", async () => {
+    const { record } = await recordWithNativeMetrics(undefined);
+    renderApp();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "it is not confirmed that only you are speaking",
+    );
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+  });
+
   it("says when the processing path did not measure the capture", async () => {
     localStorage.setItem("stutter-tracker:solo-speaker", "true");
     const { record } = await recordWithNativeMetrics(undefined);

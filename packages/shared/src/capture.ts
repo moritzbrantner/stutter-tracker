@@ -188,8 +188,10 @@ export function assessRunCaptureQuality(
   descriptor: RecordingDescriptor,
   measured: MeasuredCaptureMetrics | undefined,
 ): RunCaptureQuality {
-  if (!measured) return { state: "unmeasured", issues: [] };
-  return assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
+  if (measured) return assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
+  // Without measurements the descriptor alone can still rule a capture out.
+  const issues = descriptorIssues(descriptor);
+  return issues.length ? unknownQuality(issues) : { state: "unmeasured", issues: [] };
 }
 
 /** Validates a stored run quality, e.g. from a restored backup. */
@@ -234,7 +236,7 @@ export function assessCaptureQuality(
 ): CaptureQuality {
   const limits = CAPTURE_QUALITY_LIMITS;
   const issues: CaptureQualityIssue[] = [];
-  if (metrics.channelCount < 1 || descriptor.channelCount < 1) issues.push("noChannels");
+  if (metrics.channelCount < 1) issues.push("noChannels");
   if (metrics.durationSeconds < limits.minimumDurationSeconds) issues.push("tooShort");
   if (metrics.durationSeconds > 0 && metrics.silentSeconds >= metrics.durationSeconds * 0.98) {
     issues.push("noInput");
@@ -252,10 +254,24 @@ export function assessCaptureQuality(
   ) {
     issues.push("discontinuous");
   }
-  if (descriptor.speakerAssessment === "unknown") issues.push("speakerUnknown");
-  if (descriptor.speakerAssessment === "overlapDetected") issues.push("speakerOverlap");
+  for (const issue of descriptorIssues(descriptor)) {
+    if (!issues.includes(issue)) issues.push(issue);
+  }
 
   if (!issues.length) return { state: "usable", issues: [] };
+  return unknownQuality(issues);
+}
+
+/** Issues the recording descriptor establishes without any PCM measurement. */
+function descriptorIssues(descriptor: RecordingDescriptor): CaptureQualityIssue[] {
+  const issues: CaptureQualityIssue[] = [];
+  if (descriptor.channelCount < 1) issues.push("noChannels");
+  if (descriptor.speakerAssessment === "unknown") issues.push("speakerUnknown");
+  if (descriptor.speakerAssessment === "overlapDetected") issues.push("speakerOverlap");
+  return issues;
+}
+
+function unknownQuality(issues: CaptureQualityIssue[]): CaptureQuality {
   return {
     state: "unknown",
     issues,
