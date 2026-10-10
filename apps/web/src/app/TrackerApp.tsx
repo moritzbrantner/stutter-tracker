@@ -307,6 +307,8 @@ export function App() {
       analysisRequest,
       analysisDescriptor?.runId ?? null,
       analysisDescriptor?.discontinuities.length ?? 0,
+      // The same analyzed tail of a longer capture covers a different share of it.
+      analysisCaptureSeconds,
     ],
     queryFn: async () => {
       const analysis = await analyzeWithFallback(analysisRequest);
@@ -415,7 +417,7 @@ export function App() {
       return;
     }
     let cancelled = false;
-    loadSpeechCorpus()
+    loadSpeechCorpus(sessionsRef.current)
       .then((analysis) => {
         if (!cancelled) {
           setCorpusAnalysis(analysis);
@@ -2404,9 +2406,27 @@ async function downloadTranscriptionModel(engine: TranscriptionEngineId, model: 
   });
 }
 
-async function loadSpeechCorpus(): Promise<SpeechCorpusAnalysis> {
+/**
+ * Loads the desktop corpus. Rows saved before the corpus kept capture quality get the verdict of
+ * the matching saved session first, so a known-unknown capture does not count as unchecked.
+ */
+async function loadSpeechCorpus(sessions: SavedSession[]): Promise<SpeechCorpusAnalysis> {
   if (!isDesktopApp()) {
     throw new Error("desktop corpus is only available in the Tauri app");
+  }
+  const qualities = Object.fromEntries(
+    sessions.flatMap((session) =>
+      session.report.captureQuality ? [[session.id, session.report.captureQuality]] : [],
+    ),
+  );
+  if (Object.keys(qualities).length) {
+    try {
+      return await invoke<SpeechCorpusAnalysis>("backfill_speech_corpus_capture_quality", {
+        qualities,
+      });
+    } catch {
+      // An older backend without the command still loads the corpus as it is.
+    }
   }
   return invoke<SpeechCorpusAnalysis>("load_speech_corpus");
 }

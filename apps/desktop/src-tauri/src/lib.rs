@@ -21,9 +21,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use corpus::{
-    delete_speech_corpus_session_impl, export_speech_corpus_impl, load_speech_corpus_impl,
-    save_speech_corpus_session_impl, speech_corpus_observations_impl, CorpusSessionInput,
-    SpeechCorpusAnalysis,
+    backfill_speech_corpus_capture_quality_impl, delete_speech_corpus_session_impl,
+    export_speech_corpus_impl, load_speech_corpus_impl, save_speech_corpus_session_impl,
+    speech_corpus_observations_impl, CorpusSessionInput, SpeechCorpusAnalysis,
 };
 use prediction::{predict_speaker_intent_impl, SpeakerIntentPrediction, SpeakerIntentRequest};
 use speech_analysis::{
@@ -93,6 +93,15 @@ fn save_speaker_profiles(
 #[tauri::command]
 fn load_speech_corpus(app: tauri::AppHandle) -> Result<SpeechCorpusAnalysis, String> {
     load_speech_corpus_impl(&speech_corpus_path(&app)?).map_err(|err| err.to_string())
+}
+
+#[tauri::command]
+fn backfill_speech_corpus_capture_quality(
+    app: tauri::AppHandle,
+    qualities: std::collections::BTreeMap<String, serde_json::Value>,
+) -> Result<SpeechCorpusAnalysis, String> {
+    backfill_speech_corpus_capture_quality_impl(&speech_corpus_path(&app)?, &qualities)
+        .map_err(|err| err.to_string())
 }
 
 #[tauri::command]
@@ -171,6 +180,7 @@ pub fn run() {
             load_speech_corpus,
             export_speech_corpus,
             speech_corpus_observations,
+            backfill_speech_corpus_capture_quality,
             save_speech_corpus_session,
             delete_speech_corpus_session,
             predict_speaker_intent,

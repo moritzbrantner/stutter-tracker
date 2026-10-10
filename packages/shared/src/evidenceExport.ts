@@ -12,7 +12,8 @@ import {
 } from "./sessions";
 
 export const EVIDENCE_EXPORT_SCHEMA = "vox-evidence-export";
-export const EVIDENCE_EXPORT_VERSION = 1;
+/** 2: every session states its capture quality. */
+export const EVIDENCE_EXPORT_VERSION = 2;
 
 /** Segments without a speaker id are grouped under this key in speaker selections. */
 export const UNATTRIBUTED_SPEAKER = "unattributed";

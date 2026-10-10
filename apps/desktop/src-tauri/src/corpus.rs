@@ -304,6 +304,28 @@ pub fn speech_corpus_observations_impl(path: &Path) -> Result<serde_json::Value>
     }))
 }
 
+/// Fills in the capture quality of rows saved before the corpus kept it, from the matching saved
+/// sessions' verdicts. Rows that already have one are left as they are.
+pub fn backfill_speech_corpus_capture_quality_impl(
+    path: &Path,
+    qualities: &BTreeMap<String, serde_json::Value>,
+) -> Result<SpeechCorpusAnalysis> {
+    let mut store = read_store(path)?;
+    let mut changed = false;
+    for session in &mut store.sessions {
+        if session.capture_quality.is_none() {
+            if let Some(quality) = qualities.get(&session.id) {
+                session.capture_quality = Some(quality.clone());
+                changed = true;
+            }
+        }
+    }
+    if changed {
+        write_store(path, &store)?;
+    }
+    analyze_store(&store)
+}
+
 pub fn export_speech_corpus_impl(path: &Path) -> Result<serde_json::Value> {
     let store = read_store(path)?;
     Ok(serde_json::to_value(store)?)
@@ -870,6 +892,41 @@ mod tests {
             .unwrap();
         assert_eq!(clipped["stutterCount"], 30);
         assert_eq!(clipped["captureQuality"], unknown);
+    }
+
+    #[test]
+    fn backfills_capture_quality_of_rows_saved_without_it() {
+        let path = temp_corpus_path("backfill");
+        fs::write(
+            &path,
+            r#"{"sessions":[
+                {"id":"legacy","startedAt":"2026-10-08T10:00:00.000Z","segments":[{"text":"I want to speak","startSeconds":0.0,"endSeconds":2.0,"isFinal":true}],"totalDurationSeconds":60.0,"wordCount":4,"stutterCount":30,"stuttersPerMinute":30.0},
+                {"id":"kept","startedAt":"2026-10-07T10:00:00.000Z","segments":[],"totalDurationSeconds":60.0,"wordCount":0,"stutterCount":2,"stuttersPerMinute":2.0,"captureQuality":{"state":"usable","issues":[]}}
+            ]}"#,
+        )
+        .unwrap();
+        let unknown = serde_json::json!({
+            "state": "unknown",
+            "issues": ["noInput"],
+            "explanation": "Result unknown: the microphone delivered no input."
+        });
+        let qualities = BTreeMap::from([
+            ("legacy".to_owned(), unknown.clone()),
+            ("kept".to_owned(), unknown.clone()),
+            ("absent".to_owned(), unknown.clone()),
+        ]);
+        let analysis = backfill_speech_corpus_capture_quality_impl(&path, &qualities).unwrap();
+        let store = read_store(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(analysis.stats.withheld_sessions, 1);
+        assert_eq!(analysis.stats.stutter_count, 2);
+        assert_eq!(store.sessions[0].capture_quality, Some(unknown));
+        // A row's own verdict is never overwritten.
+        assert_eq!(
+            store.sessions[1].capture_quality,
+            Some(serde_json::json!({ "state": "usable", "issues": [] }))
+        );
     }
 
     fn temp_corpus_path(name: &str) -> std::path::PathBuf {
