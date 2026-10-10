@@ -1,6 +1,7 @@
 // User-directed evidence export for a therapist's review. Only what the user selects leaves the
 // app: chosen sessions, with transcripts, speaker names and other speakers' words under their
 // control. Voiceprints, audio, device routes and the app's severity label are never exported.
+import { captureCoverageNote, type CaptureCoverage, type RunCaptureQuality } from "./capture";
 import type { StutterKind } from "./index";
 import {
   acceptedAnnotation,
@@ -48,6 +49,18 @@ export type EvidenceSession = {
     /** The denominator behind per-minute rates, in seconds. */
     durationSeconds: number;
     wordCount: number;
+  };
+  /**
+   * Capture-quality verdict of the saved analysis. When it is "unknown" the automated estimate
+   * below is not a valid score (the app shows it as unknown). "not recorded" for sessions saved
+   * before the quality gate existed.
+   */
+  captureQuality: {
+    state: RunCaptureQuality["state"] | "not recorded";
+    issues: string[];
+    explanation: string | null;
+    /** The audio window the verdict is based on; null when nothing was measured. */
+    coverage: CaptureCoverage | null;
   };
   /** Model estimate from the app's automated analysis; not a clinical judgment. */
   automatedEstimate: {
@@ -224,6 +237,7 @@ export function buildEvidenceExport(
           aidSettings: condition?.kind === "assisted" ? { ...(condition.settings ?? {}) } : null,
         },
         sample: { durationSeconds: seconds, wordCount: session.report.wordCount },
+        captureQuality: evidenceCaptureQuality(session.report.captureQuality),
         automatedEstimate: {
           eventCount: session.report.stutterCount,
           eventsPerMinute: session.report.stuttersPerMinute,
@@ -287,7 +301,10 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
       `${session.ref} · ${oneLine(session.startedAt)}`,
       `  Context: language ${oneLine(session.context.spokenLanguage)}; task ${oneLine(describeTask(session.context))}; condition ${oneLine(describeCondition(session.context))}`,
       `  Sample: ${session.sample.durationSeconds} s, ${session.sample.wordCount} words`,
-      `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute (stored analyzer rate)`,
+      `  Capture quality: ${describeCaptureQuality(session.captureQuality)}`,
+      session.captureQuality.state === "unknown"
+        ? "  Automated estimate: withheld, because the capture quality is unknown (not a valid score)"
+        : `  Automated estimate (model, not a judgment): ${estimate.eventCount} events, ${estimate.eventsPerMinute} per minute (stored analyzer rate)`,
       `  Analysis: ${oneLine(estimate.analyzer)}; ${estimate.analysisRuns} run${estimate.analysisRuns === 1 ? "" : "s"}; ${estimate.verifiedForSavedSession ? "verified for the full saved session (all speakers)" : "NOT verified for the saved session"}; audio ${estimate.usedAudio === null ? "unknown" : estimate.usedAudio ? "used" : "not used"}`,
       session.humanReference
         ? `  Human reference (${session.humanReference.authorRole}, ${oneLine(session.humanReference.annotatedAt)}): ${session.humanReference.eventCount} events, ${session.humanReference.possibleEventCount} possible`
@@ -314,6 +331,35 @@ export function renderEvidenceReport(evidence: EvidencePackage): string {
     "Differences between sessions can come from the task, language, condition, recording or analyzer; a single change is not evidence of improvement.",
   );
   return lines.join("\n");
+}
+
+function evidenceCaptureQuality(
+  quality: RunCaptureQuality | undefined,
+): EvidenceSession["captureQuality"] {
+  if (!quality) {
+    return { state: "not recorded", issues: [], explanation: null, coverage: null };
+  }
+  return {
+    state: quality.state,
+    issues: [...quality.issues],
+    explanation: quality.state === "unknown" ? quality.explanation : null,
+    coverage: quality.coverage ? { ...quality.coverage } : null,
+  };
+}
+
+function describeCaptureQuality(quality: EvidenceSession["captureQuality"]) {
+  const base =
+    quality.state === "usable"
+      ? "usable"
+      : quality.state === "unknown"
+        ? `unknown (${oneLine(quality.explanation ?? quality.issues.join(", "))})`
+        : quality.state === "unmeasured"
+          ? "not checked on the processing path that analyzed it"
+          : "not recorded";
+  const note = quality.coverage
+    ? captureCoverageNote({ state: "usable", issues: [], coverage: quality.coverage })
+    : null;
+  return note ? `${base}. ${note}` : base;
 }
 
 function describeTask(context: EvidenceSession["context"]) {

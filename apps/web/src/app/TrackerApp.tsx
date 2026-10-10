@@ -227,6 +227,9 @@ export function App() {
   const lastSpeakerMatchAtRef = useRef(0);
   const sampleRateRef = useRef(48_000);
   const samplesRef = useRef<number[]>([]);
+  // Samples recorded for the whole capture; the browser engine keeps only the last 90 s in
+  // samplesRef, and analysis is sent at most that window.
+  const capturedSampleCountRef = useRef(0);
   // Describes the capture whose PCM is in samplesRef; cleared together with it.
   const captureDescriptorRef = useRef<RecordingDescriptor | null>(null);
   // Records the live capture's intervals without samples into its descriptor.
@@ -286,6 +289,16 @@ export function App() {
   // Read with the observation above, so the quality gate describes the capture analyzed (also a
   // recovered one whose audio is gone). It stays on this device: analysis requests never carry it.
   const analysisDescriptor = useMemo(() => captureDescriptorRef.current, [analysisRequest]);
+  const analysisCaptureSeconds = useMemo(
+    () =>
+      sampleRateRef.current > 0
+        ? Math.max(capturedSampleCountRef.current, samplesRef.current.length) /
+          sampleRateRef.current
+        : 0,
+    // Read with the observation above, like the descriptor.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [analysisRequest],
+  );
 
   const analysisQuery = useQuery({
     // Gaps are appended to the descriptor during capture; a new gap must re-gate the report.
@@ -303,6 +316,7 @@ export function App() {
           analysis.report,
           analysisDescriptor,
           TRANSCRIPTION_TARGET_SAMPLE_RATE,
+          analysisCaptureSeconds,
         ),
       };
     },
@@ -763,6 +777,7 @@ export function App() {
       browserRecorderRef.current = recorder;
       sampleRateRef.current = recorder.sampleRate;
       samplesRef.current = [];
+      capturedSampleCountRef.current = 0;
       const captureId = crypto.randomUUID();
       captureDescriptorRef.current = {
         sessionId: captureId,
@@ -895,6 +910,7 @@ export function App() {
       captureDescriptorRef.current?.discontinuities.push(gap);
     }
     const samples = samplesRef.current;
+    capturedSampleCountRef.current += chunk.length;
     for (const sample of chunk) {
       samples.push(sample);
     }
@@ -1583,6 +1599,7 @@ export function App() {
     // Audio is not stored with sessions; keeping the last recording's PCM would analyze
     // this session against someone else's audio.
     samplesRef.current = [];
+    capturedSampleCountRef.current = 0;
     captureDescriptorRef.current = null;
   }
 
@@ -1662,6 +1679,7 @@ export function App() {
     startedAtRef.current = new Date(checkpoint.startedAt);
     activeSessionIdRef.current = null;
     samplesRef.current = [];
+    capturedSampleCountRef.current = 0;
     // The audio is gone, but the capture's provenance and speaker declaration still apply.
     captureDescriptorRef.current = checkpoint.recording;
     resetChunkTranscription();
@@ -1767,6 +1785,7 @@ export function App() {
         if (activeSessionIdRef.current === session.id) {
           startedAtRef.current = null;
           samplesRef.current = [];
+          capturedSampleCountRef.current = 0;
           captureDescriptorRef.current = null;
           setSegments([]);
           setPauses([]);
@@ -2826,6 +2845,7 @@ function emptyCorpusAnalysis(): SpeechCorpusAnalysis {
       stutterCount: 0,
       stuttersPerMinute: 0,
       lexicalDiversity: 0,
+      withheldSessions: 0,
     },
     text: {
       bytes: 0,
@@ -2878,6 +2898,8 @@ function localSpeechCorpusExport(sessions: SavedSession[]) {
       wordCount: session.report.wordCount,
       stutterCount: session.report.stutterCount,
       stuttersPerMinute: session.report.stuttersPerMinute,
+      // Exact counts of an unknown-quality capture stay qualified by their verdict.
+      ...(session.report.captureQuality ? { captureQuality: session.report.captureQuality } : {}),
     })),
   };
 }
@@ -2892,11 +2914,21 @@ function analyzeLocalCorpus(sessions: SavedSession[]): SpeechCorpusAnalysis {
   >();
   let documents = 0;
   let duration = 0;
+  let scoredDuration = 0;
   let stutters = 0;
+  let withheldSessions = 0;
 
   for (const session of sessions) {
+    // A capture that failed the quality gate has no score; its counts stay out of the totals.
+    const withheld = isScoreWithheld(session.report);
+    const sessionStutters = withheld ? 0 : session.report.stutterCount;
     duration += session.report.totalDurationSeconds;
-    stutters += session.report.stutterCount;
+    if (withheld) {
+      withheldSessions += 1;
+    } else {
+      scoredDuration += session.report.totalDurationSeconds;
+    }
+    stutters += sessionStutters;
     for (const [index, segment] of session.segments.entries()) {
       if (!segment.isFinal || !segment.text.trim()) {
         continue;
@@ -2908,7 +2940,7 @@ function analyzeLocalCorpus(sessions: SavedSession[]): SpeechCorpusAnalysis {
       const words = corpusTerms(segment.text);
       const segmentStutters =
         session.report.wordCount > 0
-          ? Math.round((session.report.stutterCount * words.length) / session.report.wordCount)
+          ? Math.round((sessionStutters * words.length) / session.report.wordCount)
           : 0;
       const speaker = speakerSummaries.get(speakerKey) ?? {
         label: speakerLabel,
@@ -2945,8 +2977,9 @@ function analyzeLocalCorpus(sessions: SavedSession[]): SpeechCorpusAnalysis {
     averageTermsPerDocument: documents ? totalTerms / documents : 0,
     wordCount: sessions.reduce((sum, session) => sum + session.report.wordCount, 0),
     stutterCount: stutters,
-    stuttersPerMinute: stutters / Math.max(1 / 60, duration / 60),
+    stuttersPerMinute: stutters / Math.max(1 / 60, scoredDuration / 60),
     lexicalDiversity: totalTerms ? terms.size / totalTerms : 0,
+    withheldSessions,
   };
   corpus.text.words = totalTerms;
   corpus.text.uniqueTerms = terms.size;

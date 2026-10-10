@@ -56,4 +56,33 @@ describe("withCaptureQuality", () => {
     expect(gated.captureQuality).toMatchObject({ state: "unknown", issues: ["clipping"] });
     expect(isScoreWithheld(gated)).toBe(true);
   });
+
+  it("states which part of a longer capture the verdict covers", () => {
+    const gated = withCaptureQuality(
+      {
+        ...report,
+        captureMetrics: {
+          sampleRate: 16_000,
+          channels: 1,
+          samplesPerChannel: 1_440_000,
+          durationSeconds: 90,
+          clippedSampleCount: 0,
+          clippedSampleRatio: 0,
+          frameSamples: 320,
+          frameCount: 4_500,
+          noInputSeconds: 0,
+          longestNoInputSeconds: 0,
+          activitySeconds: 80,
+          config: { frameSeconds: 0.02, clipLevel: 0.999, noInputRms: 1e-4, activityRms: 0.01 },
+        },
+      },
+      descriptor,
+      16_000,
+      300,
+    );
+    expect(gated.captureQuality).toMatchObject({
+      state: "usable",
+      coverage: { measuredSeconds: 90, captureSeconds: 300 },
+    });
+  });
 });

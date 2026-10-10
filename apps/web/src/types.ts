@@ -245,6 +245,8 @@ export type SpeechCorpusStats = {
   stutterCount: number;
   stuttersPerMinute: number;
   lexicalDiversity: number;
+  /** Sessions whose capture quality is unknown; left out of the event totals. */
+  withheldSessions: number;
 };
 
 export type CorpusTextStats = {

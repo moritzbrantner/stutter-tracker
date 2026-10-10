@@ -154,6 +154,14 @@ export function InsightsSidebar({
           <Download size={16} />
           Download JSON
         </button>
+        {corpusAnalysis.stats.withheldSessions > 0 && (
+          <p role="note" className={`mt-3 mb-0 text-sm ${mutedTextClass}`}>
+            {corpusAnalysis.stats.withheldSessions} corpus session
+            {corpusAnalysis.stats.withheldSessions === 1 ? " has" : "s have"} unknown capture
+            quality; {corpusAnalysis.stats.withheldSessions === 1 ? "its" : "their"} events are left
+            out of the totals.
+          </p>
+        )}
         {unverifiedSessionCount > 0 && (
           <p
             role="note"

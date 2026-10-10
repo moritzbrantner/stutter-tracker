@@ -101,6 +101,19 @@ pub struct CorpusReportInput {
     pub word_count: usize,
     pub stutter_count: usize,
     pub stutters_per_minute: f64,
+    /// The report's capture-quality verdict (schema owned by `packages/shared/src/capture.ts`),
+    /// kept verbatim so exports keep it next to the counts it qualifies.
+    #[serde(default)]
+    pub capture_quality: Option<serde_json::Value>,
+}
+
+/// True when the verdict says the capture quality is unknown: the session's counts are not a
+/// score and stay out of corpus aggregates.
+fn is_score_withheld(capture_quality: Option<&serde_json::Value>) -> bool {
+    capture_quality
+        .and_then(|quality| quality.get("state"))
+        .and_then(serde_json::Value::as_str)
+        == Some("unknown")
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -119,6 +132,9 @@ struct SpeechCorpusSession {
     word_count: usize,
     stutter_count: usize,
     stutters_per_minute: f64,
+    /// Missing in corpus files written before the capture-quality gate existed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    capture_quality: Option<serde_json::Value>,
     /// Missing in corpus files written before provenance was stored; those still load.
     #[serde(default, flatten)]
     provenance: SessionProvenance,
@@ -149,9 +165,13 @@ pub struct SpeechCorpusStats {
     pub unique_terms: usize,
     pub average_terms_per_document: f32,
     pub word_count: usize,
+    /// Events of sessions with a usable or unchecked capture only.
     pub stutter_count: usize,
+    /// Over the duration of the sessions counted in `stutter_count`.
     pub stutters_per_minute: f64,
     pub lexical_diversity: f32,
+    /// Sessions left out of the event totals because their capture quality is unknown.
+    pub withheld_sessions: usize,
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -361,6 +381,7 @@ fn normalize_session(request: CorpusSessionInput) -> SpeechCorpusSession {
         word_count: request.report.word_count,
         stutter_count: request.report.stutter_count,
         stutters_per_minute: request.report.stutters_per_minute.max(0.0),
+        capture_quality: request.report.capture_quality,
         provenance: request.provenance,
     }
 }
@@ -390,7 +411,7 @@ fn analyze_store(store: &SpeechCorpusStore) -> Result<SpeechCorpusAnalysis> {
         .join("\n");
 
     if text.trim().is_empty() {
-        return Ok(empty_analysis(store.sessions.len()));
+        return Ok(empty_analysis(store));
     }
 
     let mut corpus = TfIdfCorpus::new(CorpusOptions::default());
@@ -441,7 +462,7 @@ fn corpus_documents(store: &SpeechCorpusStore) -> Vec<CorpusDocument> {
                 duration_seconds: (segment.end_seconds - segment.start_seconds).max(0.0),
                 word_count,
                 stutter_count: proportional_count(
-                    session.stutter_count,
+                    session.scored_stutter_count(),
                     word_count,
                     session.word_count,
                 ),
@@ -449,6 +470,28 @@ fn corpus_documents(store: &SpeechCorpusStore) -> Vec<CorpusDocument> {
         }
     }
     documents
+}
+
+impl SpeechCorpusSession {
+    fn score_withheld(&self) -> bool {
+        is_score_withheld(self.capture_quality.as_ref())
+    }
+
+    fn scored_stutter_count(&self) -> usize {
+        if self.score_withheld() {
+            0
+        } else {
+            self.stutter_count
+        }
+    }
+}
+
+fn withheld_sessions(store: &SpeechCorpusStore) -> usize {
+    store
+        .sessions
+        .iter()
+        .filter(|session| session.score_withheld())
+        .count()
 }
 
 fn proportional_count(total: usize, part: usize, whole: usize) -> usize {
@@ -474,12 +517,18 @@ fn aggregate_stats(
         .iter()
         .map(|session| session.word_count)
         .sum();
-    let stutter_count = store
+    let scored = store
         .sessions
         .iter()
-        .map(|session| session.stutter_count)
-        .sum();
-    let minutes = (total_duration_seconds / 60.0).max(1.0 / 60.0);
+        .filter(|session| !session.score_withheld());
+    let (stutter_count, scored_seconds) =
+        scored.fold((0usize, 0.0f64), |(count, seconds), session| {
+            (
+                count + session.stutter_count,
+                seconds + session.total_duration_seconds,
+            )
+        });
+    let minutes = (scored_seconds / 60.0).max(1.0 / 60.0);
     let speakers = documents
         .iter()
         .map(|document| speaker_key(document))
@@ -498,6 +547,7 @@ fn aggregate_stats(
         stutter_count,
         stutters_per_minute: stutter_count as f64 / minutes,
         lexical_diversity: feature_summary.lexical_diversity,
+        withheld_sessions: withheld_sessions(store),
     }
 }
 
@@ -631,10 +681,11 @@ fn keyword_output(keyword: crate::text_analysis_features::Keyword) -> CorpusKeyw
     }
 }
 
-fn empty_analysis(sessions: usize) -> SpeechCorpusAnalysis {
+fn empty_analysis(store: &SpeechCorpusStore) -> SpeechCorpusAnalysis {
     SpeechCorpusAnalysis {
         stats: SpeechCorpusStats {
-            sessions,
+            sessions: store.sessions.len(),
+            withheld_sessions: withheld_sessions(store),
             ..SpeechCorpusStats::default()
         },
         text: CorpusTextStats::default(),
@@ -680,6 +731,7 @@ mod tests {
                 word_count: 8,
                 stutter_count: 1,
                 stutters_per_minute: 3.0,
+                capture_quality: None,
                 segments: vec![
                     CorpusSegmentInput {
                         text: "I like building speech tools".to_string(),
@@ -725,6 +777,7 @@ mod tests {
             word_count: 5,
             stutter_count: 1,
             stutters_per_minute: 3.0,
+            capture_quality: None,
             segments: vec![CorpusSegmentInput {
                 text: "I like building speech tools".to_string(),
                 start_seconds: 0.0,
@@ -754,6 +807,69 @@ mod tests {
         assert_eq!(store.sessions.len(), 1);
         assert_eq!(store.sessions[0].id, "session-2");
         assert_eq!(analysis.stats.sessions, 1);
+    }
+
+    #[test]
+    fn leaves_unknown_quality_sessions_out_of_event_totals_but_keeps_their_verdict() {
+        let path = temp_corpus_path("capture-quality");
+        let session = |id: &str, stutters: usize, quality: serde_json::Value| {
+            serde_json::json!({
+                "id": id,
+                "startedAt": "2026-10-08T10:00:00.000Z",
+                "segments": [{ "text": "I want to speak", "startSeconds": 0.0, "endSeconds": 2.0, "speakerLabel": "Me", "isFinal": true }],
+                "report": {
+                    "totalDurationSeconds": 60.0,
+                    "wordCount": 4,
+                    "stutterCount": stutters,
+                    "stuttersPerMinute": stutters as f64,
+                    "captureQuality": quality
+                }
+            })
+        };
+        let unknown = serde_json::json!({
+            "state": "unknown",
+            "issues": ["clipping"],
+            "explanation": "Result unknown: the input is clipping (too loud)."
+        });
+        save_speech_corpus_session_impl(
+            &path,
+            serde_json::from_value(session(
+                "usable",
+                2,
+                serde_json::json!({ "state": "usable", "issues": [] }),
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let analysis = save_speech_corpus_session_impl(
+            &path,
+            serde_json::from_value(session("clipped", 30, unknown.clone())).unwrap(),
+        )
+        .unwrap();
+        let exported = export_speech_corpus_impl(&path).unwrap();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(analysis.stats.sessions, 2);
+        assert_eq!(analysis.stats.withheld_sessions, 1);
+        assert_eq!(analysis.stats.stutter_count, 2);
+        assert!((analysis.stats.stutters_per_minute - 2.0).abs() < 1e-9);
+        assert_eq!(analysis.stats.total_duration_seconds, 120.0);
+        assert_eq!(
+            analysis
+                .speakers
+                .iter()
+                .map(|speaker| speaker.stutter_count)
+                .sum::<usize>(),
+            2
+        );
+        let clipped = exported["sessions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|session| session["id"] == "clipped")
+            .unwrap();
+        assert_eq!(clipped["stutterCount"], 30);
+        assert_eq!(clipped["captureQuality"], unknown);
     }
 
     fn temp_corpus_path(name: &str) -> std::path::PathBuf {

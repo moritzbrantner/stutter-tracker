@@ -176,6 +176,65 @@ describe("evidence export", () => {
     expect(report.toLowerCase()).not.toMatch(/severity: |cured|improved by/);
   });
 
+  test("states each session's capture quality and withholds an unknown-quality estimate", () => {
+    const clipped: SessionRecord = {
+      ...chosen,
+      report: {
+        ...chosen.report,
+        captureQuality: {
+          state: "unknown",
+          issues: ["clipping"],
+          explanation: "Result unknown: the input is clipping (too loud).",
+          coverage: { measuredSeconds: 90, captureSeconds: 600 },
+        },
+      },
+    };
+    const usable: SessionRecord = {
+      ...excluded,
+      report: { ...excluded.report, captureQuality: { state: "usable", issues: [] } },
+    };
+    const evidence = buildEvidenceExport([clipped, usable], {
+      sessionIds: [clipped.id, usable.id],
+      includeTranscripts: false,
+      transcriptSpeakers: "all",
+      includeSpeakerNames: false,
+      exportedAt,
+    });
+    const [first, second] = evidence.sessions;
+    expect(first.captureQuality).toEqual({
+      state: "unknown",
+      issues: ["clipping"],
+      explanation: "Result unknown: the input is clipping (too loud).",
+      coverage: { measuredSeconds: 90, captureSeconds: 600 },
+    });
+    // The JSON keeps the estimate, qualified by the verdict next to it.
+    expect(first.automatedEstimate.eventCount).toBe(clipped.report.stutterCount);
+    expect(second.captureQuality).toEqual({
+      state: "usable",
+      issues: [],
+      explanation: null,
+      coverage: null,
+    });
+    const legacy = buildEvidenceExport([chosen], {
+      sessionIds: [chosen.id],
+      includeTranscripts: false,
+      transcriptSpeakers: "all",
+      includeSpeakerNames: false,
+      exportedAt,
+    }).sessions[0];
+    expect(legacy.captureQuality.state).toBe("not recorded");
+
+    const report = renderEvidenceReport(evidence);
+    expect(report).toContain(
+      "Capture quality: unknown (Result unknown: the input is clipping (too loud).). Capture quality was checked for the last 1 min 30 s of 10 min of recorded audio; earlier audio was not checked.",
+    );
+    expect(report).toContain(
+      "Automated estimate: withheld, because the capture quality is unknown",
+    );
+    expect(report).toContain("Capture quality: usable");
+    expect(report.match(/Automated estimate \(model, not a judgment\)/g)).toHaveLength(1);
+  });
+
   test("keeps trained-task and aid settings, orders by instant, and marks filtered transcripts", () => {
     const practised = {
       ...session("p", "2026-01-01T01:00:00+02:00", [["Hello there", "me", "Robin"]]),

@@ -318,6 +318,43 @@ describe("App integration", () => {
     expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1);
   });
 
+  it("leaves unknown-quality sessions out of the corpus event totals and says so", async () => {
+    const stored = (id: string, captureQuality?: unknown) => ({
+      id,
+      startedAt: "2026-05-19T10:00:00.000Z",
+      segments: [{ text: "I want to start", startSeconds: 0, endSeconds: 3, isFinal: true }],
+      pauses: [],
+      report: {
+        totalDurationSeconds: 60,
+        wordCount: 4,
+        stutterCount: 9,
+        stuttersPerMinute: 9,
+        severity: "moderate",
+        events: [],
+        byKind: {},
+        ...(captureQuality ? { captureQuality } : {}),
+      },
+    });
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify([
+        stored("session-clipped", {
+          state: "unknown",
+          issues: ["clipping"],
+          explanation: "Result unknown: the input is clipping (too loud).",
+        }),
+        stored("session-plain"),
+      ]),
+    );
+    renderApp();
+
+    expect(
+      await screen.findByText(
+        "1 corpus session has unknown capture quality; its events are left out of the totals.",
+      ),
+    ).toBeInTheDocument();
+  });
+
   it("reanalyzes a saved session on request and keeps the earlier run", async () => {
     const legacy = {
       id: "session-re",
@@ -1241,10 +1278,10 @@ describe("capture-quality gate", () => {
     });
     return {
       analyzed,
-      record: async () => {
+      record: async (seconds = 6) => {
         await userEvent.click(screen.getByRole("button", { name: /^record$/i }));
         act(() => {
-          capture!.onSamples(new Float32Array(16000 * 6).fill(0.2));
+          capture!.onSamples(new Float32Array(16000 * seconds).fill(0.2));
         });
         await userEvent.click(screen.getByRole("button", { name: /^stop$/i }));
       },
@@ -1293,7 +1330,26 @@ describe("capture-quality gate", () => {
         speakerAssessment: "singleSpeakerDeclared",
       }),
     ]);
-    expect(saved.report.captureQuality).toEqual({ state: "usable", issues: [] });
+    expect(saved.report.captureQuality).toEqual({
+      state: "usable",
+      issues: [],
+      coverage: { measuredSeconds: 6, captureSeconds: 6 },
+    });
+  });
+
+  it("says which part of a long capture the quality check covered", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const { analyzed, record } = await recordWithNativeMetrics(
+      measured({ durationSeconds: 90, samplesPerChannel: 1_440_000, activitySeconds: 80 }),
+    );
+    renderApp();
+    await record(120);
+    // Analysis is sent the last 90 s; the verdict says so instead of passing for the whole capture.
+    expect(analyzed.at(-1)?.samples).toHaveLength(16000 * 90);
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "checked for the last 1 min 30 s of 2 min of recorded audio",
+    );
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
   });
 
   it("explains silent captures and marks unmeasured paths", async () => {
