@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
@@ -81,7 +81,11 @@ function renderApp() {
   );
 }
 
-afterEach(() => {
+afterEach(async () => {
+  // Unmount first and let work the app had in flight settle, so a late checkpoint or session
+  // write from this test cannot land in the next test's cleared storage.
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   analysisHook = null;
   deleteSpeakerHook = null;
   createSpeakerHook = null;
