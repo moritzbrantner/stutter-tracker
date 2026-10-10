@@ -6,12 +6,13 @@
 // window holds a Web Lock named after the capture while it owns it; a checkpoint whose lock is held
 // belongs to a live window and is not offered for recovery elsewhere. Closing or crashing the window
 // releases the lock.
-import type { AnalysisRunIdentity } from "@stutter-tracker/shared";
+import type { AnalysisRunIdentity, RecordingDescriptor } from "@stutter-tracker/shared";
 import type { AnalysisReport, PauseSpan, TranscriptSegment } from "../types";
 import {
   isAnalysisReport,
   isAnalysisRunIdentity,
   isPauseSpan,
+  isRecordingDescriptor,
   isTranscriptSegment,
   isValidDateString,
 } from "./sessionBackup";
@@ -35,6 +36,8 @@ export type CaptureCheckpoint = {
    * It cannot be recomputed after recovery because the audio is gone.
    */
   analysis: { report: AnalysisReport; run: AnalysisRunIdentity } | null;
+  /** How the capture was recorded (no audio); null when unknown, e.g. in older checkpoints. */
+  recording: RecordingDescriptor | null;
 };
 
 /** A stored checkpoint offered for recovery, identified by its storage key. */
@@ -127,7 +130,13 @@ export function parseCaptureCheckpoint(value: unknown): CaptureCheckpoint | null
     !record.segments.every(isTranscriptSegment) ||
     !Array.isArray(record.pauses) ||
     !record.pauses.every(isPauseSpan) ||
-    !(record.analysis === null || isCheckpointAnalysis(record.analysis))
+    !(record.analysis === null || isCheckpointAnalysis(record.analysis)) ||
+    !(
+      record.recording === undefined ||
+      record.recording === null ||
+      (isRecordingDescriptor(record.recording) &&
+        (record.recording as RecordingDescriptor).sessionId === record.id)
+    )
   ) {
     return null;
   }
@@ -140,6 +149,7 @@ export function parseCaptureCheckpoint(value: unknown): CaptureCheckpoint | null
     segments: record.segments as TranscriptSegment[],
     pauses: record.pauses as PauseSpan[],
     analysis: record.analysis as CaptureCheckpoint["analysis"],
+    recording: (record.recording as RecordingDescriptor | undefined) ?? null,
   };
 }
 

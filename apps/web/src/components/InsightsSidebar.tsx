@@ -10,6 +10,7 @@ import type {
   TranscriptionEngine,
   TranscriptionModelStatus,
 } from "../types";
+import { isScoreWithheld } from "../audio/captureQuality";
 import { modelStatusLabel } from "../utils/formatting";
 import { buttonClass, controlClass, cx, mutedTextClass, panelClass } from "./styles";
 
@@ -80,6 +81,9 @@ export function InsightsSidebar({
   onEnroll,
   onCorpusExport,
 }: InsightsSidebarProps) {
+  // A capture that failed the quality gate has no score: neither fluent nor blocked.
+  const withheld = isScoreWithheld(report);
+  const score = (value: string) => (withheld ? "Unknown" : value);
   return (
     <aside className={`${panelClass} w-[22rem] shrink-0 p-4 max-lg:w-full`}>
       <PanelBlock title="Today">
@@ -102,10 +106,15 @@ export function InsightsSidebar({
             label="Articulation"
             value={`${speechStats.articulationRateWpm.toFixed(0)} wpm`}
           />
-          <StatLine label="Fluency" value={`${speechStats.fluencyPercentage.toFixed(0)}%`} />
+          <StatLine
+            label="Fluency"
+            value={withheld ? "Unknown" : `${speechStats.fluencyPercentage.toFixed(0)}%`}
+          />
           <StatLine
             label="Density"
-            value={`${speechStats.eventDensityPer100Words.toFixed(1)}/100 words`}
+            value={
+              withheld ? "Unknown" : `${speechStats.eventDensityPer100Words.toFixed(1)}/100 words`
+            }
           />
           {report.acousticStats && <AcousticStatsLines stats={report.acousticStats} />}
         </StatsList>
@@ -113,13 +122,19 @@ export function InsightsSidebar({
 
       <PanelBlock title="Blockers">
         <StatsList>
-          <StatLine label="Count" value={blockerStats.blockCount.toString()} />
-          <StatLine label="Total" value={`${blockerStats.totalBlockSeconds.toFixed(1)}s`} />
-          <StatLine label="Average" value={`${blockerStats.averageBlockSeconds.toFixed(1)}s`} />
-          <StatLine label="Longest" value={`${blockerStats.longestBlockSeconds.toFixed(1)}s`} />
+          <StatLine label="Count" value={score(blockerStats.blockCount.toString())} />
+          <StatLine label="Total" value={score(`${blockerStats.totalBlockSeconds.toFixed(1)}s`)} />
+          <StatLine
+            label="Average"
+            value={score(`${blockerStats.averageBlockSeconds.toFixed(1)}s`)}
+          />
+          <StatLine
+            label="Longest"
+            value={score(`${blockerStats.longestBlockSeconds.toFixed(1)}s`)}
+          />
           <StatLine
             label="Time blocked"
-            value={`${blockerStats.blockedTimePercentage.toFixed(1)}%`}
+            value={score(`${blockerStats.blockedTimePercentage.toFixed(1)}%`)}
           />
         </StatsList>
       </PanelBlock>

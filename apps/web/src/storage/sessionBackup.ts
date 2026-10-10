@@ -206,7 +206,7 @@ function isAssistanceSettings(value: unknown) {
   );
 }
 
-function isRecordingDescriptor(value: unknown) {
+export function isRecordingDescriptor(value: unknown) {
   return (
     isRecord(value) &&
     typeof value.sessionId === "string" &&

@@ -507,7 +507,11 @@ fn analyze_acoustics(request: &AnalyzeSpeechRequest) -> Result<Option<AcousticAn
             ))
         }
     };
-    validate_analysis_audio(samples, sample_rate)?;
+    if !validate_analysis_audio(samples, sample_rate)? {
+        // Too short for acoustic analysis; the report still carries its capture metrics, so the
+        // quality gate can call it too short instead of the run falling back without them.
+        return Ok(None);
+    }
 
     let target_sample_rate = 16_000_u32;
     let mut normalized = samples
@@ -605,15 +609,11 @@ fn analyze_acoustics(request: &AnalyzeSpeechRequest) -> Result<Option<AcousticAn
     Ok(Some(AcousticAnalysis { stats, events }))
 }
 
-fn validate_analysis_audio(samples: &[f32], sample_rate: u32) -> Result<()> {
+/// Rejects malformed audio; returns whether it is long enough (250 ms) for acoustic analysis.
+fn validate_analysis_audio(samples: &[f32], sample_rate: u32) -> Result<bool> {
     if sample_rate == 0 {
         return Err(SpeechAnalysisError::Invalid(
             "sampleRate must be greater than zero".to_string(),
-        ));
-    }
-    if samples.len() < (sample_rate as usize / 4).max(1024) {
-        return Err(SpeechAnalysisError::Invalid(
-            "at least 250ms of audio samples are required".to_string(),
         ));
     }
     if samples.iter().any(|sample| !sample.is_finite()) {
@@ -621,7 +621,7 @@ fn validate_analysis_audio(samples: &[f32], sample_rate: u32) -> Result<()> {
             "audio samples must be finite".to_string(),
         ));
     }
-    Ok(())
+    Ok(samples.len() >= (sample_rate as usize / 4).max(1024))
 }
 
 fn acoustic_frames(
@@ -1617,6 +1617,18 @@ mod tests {
         assert_eq!(metrics.clipped_sample_count, 1);
         assert!((metrics.no_input_seconds - 1.0).abs() < 0.021);
         assert!((metrics.activity_seconds - 1.0).abs() < 0.021);
+
+        let short = analyze_speech_session_impl(AnalyzeSpeechRequest {
+            segments: Vec::new(),
+            pauses: Vec::new(),
+            session_started_at: None,
+            samples: Some(vec![0.1; 800]),
+            sample_rate: Some(sample_rate),
+        })
+        .unwrap();
+        assert!(short.acoustic_stats.is_none());
+        let metrics = short.capture_metrics.expect("short capture metrics");
+        assert!((metrics.duration_seconds - 0.05).abs() < 1e-9);
 
         let long = vec![0.0; sample_rate as usize * (ANALYZED_AUDIO_SECONDS + 5)];
         let report = analyze_speech_session_impl(AnalyzeSpeechRequest {

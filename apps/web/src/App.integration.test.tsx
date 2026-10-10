@@ -1263,6 +1263,13 @@ describe("capture-quality gate", () => {
     expect(analyzed.at(-1)).not.toHaveProperty("descriptor");
     expect(JSON.stringify(analyzed.at(-1))).not.toContain("preprocessing");
 
+    // Every score on the dashboard is withheld, not only the header.
+    expect(
+      screen.getByText("Events are not shown because the capture quality is unknown."),
+    ).toBeInTheDocument();
+    const sidebar = screen.getByRole("complementary");
+    expect(within(sidebar).getAllByText("Unknown").length).toBeGreaterThanOrEqual(7);
+
     await userEvent.click(screen.getByRole("checkbox", { name: "Only I speak" }));
     expect(localStorage.getItem("stutter-tracker:solo-speaker")).toBe("true");
     await record();
@@ -1270,6 +1277,23 @@ describe("capture-quality gate", () => {
       expect(screen.queryByRole("status", { name: "Capture quality" })).not.toBeInTheDocument(),
     );
     expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+
+    // The saved session keeps how it was recorded.
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1),
+    );
+    const [saved] = JSON.parse(localStorage.getItem(STORE_KEY)!);
+    expect(saved.recordings).toEqual([
+      expect.objectContaining({
+        sessionId: saved.id,
+        origin: "desktop",
+        role: "appInput",
+        sampleRate: 16000,
+        speakerAssessment: "singleSpeakerDeclared",
+      }),
+    ]);
+    expect(saved.report.captureQuality).toEqual({ state: "usable", issues: [] });
   });
 
   it("explains silent captures and marks unmeasured paths", async () => {

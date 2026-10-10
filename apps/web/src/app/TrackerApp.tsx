@@ -229,7 +229,10 @@ export function App() {
   // Describes the capture whose PCM is in samplesRef; cleared together with it.
   const captureDescriptorRef = useRef<RecordingDescriptor | null>(null);
   const [soloSpeaker, setSoloSpeakerState] = useState(loadSoloSpeakerDeclaration);
+  // Read when the microphone is acquired, so a change while Record is pending still applies.
+  const soloSpeakerRef = useRef(soloSpeaker);
   const setSoloSpeaker = (declared: boolean) => {
+    soloSpeakerRef.current = declared;
     setSoloSpeakerState(declared);
     saveSoloSpeakerDeclaration(declared);
   };
@@ -277,12 +280,9 @@ export function App() {
     // captureRevision is a deliberate trigger: samplesRef is a ref and not a dependency itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, pauses, captureRevision]);
-  // Read with the samples above, so the quality gate describes exactly the audio analyzed. It
-  // stays on this device: analysis requests never carry it.
-  const analysisDescriptor = useMemo(
-    () => (analysisRequest.samples ? captureDescriptorRef.current : null),
-    [analysisRequest],
-  );
+  // Read with the observation above, so the quality gate describes the capture analyzed (also a
+  // recovered one whose audio is gone). It stays on this device: analysis requests never carry it.
+  const analysisDescriptor = useMemo(() => captureDescriptorRef.current, [analysisRequest]);
 
   const analysisQuery = useQuery({
     queryKey: ["analysis", analysisRequest, analysisDescriptor?.runId ?? null],
@@ -759,7 +759,7 @@ export function App() {
         ...recorder.capture,
         startOffsetSeconds: 0,
         discontinuities: [],
-        speakerAssessment: soloSpeaker ? "singleSpeakerDeclared" : "unknown",
+        speakerAssessment: soloSpeakerRef.current ? "singleSpeakerDeclared" : "unknown",
       };
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
@@ -1129,11 +1129,18 @@ export function App() {
     // A capture is saved under its checkpoint id, so a checkpoint left behind by a crash between the
     // save and its removal is recognized as saved instead of being recovered as a duplicate.
     const captureId = captureIdRef.current;
+    const sessionId =
+      captureId && !sessionsRef.current.some((candidate) => candidate.id === captureId)
+        ? captureId
+        : crypto.randomUUID();
+    const descriptor = captureDescriptorRef.current;
     const session: SavedSession = createSessionRecord({
-      id:
-        captureId && !sessionsRef.current.some((candidate) => candidate.id === captureId)
-          ? captureId
-          : crypto.randomUUID(),
+      id: sessionId,
+      // The capture's provenance travels with it; an edited saved session keeps the original's.
+      recordings:
+        descriptor && descriptor.sessionId === captureId
+          ? [{ ...descriptor, sessionId }]
+          : (loaded?.recordings.map((recording) => ({ ...recording, sessionId })) ?? []),
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
       segments,
       pauses,
@@ -1447,6 +1454,8 @@ export function App() {
       segments,
       pauses,
       analysis,
+      recording:
+        captureDescriptorRef.current?.sessionId === id ? captureDescriptorRef.current : null,
     };
   }
 
@@ -1624,7 +1633,8 @@ export function App() {
     startedAtRef.current = new Date(checkpoint.startedAt);
     activeSessionIdRef.current = null;
     samplesRef.current = [];
-    captureDescriptorRef.current = null;
+    // The audio is gone, but the capture's provenance and speaker declaration still apply.
+    captureDescriptorRef.current = checkpoint.recording;
     resetChunkTranscription();
     sessionLanguageRef.current = checkpoint.language;
     loadedSessionRef.current = null;
@@ -1649,6 +1659,7 @@ export function App() {
   ) {
     const session = createSessionRecord({
       id: checkpoint.id,
+      recordings: checkpoint.recording ? [checkpoint.recording] : [],
       startedAt: checkpoint.startedAt,
       segments: checkpoint.segments,
       pauses: checkpoint.pauses,

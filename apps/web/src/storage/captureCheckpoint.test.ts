@@ -7,6 +7,7 @@ import {
   hasCheckpointedObservation,
   heldCaptureIds,
   listCaptureCheckpoints,
+  readCaptureCheckpoint,
   removeCaptureCheckpoint,
   writeCaptureCheckpoint,
 } from "./captureCheckpoint";
@@ -23,6 +24,7 @@ function checkpoint(overrides: Partial<CaptureCheckpoint> = {}): CaptureCheckpoi
     ],
     pauses: [{ startSeconds: 1.5, endSeconds: 2.4, afterText: "want" }],
     analysis: null,
+    recording: null,
     ...overrides,
   };
 }
@@ -100,6 +102,44 @@ describe("capture checkpoints", () => {
       },
       { key: captureCheckpointKey("capture-1"), kind: "checkpoint", checkpoint: checkpoint() },
     ]);
+  });
+
+  it("keeps the capture's recording descriptor and reads older checkpoints without one", () => {
+    const recording = {
+      sessionId: "capture-1",
+      runId: "run-1",
+      origin: "browser" as const,
+      role: "appInput" as const,
+      sampleRate: 48_000,
+      channelCount: 1,
+      startOffsetSeconds: 0,
+      preprocessing: {
+        echoCancellation: { requested: true, applied: true },
+        noiseSuppression: { requested: true },
+        autoGainControl: { requested: false, applied: false },
+      },
+      discontinuities: [],
+      speakerAssessment: "singleSpeakerDeclared" as const,
+    };
+    writeCaptureCheckpoint(checkpoint({ recording }));
+    const key = captureCheckpointKey("capture-1");
+    expect(readCaptureCheckpoint(key)).toEqual({
+      key,
+      kind: "checkpoint",
+      checkpoint: checkpoint({ recording }),
+    });
+
+    const { recording: _omitted, ...legacy } = checkpoint();
+    localStorage.setItem(key, JSON.stringify(legacy));
+    expect(readCaptureCheckpoint(key)).toEqual({
+      key,
+      kind: "checkpoint",
+      checkpoint: checkpoint(),
+    });
+
+    // A descriptor of another capture is not this capture's provenance.
+    writeCaptureCheckpoint(checkpoint({ recording: { ...recording, sessionId: "other" } }));
+    expect(readCaptureCheckpoint(key)).toEqual({ key, kind: "unreadable" });
   });
 
   it("reports nothing when no checkpoint is stored", () => {
