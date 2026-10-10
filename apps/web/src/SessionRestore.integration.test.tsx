@@ -193,11 +193,11 @@ function stubReload() {
   vi.spyOn(window, "location", "get").mockReturnValue(fake);
 }
 
-/** Only the restore confirmation; deleting a session asks its own question. */
+/** Only the restore confirmation ("... from this backup?"); the delete confirmation also mentions backups. */
 function restoreConfirmMessages(confirm: { mock: { calls: Array<[message?: string]> } }) {
   return confirm.mock.calls
     .map(([message]) => String(message))
-    .filter((message) => /backup/i.test(message));
+    .filter((message) => /from this backup/i.test(message));
 }
 
 type InvokeHandlers = Partial<Record<string, (args: unknown) => Promise<unknown>>>;
