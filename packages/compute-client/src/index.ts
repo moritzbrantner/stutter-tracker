@@ -13,6 +13,7 @@ import {
   fallbackEmbedding,
   SHARED_ANALYSIS_VERSION,
   staticModelStatuses,
+  uncheckedModelStatuses,
 } from "@stutter-tracker/shared";
 
 type NavigatorWithGpu = Navigator & {
@@ -297,7 +298,8 @@ export function createComputeClient(options: ComputeClientOptions = {}): Compute
           );
           return result.models;
         } catch {
-          return staticModelStatuses(provider);
+          // Unreachable server: availability is unknown, not guessed.
+          return uncheckedModelStatuses(provider);
         }
       }
       return staticModelStatuses(provider);

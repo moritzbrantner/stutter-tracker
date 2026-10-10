@@ -264,7 +264,20 @@ export function isAnalysisRunIdentity(value: unknown) {
     (value.analyzer === null || isAnalyzerIdentity(value.analyzer)) &&
     typeof value.inputId === "string" &&
     (value.usedAudio === null || typeof value.usedAudio === "boolean") &&
-    (value.audioId === null || typeof value.audioId === "string")
+    (value.audioId === null || typeof value.audioId === "string") &&
+    (value.transcription === undefined ||
+      value.transcription === null ||
+      isTranscriptionModelIdentity(value.transcription))
+  );
+}
+
+function isTranscriptionModelIdentity(value: unknown) {
+  return (
+    isRecord(value) &&
+    typeof value.engine === "string" &&
+    value.engine.length > 0 &&
+    typeof value.model === "string" &&
+    value.model.length > 0
   );
 }
 

@@ -152,12 +152,7 @@ export type TranscriptionEngine = {
   models: string[];
 };
 
-export type TranscriptionModelStatus = {
-  id: string;
-  label: string;
-  cached: boolean;
-  downloadable: boolean;
-};
+export type TranscriptionModelStatus = import("@stutter-tracker/shared").TranscriptionModelStatus;
 
 export type TranscriptionProgressEvent = {
   phase: string;
