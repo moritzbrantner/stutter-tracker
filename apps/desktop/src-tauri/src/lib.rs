@@ -17,6 +17,11 @@ mod video_analysis_core {
     pub use media_core::DetectError;
 }
 
+/// Capture-quality measurement of analysis audio, shared with the compute worker.
+pub mod capture {
+    pub use crate::speech_analysis::{capture_metrics_impl, CaptureMetricsRequest};
+}
+
 use std::fs;
 use std::path::PathBuf;
 

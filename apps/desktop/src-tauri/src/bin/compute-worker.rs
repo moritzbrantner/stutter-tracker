@@ -3,6 +3,7 @@ use std::process::ExitCode;
 
 use serde::Deserialize;
 use serde_json::Value;
+use stutter_tracker_lib::capture::{capture_metrics_impl, CaptureMetricsRequest};
 use stutter_tracker_lib::transcription::{
     download_transcription_model_impl, transcribe_audio_file_impl, transcribe_audio_impl,
     transcription_models_impl, DownloadTranscriptionModelRequest, TranscribeAudioFileRequest,
@@ -16,6 +17,7 @@ enum WorkerCommand {
     DownloadTranscriptionModel(DownloadTranscriptionModelRequest),
     TranscribeAudio(TranscribeAudioRequest),
     TranscribeAudioFile(TranscribeAudioFileRequest),
+    CaptureMetrics(CaptureMetricsRequest),
 }
 
 fn main() -> ExitCode {
@@ -43,6 +45,9 @@ fn run() -> Result<(), String> {
         }
         WorkerCommand::TranscribeAudioFile(request) => {
             to_value(transcribe_audio_file_impl(request).map_err(|error| error.to_string())?)?
+        }
+        WorkerCommand::CaptureMetrics(request) => {
+            to_value(capture_metrics_impl(request).map_err(|error| error.to_string())?)?
         }
     };
     println!("{response}");
@@ -120,5 +125,20 @@ mod tests {
             }
             _ => panic!("unexpected command"),
         }
+    }
+
+    #[test]
+    fn measures_capture_metrics_of_analysis_audio() {
+        let command: WorkerCommand = serde_json::from_str(
+            r#"{"command":"capture-metrics","request":{"samples":[0.0,1.0,-1.0,0.5],"sampleRate":16000}}"#,
+        )
+        .unwrap();
+        let WorkerCommand::CaptureMetrics(request) = command else {
+            panic!("unexpected command");
+        };
+        let metrics = to_value(capture_metrics_impl(request).unwrap()).unwrap();
+        assert_eq!(metrics["sampleRate"], 16000);
+        assert_eq!(metrics["samplesPerChannel"], 4);
+        assert_eq!(metrics["clippedSampleCount"], 2);
     }
 }

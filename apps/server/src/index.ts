@@ -27,6 +27,7 @@ import { createSpeakerStore, type SpeakerStore } from "./speakers";
 import {
   normalizeSpeakerProfileId,
   validateAnalyzeSpeechRequest,
+  validateMeasuredCaptureMetrics,
   validateCreateSpeakerProfileRequest,
   validateDownloadModelRequest,
   validateIdentifySpeakerRequest,
@@ -53,6 +54,35 @@ export type RequestHooks = {
 
 export function createComputeRequestHandler(deps: ComputeServerDeps) {
   const jobs = createJobLimiter(deps.config.maxConcurrentJobs);
+
+  /**
+   * Measures the request audio with the audio-analysis capture kernel in the native worker, the
+   * same measurement native analysis reports. Without a usable measurement (no audio, a busy or
+   * failing worker) the report carries none, and clients show the capture as unchecked.
+   */
+  const measureCapture = async (
+    body: AnalyzeSpeechRequest,
+    signal: AbortSignal,
+    hooks: RequestHooks,
+  ) => {
+    if (!body.samples?.length || !body.sampleRate) return undefined;
+    const { samples, sampleRate } = body;
+    try {
+      const measured = await jobs.run(() => {
+        hooks.workerStarting?.();
+        return deps.nativeWorker.captureMetrics({ samples, sampleRate }, signal);
+      });
+      const metrics = validateMeasuredCaptureMetrics(measured);
+      if (!metrics) console.warn("native worker returned invalid capture metrics");
+      return metrics ?? undefined;
+    } catch (error) {
+      if (signal.aborted) throw error;
+      console.warn(
+        `capture metrics unavailable: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return undefined;
+    }
+  };
   return async function fetch(request: Request, hooks: RequestHooks = {}): Promise<Response> {
     const cors = corsHeaders(deps.config, request);
     if (cors instanceof Response) {
@@ -79,8 +109,10 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
         const body = validateAnalyzeSpeechRequest(
           await readJson(request, deps.config.maxBodyBytes),
         );
+        const report = fallbackAnalyze(body);
+        const captureMetrics = await measureCapture(body, request.signal, hooks);
         // Saved sessions record which analyzer produced a report.
-        return jsonResponse(fallbackAnalyze(body), 200, {
+        return jsonResponse(captureMetrics ? { ...report, captureMetrics } : report, 200, {
           ...cors,
           [ANALYZER_ALGORITHM_HEADER]: SERVER_ANALYZER_ALGORITHM,
           [ANALYZER_VERSION_HEADER]: SHARED_ANALYSIS_VERSION,

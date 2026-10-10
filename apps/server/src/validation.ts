@@ -1,5 +1,6 @@
 import {
   type AnalyzeSpeechRequest,
+  type MeasuredCaptureMetrics,
   type SpeakerProfile,
   type TranscribeAudioRequest,
   type TranscriptionEngineId,
@@ -36,6 +37,42 @@ export function validateAnalyzeSpeechRequest(value: unknown): AnalyzeSpeechReque
     request.sampleRate = positiveInteger(body.sampleRate, "sampleRate");
   }
   return request;
+}
+
+const CAPTURE_METRIC_FIELDS = [
+  "sampleRate",
+  "channels",
+  "samplesPerChannel",
+  "durationSeconds",
+  "clippedSampleCount",
+  "clippedSampleRatio",
+  "frameSamples",
+  "frameCount",
+  "noInputSeconds",
+  "longestNoInputSeconds",
+  "activitySeconds",
+] as const;
+const CAPTURE_CONFIG_FIELDS = ["frameSeconds", "clipLevel", "noInputRms", "activityRms"] as const;
+
+/** The native worker's capture observations, or null when they are not well-formed. */
+export function validateMeasuredCaptureMetrics(value: unknown): MeasuredCaptureMetrics | null {
+  const finiteFields = (record: unknown, fields: readonly string[]) =>
+    typeof record === "object" &&
+    record !== null &&
+    !Array.isArray(record) &&
+    fields.every((field) => {
+      const entry = (record as UnknownRecord)[field];
+      return typeof entry === "number" && Number.isFinite(entry) && entry >= 0;
+    });
+  if (!finiteFields(value, CAPTURE_METRIC_FIELDS)) return null;
+  const config = (value as UnknownRecord).config;
+  if (!finiteFields(config, CAPTURE_CONFIG_FIELDS)) return null;
+  const metrics: Record<string, unknown> = {};
+  for (const field of CAPTURE_METRIC_FIELDS) metrics[field] = (value as UnknownRecord)[field];
+  metrics.config = Object.fromEntries(
+    CAPTURE_CONFIG_FIELDS.map((field) => [field, (config as UnknownRecord)[field]]),
+  );
+  return metrics as MeasuredCaptureMetrics;
 }
 
 export function validateSpeakerProfilesBody(value: unknown): SpeakerProfile[] {
