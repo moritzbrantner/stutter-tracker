@@ -69,8 +69,10 @@ import {
   loadRemoteConsent,
   loadSessionsFromStorage,
   loadSoloSpeakerDeclaration,
+  replaceStoredSessions,
   saveRemoteConsent,
   saveSoloSpeakerDeclaration,
+  UNREADABLE_SESSIONS_KEY,
 } from "../storage/localStorage";
 import {
   CAPTURE_CHECKPOINT_PREFIX,
@@ -1845,6 +1847,29 @@ export function App() {
     }
   }
 
+  /**
+   * Replaces every saved session with a validated backup (vox#86 (a)). Runs after every queued
+   * save/delete/annotation mutation, writes browser storage first and, on desktop, replaces the
+   * native speech corpus too; a failure leaves both stores as they were.
+   */
+  function restoreSessions(restored: SavedSession[]): Promise<void> {
+    return serializeSessionMutation(async () => {
+      const previousSessions = localStorage.getItem(STORE_KEY);
+      const previousUnreadable = localStorage.getItem(UNREADABLE_SESSIONS_KEY);
+      replaceStoredSessions(restored);
+      if (!isDesktopApp()) {
+        return;
+      }
+      try {
+        await invoke("replace_speech_corpus_sessions", { sessions: restored });
+      } catch (error) {
+        restoreStorageValue(STORE_KEY, previousSessions);
+        restoreStorageValue(UNREADABLE_SESSIONS_KEY, previousUnreadable);
+        throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
+      }
+    });
+  }
+
   function exportJson() {
     downloadJsonFile("stutter-tracker-export.json", { sessions, speakers, corpus: corpusAnalysis });
   }
@@ -2167,6 +2192,8 @@ export function App() {
           saveDisabled={captureInProgress || isAnalyzing}
           storageWarning={checkpointError ?? claimError}
           onExport={exportJson}
+          savedSessionCount={sessions.length}
+          onRestoreSessions={restoreSessions}
         />
 
         <InsightsSidebar
@@ -2526,6 +2553,14 @@ async function loadSpeechCorpusExport(sessions: SavedSession[]) {
     return await invoke<unknown>("export_speech_corpus");
   } catch {
     return localSpeechCorpusExport(sessions);
+  }
+}
+
+function restoreStorageValue(key: string, value: string | null) {
+  if (value === null) {
+    localStorage.removeItem(key);
+  } else {
+    localStorage.setItem(key, value);
   }
 }
 

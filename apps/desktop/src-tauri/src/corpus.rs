@@ -349,6 +349,29 @@ pub fn save_speech_corpus_session_impl(
     analyze_store(&store)
 }
 
+/// Replaces the whole corpus with exactly `sessions` (backup restore, owner decision #86 (a)).
+/// Every input is validated before anything is written, and the write is atomic, so a failure
+/// leaves the existing store unchanged.
+pub fn replace_speech_corpus_sessions_impl(
+    path: &Path,
+    sessions: Vec<CorpusSessionInput>,
+) -> Result<SpeechCorpusAnalysis> {
+    let mut ids = std::collections::BTreeSet::new();
+    for session in &sessions {
+        let id = session.id.trim();
+        if id.is_empty() || !ids.insert(id.to_string()) {
+            return Err(CorpusError::InvalidSessionId);
+        }
+    }
+    let mut store = read_store(path)?;
+    store.sessions = sessions.into_iter().map(normalize_session).collect();
+    store
+        .sessions
+        .sort_by(|left, right| right.started_at.cmp(&left.started_at));
+    write_store(path, &store)?;
+    analyze_store(&store)
+}
+
 pub fn delete_speech_corpus_session_impl(
     path: &Path,
     session_id: &str,
@@ -423,7 +446,16 @@ fn write_store(path: &Path, store: &SpeechCorpusStore) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, serde_json::to_string_pretty(store)?)?;
+    // Write a sibling temporary file and rename it over the store, so a failed or interrupted
+    // write never leaves a partially written corpus behind.
+    let mut temporary = path.as_os_str().to_owned();
+    temporary.push(".tmp");
+    let temporary = std::path::PathBuf::from(temporary);
+    let content = serde_json::to_string_pretty(store)?;
+    if let Err(error) = fs::write(&temporary, content).and_then(|()| fs::rename(&temporary, path)) {
+        let _ = fs::remove_file(&temporary);
+        return Err(error.into());
+    }
     Ok(())
 }
 

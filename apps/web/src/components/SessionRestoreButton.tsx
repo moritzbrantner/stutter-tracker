@@ -1,23 +1,38 @@
 import { Upload } from "lucide-react";
 import { useRef, useState } from "react";
-import { replaceStoredSessions } from "../storage/localStorage";
 import { parseSessionBackup } from "../storage/sessionBackup";
+import type { SavedSession } from "../types";
 import { buttonClass, mutedTextClass } from "./styles";
 
-export function SessionRestoreButton({ disabled = false }: { disabled?: boolean }) {
+function sessionsLabel(count: number) {
+  return `${count} ${count === 1 ? "session" : "sessions"}`;
+}
+
+/** Restore replaces every saved session with the backup (owner decision, vox#86 (a)). */
+export function restoreConfirmation(currentCount: number, backupCount: number) {
+  const current = `${currentCount} current saved ${currentCount === 1 ? "session" : "sessions"}`;
+  return `Replace all ${current} with ${sessionsLabel(backupCount)} from this backup? The ${current.replace(" saved", "")} will be lost.`;
+}
+
+export function SessionRestoreButton({
+  disabled = false,
+  currentSessionCount,
+  onRestore,
+}: {
+  disabled?: boolean;
+  currentSessionCount: number;
+  onRestore: (sessions: SavedSession[]) => Promise<void>;
+}) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   async function restoreFile(file: File) {
     try {
       const sessions = parseSessionBackup(JSON.parse(await file.text()));
-      const confirmed = window.confirm(
-        `Replace the currently saved sessions with ${sessions.length} session${sessions.length === 1 ? "" : "s"} from this backup?`,
-      );
-      if (!confirmed) {
+      if (!window.confirm(restoreConfirmation(currentSessionCount, sessions.length))) {
         return;
       }
-      replaceStoredSessions(sessions);
+      await onRestore(sessions);
       window.location.reload();
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : "Could not restore this backup.");
