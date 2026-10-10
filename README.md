@@ -74,7 +74,7 @@ VITE_STUTTER_SERVER_URL=http://host:8787 bun run web
 
 For the mobile app, edit the server URL in the app UI. Android emulators usually need the host loopback alias instead of `127.0.0.1`.
 
-The compute server delegates native transcription to the Rust worker used by the desktop app. In local development it falls back to running:
+The compute server delegates native transcription to the Rust worker used by the desktop app. The worker also measures the audio sent with `/analysis` (the audio-analysis capture kernel, as in native analysis), so server reports carry `captureMetrics` for the capture-quality gate. Without a working worker, analysis still runs, and its capture quality is reported as not checked. In local development the server falls back to running:
 
 ```sh
 cargo run --manifest-path apps/desktop/src-tauri/Cargo.toml --bin compute-worker
