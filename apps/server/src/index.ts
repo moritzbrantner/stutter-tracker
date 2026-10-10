@@ -2,6 +2,7 @@ import {
   type AnalyzeSpeechRequest,
   type SpeakerProfile,
   type TranscribeAudioRequest,
+  type TranscribeAudioResult,
   type TranscriptionEngineId,
   cosine,
   fallbackAnalyze,
@@ -228,7 +229,7 @@ export function createComputeRequestHandler(deps: ComputeServerDeps) {
             await rm(uploadDir, { recursive: true, force: true });
           }
         });
-        return jsonResponse(result, 200, cors);
+        return jsonResponse(withValidatedCaptureMetrics(result), 200, cors);
       }
 
       if (request.method === "POST" && url.pathname === "/transcriptions/models/download") {
@@ -287,6 +288,22 @@ function createJobLimiter(maxConcurrentJobs: number) {
       }
     },
   };
+}
+
+/**
+ * The worker's measurement of an uploaded file, validated field by field like the analysis
+ * route's. A missing or malformed measurement never fails the transcription; clients then show
+ * the capture as unchecked.
+ */
+function withValidatedCaptureMetrics(result: TranscribeAudioResult): TranscribeAudioResult {
+  const { captureMetrics: measured, ...transcription } = result;
+  if (measured === undefined || measured === null) return transcription;
+  const captureMetrics = validateMeasuredCaptureMetrics(measured);
+  if (!captureMetrics) {
+    console.warn("native worker returned invalid capture metrics for an uploaded file");
+    return transcription;
+  }
+  return { ...transcription, captureMetrics };
 }
 
 function safeUploadName(filename: string) {
