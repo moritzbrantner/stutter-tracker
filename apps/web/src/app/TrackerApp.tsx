@@ -23,6 +23,7 @@ import {
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createGapTracker } from "../audio/captureGaps";
+import { measureCaptureOnDevice, preloadCaptureKernel } from "../audio/captureKernel";
 import { isScoreWithheld, withCaptureQuality } from "../audio/captureQuality";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
@@ -769,6 +770,10 @@ export function App() {
         if (!ready) {
           return;
         }
+      }
+      if (!isDesktopApp()) {
+        // Browser-local analysis measures the capture with the WASM kernel; load it while recording.
+        preloadCaptureKernel();
       }
       setMessage("Requesting microphone");
       const recorder = await createBrowserRecorder({
@@ -2243,11 +2248,32 @@ async function analyzeWithFallback(request: {
         : null,
     inputId: observationFingerprint(request.segments, request.pauses),
   };
+  // An on-device analysis (the compute client's own fallback, or this one) measures the analyzed
+  // audio window with the WASM kernel; without a kernel the run stays unmeasured. Metrics reported
+  // by the desktop app or a compute server are kept as they are.
+  const measuredOnDevice = async ({
+    report,
+    analyzer,
+  }: AnalyzedSpeech): Promise<AnalyzedSpeech> => {
+    if (
+      analyzer.producer !== ON_DEVICE_ANALYZER.producer ||
+      report.captureMetrics ||
+      !usedAudio ||
+      !request.samples ||
+      !request.sampleRate
+    ) {
+      return { report, analyzer };
+    }
+    const captureMetrics = await measureCaptureOnDevice(request.samples, request.sampleRate);
+    return { report: captureMetrics ? { ...report, captureMetrics } : report, analyzer };
+  };
+  let analyzed: AnalyzedSpeech;
   try {
-    return { ...(await analyze(request)), ...provenance };
+    analyzed = await analyze(request);
   } catch {
-    return { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER, ...provenance };
+    analyzed = { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER };
   }
+  return { ...(await measuredOnDevice(analyzed)), ...provenance };
 }
 
 export type IntentPredictionRequest = {

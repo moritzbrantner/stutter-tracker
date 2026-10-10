@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
+import { ON_DEVICE_ANALYZER } from "@stutter-tracker/compute-client";
 import { App } from "./App";
 import * as tauriCore from "@tauri-apps/api/core";
 import * as recorderModule from "./audio/browserRecorder";
@@ -25,6 +26,10 @@ type SaveSpeakers = import("@stutter-tracker/compute-client").ComputeClient["sav
 let saveSpeakersHook: SaveSpeakers | null = null;
 type IdentifySpeaker = import("@stutter-tracker/compute-client").ComputeClient["identifySpeaker"];
 let identifySpeakerHook: IdentifySpeaker | null = null;
+// Records every call into the audio-analysis WASM capture kernel; a hook replaces the real kernel.
+type KernelCall = { samples: ArrayLike<number>; sampleRate: number; channels: unknown };
+const captureKernelCalls: KernelCall[] = [];
+let captureKernelHook: ((...args: unknown[]) => Promise<unknown>) | null = null;
 
 vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@stutter-tracker/compute-client")>();
@@ -61,6 +66,24 @@ vi.mock("@stutter-tracker/compute-client", async (importOriginal) => {
   };
 });
 
+// The browser-local path measures capture quality with the owner's WASM kernel (vox#89); the
+// real kernel runs unless a test replaces it.
+vi.mock("@moritzbrantner/audio-analysis-core-wasm", async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  const realCaptureMetrics = actual.captureMetrics as (...args: unknown[]) => Promise<unknown>;
+  return {
+    ...actual,
+    captureMetrics: (...args: unknown[]) => {
+      captureKernelCalls.push({
+        samples: args[0] as ArrayLike<number>,
+        sampleRate: args[1] as number,
+        channels: args[2],
+      });
+      return captureKernelHook ? captureKernelHook(...args) : realCaptureMetrics(...args);
+    },
+  };
+});
+
 const STORE_KEY = "stutter-tracker:sessions";
 const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 const originalMediaDevices = navigator.mediaDevices;
@@ -92,6 +115,8 @@ afterEach(async () => {
   listSpeakersHook = null;
   saveSpeakersHook = null;
   identifySpeakerHook = null;
+  captureKernelHook = null;
+  captureKernelCalls.length = 0;
   Reflect.deleteProperty(window, "__TAURI_INTERNALS__");
   localStorage.clear();
   vi.restoreAllMocks();
@@ -1386,6 +1411,186 @@ describe("capture-quality gate", () => {
       "not checked",
     );
     expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+  });
+});
+
+describe("browser-local capture measurement", () => {
+  // No desktop app and no compute server: the web app analyzes on this device (vox#89).
+  async function recordInBrowser(
+    samplesFor: (seconds: number) => Float32Array,
+    analyzeOnServer?: AnalyzeRun,
+  ) {
+    analysisHook =
+      analyzeOnServer ??
+      (async () => {
+        throw new Error("compute server unavailable in this fixture");
+      });
+    let capture: recorderModule.BrowserRecorderOptions | undefined;
+    vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+      capture = options;
+      return { sampleRate: 16000, capture: TEST_CAPTURE, stop: async () => {} };
+    });
+    return async (seconds = 6) => {
+      await userEvent.click(screen.getByRole("button", { name: /^record$/i }));
+      act(() => {
+        capture!.onSamples(samplesFor(seconds));
+      });
+      await userEvent.click(screen.getByRole("button", { name: /^stop$/i }));
+    };
+  }
+
+  const speech = (seconds: number) =>
+    Float32Array.from(
+      { length: 16000 * seconds },
+      (_, index) => 0.2 * Math.sin((2 * Math.PI * 220 * index) / 16000),
+    );
+  const silence = (seconds: number) => new Float32Array(16000 * seconds);
+  const clipping = (seconds: number) => new Float32Array(16000 * seconds).fill(1);
+
+  async function savedCaptureQuality() {
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1),
+    );
+    return JSON.parse(localStorage.getItem(STORE_KEY)!)[0].report.captureQuality;
+  }
+
+  it("measures the analyzed audio with the audio-analysis WASM kernel", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const record = await recordInBrowser(speech);
+    renderApp();
+    await record();
+
+    await waitFor(() => expect(captureKernelCalls.length).toBeGreaterThan(0));
+    const call = captureKernelCalls.at(-1)!;
+    // The kernel sees exactly the mono audio window that was analyzed.
+    expect(call.sampleRate).toBe(16000);
+    expect(call.samples).toHaveLength(16000 * 6);
+    expect(call.channels === undefined || call.channels === 1).toBe(true);
+
+    expect(await savedCaptureQuality()).toEqual({
+      state: "usable",
+      issues: [],
+      coverage: { measuredSeconds: 6, captureSeconds: 6 },
+    });
+    expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+  });
+
+  it("withholds the score of a silent browser capture", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const record = await recordInBrowser(silence);
+    renderApp();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "the microphone delivered no input",
+    );
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+    // The verdict comes from the kernel measuring the analyzed window. A silent capture has no
+    // segments, pauses or events, so the existing save gate ("Nothing to save") keeps it unsaved.
+    expect(captureKernelCalls.length).toBeGreaterThan(0);
+    const call = captureKernelCalls.at(-1)!;
+    expect(call.sampleRate).toBe(16000);
+    expect(call.samples).toHaveLength(16000 * 6);
+    expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
+  });
+
+  it("withholds the score of a clipping browser capture", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const record = await recordInBrowser(clipping);
+    renderApp();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "the input is clipping (too loud)",
+    );
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("stays unmeasured, without failing the analysis, when the kernel cannot run", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    captureKernelHook = async () => {
+      throw new Error("WebAssembly unavailable in this fixture");
+    };
+    const record = await recordInBrowser(speech);
+    renderApp();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "not checked",
+    );
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+    expect(await savedCaptureQuality()).toEqual({ state: "unmeasured", issues: [] });
+  });
+
+  it("keeps the compute server's measurement when the server analyzed the audio", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const serverSilence = {
+      sampleRate: 16000,
+      channels: 1,
+      samplesPerChannel: 96000,
+      durationSeconds: 6,
+      clippedSampleCount: 0,
+      clippedSampleRatio: 0,
+      frameSamples: 320,
+      frameCount: 300,
+      noInputSeconds: 6,
+      longestNoInputSeconds: 6,
+      activitySeconds: 0,
+      config: { frameSeconds: 0.02, clipLevel: 0.999, noInputRms: 1e-4, activityRms: 0.01 },
+    };
+    const record = await recordInBrowser(speech, async (request) => ({
+      report: { ...fallbackAnalyze(request), captureMetrics: serverSilence },
+      analyzer: { producer: "computeServer", algorithm: "test", version: "1" },
+    }));
+    renderApp();
+    await record();
+    // The audio itself is speech; only the server's own measurement can say "no input".
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "the microphone delivered no input",
+    );
+  });
+
+  describe("when the compute client resolves its own on-device fallback", () => {
+    // The normal browser path: with no server configured, or after a failed server request, the
+    // compute client does not throw; it resolves the shared fallback as the on-device analyzer.
+    const resolveOnDevice: AnalyzeRun = async (request) => ({
+      report: fallbackAnalyze(request),
+      analyzer: ON_DEVICE_ANALYZER,
+    });
+
+    it("measures speech with the WASM kernel", async () => {
+      localStorage.setItem("stutter-tracker:solo-speaker", "true");
+      const record = await recordInBrowser(speech, resolveOnDevice);
+      renderApp();
+      await record();
+
+      await waitFor(() => expect(captureKernelCalls.length).toBeGreaterThan(0));
+      const call = captureKernelCalls.at(-1)!;
+      expect(call.sampleRate).toBe(16000);
+      expect(call.samples).toHaveLength(16000 * 6);
+      expect(call.channels === undefined || call.channels === 1).toBe(true);
+
+      expect(await savedCaptureQuality()).toEqual({
+        state: "usable",
+        issues: [],
+        coverage: { measuredSeconds: 6, captureSeconds: 6 },
+      });
+      expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+    });
+
+    it("withholds the score of a silent capture", async () => {
+      localStorage.setItem("stutter-tracker:solo-speaker", "true");
+      const record = await recordInBrowser(silence, resolveOnDevice);
+      renderApp();
+      await record();
+      expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+        "the microphone delivered no input",
+      );
+      expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+      expect(captureKernelCalls.length).toBeGreaterThan(0);
+      expect(captureKernelCalls.at(-1)!.samples).toHaveLength(16000 * 6);
+      expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
+    });
   });
 });
 

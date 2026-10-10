@@ -72,5 +72,8 @@
     "vite": "^7.3.2",
     "vitest": "^4.1.6"
   },
+  "trustedDependencies": [
+    "@moritzbrantner/audio-analysis-core-wasm"
+  ],
   "packageManager": "bun@1.4.2"
 }
