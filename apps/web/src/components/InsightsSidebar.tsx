@@ -169,8 +169,11 @@ export function InsightsSidebar({
           >
             {unverifiedSessionCount} corpus session
             {unverifiedSessionCount === 1 ? " has" : "s have"} an analysis that is not verified for
-            its transcript; the totals include {unverifiedSessionCount === 1 ? "it" : "them"}.
-            Sessions still in your saved list can be reanalyzed there.
+            its transcript; the totals include {unverifiedSessionCount === 1 ? "it" : "them"}
+            {unverifiedSessionCount === 1
+              ? " (its events only if its capture quality is not unknown)"
+              : " (their events only if their capture quality is not unknown)"}
+            . Sessions still in your saved list can be reanalyzed there.
           </p>
         )}
         {corpusAnalysis.topTerms.length > 0 && (

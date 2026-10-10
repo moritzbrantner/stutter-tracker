@@ -2419,16 +2419,11 @@ async function loadSpeechCorpus(sessions: SavedSession[]): Promise<SpeechCorpusA
       session.report.captureQuality ? [[session.id, session.report.captureQuality]] : [],
     ),
   );
-  if (Object.keys(qualities).length) {
-    try {
-      return await invoke<SpeechCorpusAnalysis>("backfill_speech_corpus_capture_quality", {
-        qualities,
-      });
-    } catch {
-      // An older backend without the command still loads the corpus as it is.
-    }
-  }
-  return invoke<SpeechCorpusAnalysis>("load_speech_corpus");
+  // The backend ships with this app, so the command exists. When it fails, the caller falls back to
+  // the gated analysis of the saved sessions, never to ungated legacy rows.
+  return Object.keys(qualities).length
+    ? invoke<SpeechCorpusAnalysis>("backfill_speech_corpus_capture_quality", { qualities })
+    : invoke<SpeechCorpusAnalysis>("load_speech_corpus");
 }
 
 /**

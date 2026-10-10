@@ -305,7 +305,8 @@ pub fn speech_corpus_observations_impl(path: &Path) -> Result<serde_json::Value>
 }
 
 /// Fills in the capture quality of rows saved before the corpus kept it, from the matching saved
-/// sessions' verdicts. Rows that already have one are left as they are.
+/// sessions' verdicts. Rows that already have one are left as they are. The analysis applies the
+/// verdicts even when persisting them fails; the next load retries the write.
 pub fn backfill_speech_corpus_capture_quality_impl(
     path: &Path,
     qualities: &BTreeMap<String, serde_json::Value>,
@@ -321,7 +322,9 @@ pub fn backfill_speech_corpus_capture_quality_impl(
         }
     }
     if changed {
-        write_store(path, &store)?;
+        if let Err(error) = write_store(path, &store) {
+            eprintln!("could not persist backfilled corpus capture quality: {error}");
+        }
     }
     analyze_store(&store)
 }
