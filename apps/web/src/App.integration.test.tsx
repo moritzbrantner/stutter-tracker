@@ -3,6 +3,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
+import { ON_DEVICE_ANALYZER } from "@stutter-tracker/compute-client";
 import { App } from "./App";
 import * as tauriCore from "@tauri-apps/api/core";
 import * as recorderModule from "./audio/browserRecorder";
@@ -1546,6 +1547,50 @@ describe("browser-local capture measurement", () => {
     expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
       "the microphone delivered no input",
     );
+  });
+
+  describe("when the compute client resolves its own on-device fallback", () => {
+    // The normal browser path: with no server configured, or after a failed server request, the
+    // compute client does not throw; it resolves the shared fallback as the on-device analyzer.
+    const resolveOnDevice: AnalyzeRun = async (request) => ({
+      report: fallbackAnalyze(request),
+      analyzer: ON_DEVICE_ANALYZER,
+    });
+
+    it("measures speech with the WASM kernel", async () => {
+      localStorage.setItem("stutter-tracker:solo-speaker", "true");
+      const record = await recordInBrowser(speech, resolveOnDevice);
+      renderApp();
+      await record();
+
+      await waitFor(() => expect(captureKernelCalls.length).toBeGreaterThan(0));
+      const call = captureKernelCalls.at(-1)!;
+      expect(call.sampleRate).toBe(16000);
+      expect(call.samples).toHaveLength(16000 * 6);
+      expect(call.channels === undefined || call.channels === 1).toBe(true);
+
+      expect(await savedCaptureQuality()).toEqual({
+        state: "usable",
+        issues: [],
+        coverage: { measuredSeconds: 6, captureSeconds: 6 },
+      });
+      expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
+      expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+    });
+
+    it("withholds the score of a silent capture", async () => {
+      localStorage.setItem("stutter-tracker:solo-speaker", "true");
+      const record = await recordInBrowser(silence, resolveOnDevice);
+      renderApp();
+      await record();
+      expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+        "the microphone delivered no input",
+      );
+      expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+      expect(captureKernelCalls.length).toBeGreaterThan(0);
+      expect(captureKernelCalls.at(-1)!.samples).toHaveLength(16000 * 6);
+      expect(screen.queryByText(/not checked/)).not.toBeInTheDocument();
+    });
   });
 });
 
