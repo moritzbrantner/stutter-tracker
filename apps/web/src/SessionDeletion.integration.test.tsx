@@ -237,6 +237,12 @@ function seedStore(sessions: SavedSession[] = [ALPHA, BETA]) {
   localStorage.setItem(SPEAKERS_KEY, JSON.stringify(SPEAKERS));
 }
 
+/**
+ * The restore prompt (main and vox#99 wording both say "... from this backup?"). The delete prompt
+ * must itself mention backups (explanation test), so "backup" alone cannot tell them apart.
+ */
+const RESTORE_PROMPT = /from this backup/i;
+
 /** window.confirm whose answer depends on the prompt; every prompt is recorded. */
 function mockConfirm(answer: (message: string) => boolean) {
   const prompts: string[] = [];
@@ -248,7 +254,7 @@ function mockConfirm(answer: (message: string) => boolean) {
 }
 
 function deletePrompt(prompts: string[]) {
-  return prompts.find((prompt) => !/backup/i.test(prompt) && /delete/i.test(prompt));
+  return prompts.find((prompt) => !RESTORE_PROMPT.test(prompt) && /delete/i.test(prompt));
 }
 
 function stubReload() {
@@ -438,7 +444,7 @@ describe("deleting a saved session (vox#87)", () => {
       async ({ accept, expected }) => {
         seedStore();
         const reload = stubReload();
-        const prompts = mockConfirm((message) => (/backup/i.test(message) ? accept : true));
+        const prompts = mockConfirm((message) => (RESTORE_PROMPT.test(message) ? accept : true));
 
         renderApp();
         await waitFor(() => expect(screen.getAllByTitle("Delete saved session")).toHaveLength(2));
@@ -459,7 +465,9 @@ describe("deleting a saved session (vox#87)", () => {
         );
         await userEvent.upload(screen.getByLabelText("Choose session backup"), backup);
 
-        await waitFor(() => expect(prompts.some((prompt) => /backup/i.test(prompt))).toBe(true));
+        await waitFor(() =>
+          expect(prompts.some((prompt) => RESTORE_PROMPT.test(prompt))).toBe(true),
+        );
         await settle();
 
         if (accept) {
