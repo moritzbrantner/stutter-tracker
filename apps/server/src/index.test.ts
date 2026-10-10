@@ -530,6 +530,96 @@ describe("transcription worker routes", () => {
     expect(response.headers.get("access-control-expose-headers")).toContain("x-analyzer-version");
   });
 
+  it("measures analysis audio in the native worker and returns the capture metrics", async () => {
+    const calls: { samples: number[]; sampleRate: number }[] = [];
+    const lifted: string[] = [];
+    const handler = createComputeRequestHandler({
+      config: localConfig(),
+      speakerStore: memorySpeakerStore(),
+      nativeWorker: {
+        ...fakeWorker(),
+        async captureMetrics(request) {
+          calls.push(request);
+          return fakeWorker().captureMetrics(request);
+        },
+      },
+    });
+    const samples = Array.from({ length: 16_000 * 4 }, (_, index) => (index % 2 ? 1 : -1));
+    const response = await handler(
+      new Request("http://server/analysis", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ segments: [], pauses: [], samples, sampleRate: 16_000 }),
+      }),
+      { workerStarting: () => lifted.push("lifted") },
+    );
+
+    expect(response.status).toBe(200);
+    const report = await responseJson<{ captureMetrics?: Record<string, unknown> }>(response);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].sampleRate).toBe(16_000);
+    expect(calls[0].samples).toHaveLength(samples.length);
+    expect(lifted).toEqual(["lifted"]);
+    expect(report.captureMetrics).toMatchObject({
+      sampleRate: 16_000,
+      durationSeconds: 4,
+      clippedSampleCount: samples.length,
+    });
+  });
+
+  it("returns an unmeasured analysis without audio or when the worker cannot measure", async () => {
+    let calls = 0;
+    const failing = (result: () => Promise<unknown>) =>
+      createComputeRequestHandler({
+        config: localConfig(),
+        speakerStore: memorySpeakerStore(),
+        nativeWorker: {
+          ...fakeWorker(),
+          async captureMetrics() {
+            calls += 1;
+            return result();
+          },
+        },
+      });
+    const analyze = async (
+      handler: ReturnType<typeof createComputeRequestHandler>,
+      body: unknown,
+    ) => {
+      const response = await postJson(handler, "/analysis", body);
+      expect(response.status).toBe(200);
+      return responseJson<Record<string, unknown>>(response);
+    };
+    const audio = {
+      segments: [],
+      pauses: [],
+      samples: Array(16_000).fill(0.1),
+      sampleRate: 16_000,
+    };
+
+    const noAudio = await analyze(
+      failing(async () => measuredCapture()),
+      { segments: [], pauses: [] },
+    );
+    expect(noAudio).not.toHaveProperty("captureMetrics");
+    expect(calls).toBe(0);
+
+    const failed = await analyze(
+      failing(async () => {
+        throw new Error("worker unavailable");
+      }),
+      audio,
+    );
+    expect(failed).not.toHaveProperty("captureMetrics");
+    expect(failed).toHaveProperty("stutterCount");
+
+    const malformed = await analyze(
+      failing(async () => ({ ...measuredCapture(), durationSeconds: "long" })),
+      audio,
+    );
+    expect(malformed).not.toHaveProperty("captureMetrics");
+    expect(calls).toBe(2);
+  });
+
   it("returns worker transcription segments", async () => {
     const handler = createComputeRequestHandler({
       config: localConfig(),
@@ -912,6 +1002,32 @@ function fakeWorker(): NativeWorker {
         segments: [{ text: "hello", startSeconds: 0, endSeconds: 0.5, isFinal: true }],
       };
     },
+    async captureMetrics(request) {
+      return measuredCapture({
+        sampleRate: request.sampleRate,
+        samplesPerChannel: request.samples.length,
+        durationSeconds: request.samples.length / request.sampleRate,
+        clippedSampleCount: request.samples.filter((sample) => Math.abs(sample) >= 0.999).length,
+      });
+    },
+  };
+}
+
+function measuredCapture(overrides: Record<string, number> = {}) {
+  return {
+    sampleRate: 16_000,
+    channels: 1,
+    samplesPerChannel: 0,
+    durationSeconds: 0,
+    clippedSampleCount: 0,
+    clippedSampleRatio: 0,
+    frameSamples: 320,
+    frameCount: 0,
+    noInputSeconds: 0,
+    longestNoInputSeconds: 0,
+    activitySeconds: 0,
+    config: { frameSeconds: 0.02, clipLevel: 0.999, noInputRms: 1e-4, activityRms: 0.01 },
+    ...overrides,
   };
 }
 

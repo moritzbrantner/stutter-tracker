@@ -31,7 +31,11 @@ export type NativeWorker = {
     request: TranscribeAudioFileRequest,
     signal?: AbortSignal,
   ): Promise<TranscribeAudioResult>;
+  /** audio-analysis capture observations of analysis audio, as native analysis reports them. */
+  captureMetrics(request: CaptureMetricsRequest, signal?: AbortSignal): Promise<unknown>;
 };
+
+export type CaptureMetricsRequest = { samples: number[]; sampleRate: number };
 
 export type TranscribeAudioFileRequest = {
   path: string;
@@ -57,6 +61,10 @@ type WorkerCommand =
   | {
       command: "transcribe-audio-file";
       request: TranscribeAudioFileRequest;
+    }
+  | {
+      command: "capture-metrics";
+      request: CaptureMetricsRequest;
     };
 
 const WORKER_KILL_GRACE_MS = 2_000;
@@ -80,6 +88,9 @@ export function createNativeWorker(config: ServerConfig): NativeWorker {
     },
     transcribeAudioFile(request, signal) {
       return runWorker(config, { command: "transcribe-audio-file", request }, signal);
+    },
+    captureMetrics(request, signal) {
+      return runWorker(config, { command: "capture-metrics", request }, signal);
     },
   };
 }

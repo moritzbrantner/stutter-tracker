@@ -400,6 +400,10 @@ fn measure_capture(request: &AnalyzeSpeechRequest) -> Result<Option<CaptureMetri
     let (Some(samples), Some(sample_rate)) = (&request.samples, request.sample_rate) else {
         return Ok(None);
     };
+    measure_analyzed_window(samples, sample_rate).map(Some)
+}
+
+fn measure_analyzed_window(samples: &[f32], sample_rate: u32) -> Result<CaptureMetrics> {
     let window = samples
         .len()
         .min((sample_rate as usize).saturating_mul(ANALYZED_AUDIO_SECONDS));
@@ -409,8 +413,21 @@ fn measure_capture(request: &AnalyzeSpeechRequest) -> Result<Option<CaptureMetri
         1,
         &CaptureMetricsConfig::default(),
     )
-    .map(Some)
     .map_err(|error| SpeechAnalysisError::Invalid(error.to_string()))
+}
+
+/// Mono analysis audio, as sent with an analysis request.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaptureMetricsRequest {
+    pub samples: Vec<f32>,
+    pub sample_rate: u32,
+}
+
+/// The capture observations native analysis reports for the same audio, for analysis paths that
+/// do not run the native analyzer (the compute server's shared analyzer).
+pub fn capture_metrics_impl(request: CaptureMetricsRequest) -> Result<CaptureMetrics> {
+    measure_analyzed_window(&request.samples, request.sample_rate)
 }
 
 pub fn create_voiceprint_impl(request: VoiceprintRequest) -> Result<VoiceprintResult> {
@@ -1582,6 +1599,38 @@ mod tests {
         assert!(report.events.iter().any(|event| {
             event.kind == StutterKind::Block && event.source == Some(EventSource::Acoustic)
         }));
+    }
+
+    #[test]
+    fn standalone_capture_metrics_match_the_analysis_report() {
+        let sample_rate = 16_000;
+        let mut samples = joined(vec![
+            sine_wave(220.0, sample_rate, 1.0),
+            vec![0.0; sample_rate as usize],
+        ]);
+        samples[100] = 1.5;
+        let report = analyze_speech_session_impl(AnalyzeSpeechRequest {
+            segments: Vec::new(),
+            pauses: Vec::new(),
+            session_started_at: None,
+            samples: Some(samples.clone()),
+            sample_rate: Some(sample_rate),
+        })
+        .unwrap();
+        let standalone = capture_metrics_impl(CaptureMetricsRequest {
+            samples,
+            sample_rate,
+        })
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(standalone).unwrap(),
+            serde_json::to_value(report.capture_metrics.unwrap()).unwrap()
+        );
+        assert!(capture_metrics_impl(CaptureMetricsRequest {
+            samples: vec![0.0; 10],
+            sample_rate: 0,
+        })
+        .is_err());
     }
 
     #[test]
