@@ -288,7 +288,13 @@ export function App() {
   const analysisDescriptor = useMemo(() => captureDescriptorRef.current, [analysisRequest]);
 
   const analysisQuery = useQuery({
-    queryKey: ["analysis", analysisRequest, analysisDescriptor?.runId ?? null],
+    // Gaps are appended to the descriptor during capture; a new gap must re-gate the report.
+    queryKey: [
+      "analysis",
+      analysisRequest,
+      analysisDescriptor?.runId ?? null,
+      analysisDescriptor?.discontinuities.length ?? 0,
+    ],
     queryFn: async () => {
       const analysis = await analyzeWithFallback(analysisRequest);
       return {
@@ -716,7 +722,11 @@ export function App() {
   const todayStats = useMemo(() => {
     const now = new Date().toDateString();
     const todays = sessions.filter((session) => new Date(session.startedAt).toDateString() === now);
-    const totalEvents = todays.reduce((sum, session) => sum + session.report.stutterCount, 0);
+    // Sessions whose capture failed the quality gate have no event count to add.
+    const totalEvents = todays.reduce(
+      (sum, session) => sum + (isScoreWithheld(session.report) ? 0 : session.report.stutterCount),
+      0,
+    );
     const totalMinutes = todays.reduce(
       (sum, session) => sum + session.report.totalDurationSeconds / 60,
       0,
@@ -765,7 +775,9 @@ export function App() {
         discontinuities: [],
         speakerAssessment: soloSpeakerRef.current ? "singleSpeakerDeclared" : "unknown",
       };
-      gapTrackerRef.current = createGapTracker(recorder.sampleRate);
+      gapTrackerRef.current = createGapTracker(recorder.sampleRate, {
+        startedAtSeconds: performance.now() / 1000,
+      });
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
@@ -992,9 +1004,11 @@ export function App() {
         })
       : Promise.resolve();
     recognition?.stop();
+    // The capture ends now; recorder teardown time is not missing audio.
+    const stoppedAtSeconds = performance.now() / 1000;
     await browserRecorderRef.current?.stop();
     browserRecorderRef.current = null;
-    const finalGap = gapTrackerRef.current?.finish(performance.now() / 1000);
+    const finalGap = gapTrackerRef.current?.finish(stoppedAtSeconds);
     if (finalGap) {
       captureDescriptorRef.current?.discontinuities.push(finalGap);
     }

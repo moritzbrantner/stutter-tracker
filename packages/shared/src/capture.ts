@@ -190,7 +190,7 @@ export function assessRunCaptureQuality(
 ): RunCaptureQuality {
   if (measured) return assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
   // Without measurements the descriptor alone can still rule a capture out.
-  const issues = descriptorIssues(descriptor);
+  const issues = unmeasuredIssues(descriptor);
   return issues.length ? unknownQuality(issues) : { state: "unmeasured", issues: [] };
 }
 
@@ -268,6 +268,13 @@ function descriptorIssues(descriptor: RecordingDescriptor): CaptureQualityIssue[
   if (descriptor.channelCount < 1) issues.push("noChannels");
   if (descriptor.speakerAssessment === "unknown") issues.push("speakerUnknown");
   if (descriptor.speakerAssessment === "overlapDetected") issues.push("speakerOverlap");
+  return issues;
+}
+
+/** Without measurements nothing bounds a gap's share, so any gap rules the capture out. */
+function unmeasuredIssues(descriptor: RecordingDescriptor): CaptureQualityIssue[] {
+  const issues = descriptorIssues(descriptor);
+  if (mergedDiscontinuities(descriptor).length) issues.push("discontinuous");
   return issues;
 }
 

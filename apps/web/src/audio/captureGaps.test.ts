@@ -54,4 +54,14 @@ describe("createGapTracker", () => {
       reason: "dropout",
     });
   });
+
+  it("reports a capture that never delivered PCM as one gap from its start", () => {
+    expect(createGapTracker(1000, { startedAtSeconds: 10 }).finish(14)).toEqual({
+      startSeconds: 0,
+      endSeconds: 4,
+      reason: "dropout",
+    });
+    expect(createGapTracker(1000, { startedAtSeconds: 10 }).finish(10.1)).toBeNull();
+    expect(createGapTracker(1000).finish(14)).toBeNull();
+  });
 });

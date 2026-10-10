@@ -11,7 +11,11 @@ import type { CaptureInterval } from "@stutter-tracker/shared";
  */
 export function createGapTracker(
   sampleRate: number,
-  { thresholdSeconds = 0.25, settleSeconds = 1 } = {},
+  {
+    thresholdSeconds = 0.25,
+    settleSeconds = 1,
+    startedAtSeconds,
+  }: { thresholdSeconds?: number; settleSeconds?: number; startedAtSeconds?: number } = {},
 ) {
   let samples = 0;
   let base: number | null = null;
@@ -55,7 +59,13 @@ export function createGapTracker(
     },
     /** Call when capture stops: a shortfall still open then is a gap at the end. */
     finish(nowSeconds: number): CaptureInterval | null {
-      if (base === null) return null;
+      if (base === null) {
+        // No PCM arrived at all: the whole capture since the recorder started has no samples.
+        if (startedAtSeconds === undefined || nowSeconds - startedAtSeconds <= thresholdSeconds) {
+          return null;
+        }
+        return { startSeconds: 0, endSeconds: nowSeconds - startedAtSeconds, reason: "dropout" };
+      }
       const deficit = deficitAt(nowSeconds, samples / sampleRate);
       if (deficit - missing <= thresholdSeconds) return null;
       pending ??= { startSeconds: samples / sampleRate + missing, since: nowSeconds };

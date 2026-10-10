@@ -218,6 +218,13 @@ describe("audio-analysis capture metrics", () => {
     expect(
       assessRunCaptureQuality(descriptor({ speakerAssessment: "overlapDetected" }), undefined),
     ).toMatchObject({ state: "unknown", issues: ["speakerOverlap"] });
+    const gap = { startSeconds: 0, endSeconds: 4, reason: "dropout" as const };
+    expect(
+      assessRunCaptureQuality(descriptor({ discontinuities: [gap] }), undefined),
+    ).toMatchObject({
+      state: "unknown",
+      issues: ["discontinuous"],
+    });
     const silent = measured({ noInputSeconds: 6, activitySeconds: 0 });
     expect(assessRunCaptureQuality(descriptor(), silent)).toMatchObject({
       state: "unknown",
