@@ -1532,6 +1532,7 @@ export function App() {
       analysis,
       recording:
         captureDescriptorRef.current?.sessionId === id ? captureDescriptorRef.current : null,
+      transcription: transcriptModelRef.current,
     };
   }
 
@@ -1715,6 +1716,8 @@ export function App() {
     // The audio is gone, but the capture's provenance and speaker declaration still apply.
     captureDescriptorRef.current = checkpoint.recording;
     resetChunkTranscription();
+    // The recovered transcript keeps the model that produced it.
+    transcriptModelRef.current = checkpoint.transcription ?? null;
     sessionLanguageRef.current = checkpoint.language;
     loadedSessionRef.current = null;
     setViewedSession(null);
@@ -3260,6 +3263,7 @@ function checkpointState(checkpoint: CaptureCheckpoint) {
     checkpoint.id,
     observationFingerprint(checkpoint.segments, checkpoint.pauses),
     checkpoint.analysis?.run.id ?? null,
+    checkpoint.transcription ?? null,
   ]);
 }
 
