@@ -451,3 +451,74 @@ describe("idempotence", () => {
     expect(calls[1][1]).toEqual(calls[0][1]);
   });
 });
+
+// --- Implementation regression test (not acceptance): Codex P1 on vox#99. A reanalysis whose
+// analysis finishes after the restore was queued must not write replaced sessions back.
+function makeRegressionReport() {
+  return {
+    totalDurationSeconds: 1,
+    wordCount: 1,
+    stutterCount: 0,
+    stuttersPerMinute: 0,
+    severity: "none" as const,
+    speechStats: {
+      speakingDurationSeconds: 1,
+      pauseDurationSeconds: 0,
+      wordsPerMinute: 60,
+      articulationRateWpm: 60,
+      meanChunkWords: 1,
+      meanChunkDurationSeconds: 1,
+      eventDensityPer100Words: 0,
+      fluencyPercentage: 100,
+    },
+    blockerStats: {
+      blockCount: 0,
+      totalBlockSeconds: 0,
+      averageBlockSeconds: 0,
+      longestBlockSeconds: 0,
+      blocksPerMinute: 0,
+      blockedTimePercentage: 0,
+    },
+    chunks: [],
+    events: [],
+    byKind: {},
+  };
+}
+
+describe("queued work behind a restore", () => {
+  it("a reanalysis that completes after the restore does not resurrect a replaced session", async () => {
+    const analysis = deferred<unknown>();
+    useDesktopInvokeMock({
+      analyze_speech_session: () => analysis.promise,
+      save_speech_corpus_session: () => Promise.resolve(emptyCorpusAnalysis()),
+      [REPLACE_COMMAND]: () => Promise.resolve(emptyCorpusAnalysis()),
+    });
+    seedStoredSessions(currentSessions);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApp();
+    const target = currentSessions[0];
+    const reanalyzeButton = await screen.findByRole("button", {
+      name: `Reanalyze saved session from ${new Date(target.startedAt).toLocaleString()}`,
+    });
+    await settle();
+    const analysesBefore = invocations("analyze_speech_session").length;
+    await userEvent.click(reanalyzeButton);
+    await waitFor(() =>
+      expect(invocations("analyze_speech_session")).toHaveLength(analysesBefore + 1),
+    );
+
+    const json = backupJson();
+    await uploadBackup(json);
+    await waitFor(() => expect(invocations(REPLACE_COMMAND)).toHaveLength(1));
+
+    analysis.resolve({ ...makeRegressionReport(), analyzerVersion: "test" });
+    await settle();
+
+    expect(storedSessions()).toEqual(restoredSessions(json));
+    const savedIds = invocations("save_speech_corpus_session").map(
+      ([, args]) => (args as { session: SavedSession }).session.id,
+    );
+    expect(savedIds).not.toContain(target.id);
+  });
+});

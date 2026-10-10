@@ -363,8 +363,11 @@ pub fn replace_speech_corpus_sessions_impl(
             return Err(CorpusError::InvalidSessionId);
         }
     }
-    let mut store = read_store(path)?;
-    store.sessions = sessions.into_iter().map(normalize_session).collect();
+    // The whole store is replaced, so the superseded file is not read: a corrupt corpus can still
+    // be repaired by restoring a valid backup.
+    let mut store = SpeechCorpusStore {
+        sessions: sessions.into_iter().map(normalize_session).collect(),
+    };
     store
         .sessions
         .sort_by(|left, right| right.started_at.cmp(&left.started_at));
@@ -448,8 +451,15 @@ fn write_store(path: &Path, store: &SpeechCorpusStore) -> Result<()> {
     }
     // Write a sibling temporary file and rename it over the store, so a failed or interrupted
     // write never leaves a partially written corpus behind.
+    // Unique per process and write, so concurrent writers never share or delete each other's file.
+    static WRITE_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = WRITE_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_nanos())
+        .unwrap_or_default();
     let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
+    temporary.push(format!(".{}-{nanos}-{sequence}.tmp", std::process::id()));
     let temporary = std::path::PathBuf::from(temporary);
     let content = serde_json::to_string_pretty(store)?;
     if let Err(error) = fs::write(&temporary, content).and_then(|()| fs::rename(&temporary, path)) {
@@ -1155,6 +1165,41 @@ mod tests {
 
         assert_eq!(analysis.stats.sessions, 0);
         assert!(replaced.is_empty());
+    }
+
+    // Implementation regression test (not acceptance): Codex P2 on vox#99.
+    #[test]
+    fn replacing_repairs_a_corrupt_corpus_file() {
+        let path = temp_corpus_path("replace-corrupt");
+        fs::write(&path, b"{\"sessions\": [").unwrap();
+
+        let analysis = replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let replaced = exported_sessions_by_id(&path);
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(analysis.stats.sessions, 2);
+        assert_eq!(replaced.len(), 2);
+    }
+
+    // Implementation regression test (not acceptance): concurrent writers use distinct temp files.
+    #[test]
+    fn atomic_writes_leave_no_temporary_files_behind() {
+        let path = temp_corpus_path("replace-no-temp");
+        replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        replace_speech_corpus_sessions_impl(&path, restored_inputs()).unwrap();
+        let directory = path.parent().unwrap();
+        let prefix = path.file_name().unwrap().to_string_lossy().to_string();
+        let leftovers = fs::read_dir(directory)
+            .unwrap()
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                let name = entry.file_name().to_string_lossy().to_string();
+                name.starts_with(&prefix) && name.ends_with(".tmp")
+            })
+            .count();
+        let _ = fs::remove_file(&path);
+
+        assert_eq!(leftovers, 0);
     }
 
     #[test]
