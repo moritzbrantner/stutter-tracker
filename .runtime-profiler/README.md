@@ -7,6 +7,7 @@ These scenarios profile the product-owned analysis path with deterministic synth
 - `analyze-30s`: 30 seconds of transcript + synthetic 16 kHz audio.
 - `analyze-90s`: the current maximum acoustic-analysis window (the analyzer truncates audio after 90 seconds).
 - `analyze-transcript-5m`: five minutes of transcript/pause interpretation without audio, isolating long-session text/event processing.
+- `server-analysis-90s`: the compute server's audio-backed `/analysis` (shared analyzer plus the native worker's capture measurement: process launch, sample transfer, measurement) for 90 seconds of synthetic 16 kHz audio. `apps/server/src/profile-analysis.ts` prints per-request wall times; `--no-measure` gives the unmeasured baseline. Set `STUTTER_NATIVE_WORKER` to a release `compute-worker`.
 
 `runtime-profiler` owns process duration distributions, success/timeout state, and supported resident-memory evidence. Its v1 command collector intentionally discards workload stdout, so product-domain metrics are captured separately rather than pretending they are part of the native profiler bundle.
 
