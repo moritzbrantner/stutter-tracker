@@ -1345,7 +1345,9 @@ describe("capture-quality gate", () => {
     renderApp();
     await record(120);
     // Analysis is sent the last 90 s; the verdict says so instead of passing for the whole capture.
-    expect(analyzed.at(-1)?.samples).toHaveLength(16000 * 90);
+    expect((analyzed.at(-1) as { samples?: number[] } | undefined)?.samples).toHaveLength(
+      16000 * 90,
+    );
     expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
       "checked for the last 1 min 30 s of 2 min of recorded audio",
     );
