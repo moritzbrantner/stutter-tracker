@@ -1858,14 +1858,17 @@ export function App() {
    * native speech corpus too; a failure leaves both stores as they were.
    */
   function restoreSessions(restored: SavedSession[]): Promise<void> {
-    return serializeSessionMutation(async () => {
-      restorePendingRef.current = true;
-      try {
-        await applyRestore(restored);
-      } finally {
+    // The gate covers the queued wait too: a save accepted before the restore starts would write
+    // browser storage that the restore then overwrites.
+    restorePendingRef.current = true;
+    const operation = serializeSessionMutation(() => applyRestore(restored));
+    void operation.then(
+      () => undefined,
+      () => {
         restorePendingRef.current = false;
-      }
-    });
+      },
+    );
+    return operation;
   }
 
   async function applyRestore(restored: SavedSession[]) {
@@ -1884,9 +1887,13 @@ export function App() {
       // Browser storage refused the write (quota, blocked storage): put the native corpus back to
       // this window's sessions, which it mirrored before the restore.
       if (isDesktopApp()) {
-        await invoke("replace_speech_corpus_sessions", { sessions: sessionsRef.current }).catch(
-          () => undefined,
-        );
+        try {
+          await invoke("replace_speech_corpus_sessions", { sessions: sessionsRef.current });
+        } catch (rollbackError) {
+          throw new Error(
+            `browser storage refused the restore (${errorMessage(error)}) and the desktop corpus could not be put back (${errorMessage(rollbackError)}); it now holds the backup's sessions, so restore the same backup again once storage has room`,
+          );
+        }
       }
       throw error;
     }
