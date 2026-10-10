@@ -68,6 +68,10 @@ export type AnalysisReport = {
   events: StutterEvent[];
   byKind: Partial<Record<StutterKind, number>>;
   acousticStats?: AcousticStats;
+  /** Native analysis only: audio-analysis capture observations of the analyzed audio window. */
+  captureMetrics?: import("./capture").MeasuredCaptureMetrics;
+  /** Capture-quality gate of the run; reports without it predate the gate. */
+  captureQuality?: import("./capture").RunCaptureQuality;
 };
 
 export type SpeechStats = {

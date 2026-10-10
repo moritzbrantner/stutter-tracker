@@ -9,6 +9,7 @@ import {
   Waves,
 } from "lucide-react";
 import { isReplayable } from "@stutter-tracker/shared";
+import { isScoreWithheld } from "../audio/captureQuality";
 import type { ReactNode } from "react";
 import {
   buildSessionHistory,
@@ -133,11 +134,18 @@ function IntentPanel({ predictions }: { predictions: SpeakerIntentPrediction[] }
 }
 
 function EventsPanel({ report }: { report: AnalysisReport }) {
+  // A capture that failed the quality gate has no event result to list.
+  const withheld = isScoreWithheld(report);
   return (
     <div className={`${panelClass} min-w-0 flex-[1.2_1_22rem] max-lg:w-full`}>
-      <PanelHeader title="Events" count={report.events.length} />
+      <PanelHeader title="Events" count={withheld ? "Unknown" : report.events.length} />
       <div className="max-h-88 overflow-auto border-t border-[#edf1ee]">
-        {report.events.length === 0 ? (
+        {withheld ? (
+          <EmptyState
+            icon={<Waves size={24} />}
+            label="Events are not shown because the capture quality is unknown."
+          />
+        ) : report.events.length === 0 ? (
           <EmptyState icon={<Waves size={24} />} label="No events in the current session." />
         ) : (
           report.events.map((event, index) => (
@@ -215,6 +223,7 @@ function ChunkAnalysisPanel({
   report: AnalysisReport;
   blockerStats: BlockerStats;
 }) {
+  const withheld = isScoreWithheld(report);
   return (
     <div className={`${panelClass} min-w-0 flex-[1.1_1_24rem] max-lg:w-full`}>
       <PanelHeader title="Chunk Analysis" count={chunks.length} />
@@ -242,16 +251,22 @@ function ChunkAnalysisPanel({
                   value={chunk.wordCount}
                   max={Math.max(1, report.wordCount)}
                 />
-                <AnalysisBar
-                  label="Events"
-                  value={chunk.stutterCount}
-                  max={Math.max(1, report.stutterCount)}
-                />
-                <AnalysisBar
-                  label="Blocks"
-                  value={chunk.blockCount}
-                  max={Math.max(1, blockerStats.blockCount)}
-                />
+                {withheld ? (
+                  <span className={`text-sm ${mutedTextClass}`}>Events and blocks: unknown</span>
+                ) : (
+                  <>
+                    <AnalysisBar
+                      label="Events"
+                      value={chunk.stutterCount}
+                      max={Math.max(1, report.stutterCount)}
+                    />
+                    <AnalysisBar
+                      label="Blocks"
+                      value={chunk.blockCount}
+                      max={Math.max(1, blockerStats.blockCount)}
+                    />
+                  </>
+                )}
               </div>
               <div
                 className={`flex flex-wrap items-center justify-between gap-3 text-sm ${mutedTextClass}`}
@@ -269,7 +284,10 @@ function ChunkAnalysisPanel({
 }
 
 function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
-  const history = buildSessionHistory(sessions);
+  // Sessions whose capture failed the quality gate have no score to trend.
+  const scored = sessions.filter((session) => !isScoreWithheld(session.report));
+  const withheldCount = sessions.length - scored.length;
+  const history = buildSessionHistory(scored);
   const comparability = progressComparability(history);
 
   return (
@@ -280,6 +298,12 @@ function ProgressPanel({ sessions }: { sessions: SavedSession[] }) {
           <p className={`m-0 mt-1 text-sm ${mutedTextClass}`}>
             Last {history.length || "saved"} sessions · oldest to newest
           </p>
+          {withheldCount > 0 && (
+            <p className={`m-0 mt-1 text-sm ${mutedTextClass}`}>
+              {withheldCount} session{withheldCount === 1 ? "" : "s"} with unknown capture quality
+              left out
+            </p>
+          )}
         </div>
       </div>
       <div className="border-t border-[#edf1ee]">
@@ -459,7 +483,13 @@ function SessionsPanel({
                     <span className="block truncate">
                       {new Date(session.startedAt).toLocaleString()}
                     </span>
-                    {historyPoint && (
+                    {historyPoint && isScoreWithheld(session.report) && (
+                      <span className={`mt-1 block text-xs ${mutedTextClass}`}>
+                        {formatSessionDuration(historyPoint.durationSeconds)} · capture quality
+                        unknown
+                      </span>
+                    )}
+                    {historyPoint && !isScoreWithheld(session.report) && (
                       <span className={`mt-1 block text-xs ${mutedTextClass}`}>
                         {formatSessionDuration(historyPoint.durationSeconds)} ·{" "}
                         {historyPoint.fluencyPercentage == null
@@ -472,7 +502,11 @@ function SessionsPanel({
                       {analysisProvenanceLabel(session)}
                     </span>
                   </span>
-                  <strong className="shrink-0 text-sm">{session.report.stutterCount} events</strong>
+                  <strong className="shrink-0 text-sm">
+                    {isScoreWithheld(session.report)
+                      ? "Unknown"
+                      : `${session.report.stutterCount} events`}
+                  </strong>
                 </button>
                 {onSessionReanalyze && (
                   <button
@@ -514,7 +548,7 @@ function SessionsPanel({
   );
 }
 
-function PanelHeader({ title, count }: { title: string; count: number }) {
+function PanelHeader({ title, count }: { title: string; count: number | string }) {
   return (
     <div className={`${panelHeaderClass} p-4`}>
       <h2 className="m-0 text-xl font-semibold">{title}</h2>

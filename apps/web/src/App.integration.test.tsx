@@ -1,11 +1,13 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { fallbackAnalyze } from "@stutter-tracker/shared";
 import { App } from "./App";
 import * as tauriCore from "@tauri-apps/api/core";
 import * as recorderModule from "./audio/browserRecorder";
+
+const TEST_CAPTURE = recorderModule.describeCapture(undefined);
 
 type AnalyzeRun =
   import("@stutter-tracker/compute-client").ComputeClient["analyzeSpeechSessionRun"];
@@ -79,7 +81,11 @@ function renderApp() {
   );
 }
 
-afterEach(() => {
+afterEach(async () => {
+  // Unmount first and let work the app had in flight settle, so a late checkpoint or session
+  // write from this test cannot land in the next test's cleared storage.
+  cleanup();
+  await new Promise((resolve) => setTimeout(resolve, 0));
   analysisHook = null;
   deleteSpeakerHook = null;
   createSpeakerHook = null;
@@ -604,7 +610,7 @@ it("does not restore a removed voiceprint from a pending re-enrollment", async (
   let capture: recorderModule.BrowserRecorderOptions | undefined;
   vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
     capture = options;
-    return { sampleRate: 16000, stop: async () => {} };
+    return { sampleRate: 16000, capture: TEST_CAPTURE, stop: async () => {} };
   });
   let finishEnrollment: ((value: typeof profile) => void) | undefined;
   createSpeakerHook = () =>
@@ -704,7 +710,7 @@ it("clears a match accepted immediately before queued profile removal", async ()
   let capture: recorderModule.BrowserRecorderOptions | undefined;
   vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
     capture = options;
-    return { sampleRate: 16000, stop: async () => {} };
+    return { sampleRate: 16000, capture: TEST_CAPTURE, stop: async () => {} };
   });
   let finishMatch: ((value: Awaited<ReturnType<IdentifySpeaker>>) => void) | undefined;
   identifySpeakerHook = () =>
@@ -1171,7 +1177,7 @@ it("keeps a re-enrolled native ID visible after another removal refresh", async 
   let capture: recorderModule.BrowserRecorderOptions | undefined;
   vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
     capture = options;
-    return { sampleRate: 16000, stop: async () => {} };
+    return { sampleRate: 16000, capture: TEST_CAPTURE, stop: async () => {} };
   });
   vi.spyOn(window, "confirm").mockReturnValue(true);
   renderApp();
@@ -1198,6 +1204,131 @@ it("keeps a re-enrolled native ID visible after another removal refresh", async 
   });
   expect(screen.getByRole("button", { name: "Remove speaker Alex" })).toBeInTheDocument();
   expect(invoke).toHaveBeenCalledWith("save_speaker_profiles", { speakers: [alex] });
+});
+
+describe("capture-quality gate", () => {
+  const measured = (overrides: Record<string, number> = {}) => ({
+    sampleRate: 16000,
+    channels: 1,
+    samplesPerChannel: 96000,
+    durationSeconds: 6,
+    clippedSampleCount: 0,
+    clippedSampleRatio: 0,
+    frameSamples: 320,
+    frameCount: 300,
+    noInputSeconds: 0.5,
+    longestNoInputSeconds: 0.3,
+    activitySeconds: 4.5,
+    config: { frameSeconds: 0.02, clipLevel: 0.999, noInputRms: 1e-4, activityRms: 0.01 },
+    ...overrides,
+  });
+
+  async function recordWithNativeMetrics(metrics: ReturnType<typeof measured> | undefined) {
+    const analyzed: unknown[] = [];
+    const invoke = vi.spyOn(tauriCore, "invoke").mockImplementation(async (command, args) => {
+      if (command === "analyze_speech_session") {
+        const request = (args as { request: Parameters<typeof fallbackAnalyze>[0] }).request;
+        analyzed.push(request);
+        return { ...fallbackAnalyze(request), captureMetrics: metrics, analyzerVersion: "1" };
+      }
+      throw new Error(`Native command ${command} unavailable in this fixture`);
+    });
+    Object.defineProperty(window, "__TAURI_INTERNALS__", { configurable: true, value: { invoke } });
+    let capture: recorderModule.BrowserRecorderOptions | undefined;
+    vi.spyOn(recorderModule, "createBrowserRecorder").mockImplementation(async (options) => {
+      capture = options;
+      return { sampleRate: 16000, capture: TEST_CAPTURE, stop: async () => {} };
+    });
+    return {
+      analyzed,
+      record: async () => {
+        await userEvent.click(screen.getByRole("button", { name: /^record$/i }));
+        act(() => {
+          capture!.onSamples(new Float32Array(16000 * 6).fill(0.2));
+        });
+        await userEvent.click(screen.getByRole("button", { name: /^stop$/i }));
+      },
+    };
+  }
+
+  it("withholds the score until the user declares they speak alone", async () => {
+    const { analyzed, record } = await recordWithNativeMetrics(measured());
+    renderApp();
+    await record();
+
+    const status = await screen.findByRole("status", { name: "Capture quality" });
+    expect(status).toHaveTextContent("it is not confirmed that only you are speaking");
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+    // The descriptor, with its device details, never travels with the analysis request.
+    expect(analyzed.at(-1)).not.toHaveProperty("descriptor");
+    expect(JSON.stringify(analyzed.at(-1))).not.toContain("preprocessing");
+
+    // Every score on the dashboard is withheld, not only the header.
+    expect(
+      screen.getByText("Events are not shown because the capture quality is unknown."),
+    ).toBeInTheDocument();
+    const sidebar = screen.getByRole("complementary");
+    expect(within(sidebar).getAllByText("Unknown").length).toBeGreaterThanOrEqual(7);
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Only I speak" }));
+    expect(localStorage.getItem("stutter-tracker:solo-speaker")).toBe("true");
+    await record();
+    await waitFor(() =>
+      expect(screen.queryByRole("status", { name: "Capture quality" })).not.toBeInTheDocument(),
+    );
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+
+    // The saved session keeps how it was recorded.
+    await userEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    await waitFor(() =>
+      expect(JSON.parse(localStorage.getItem(STORE_KEY) ?? "[]")).toHaveLength(1),
+    );
+    const [saved] = JSON.parse(localStorage.getItem(STORE_KEY)!);
+    expect(saved.recordings).toEqual([
+      expect.objectContaining({
+        sessionId: saved.id,
+        origin: "desktop",
+        role: "appInput",
+        sampleRate: 16000,
+        speakerAssessment: "singleSpeakerDeclared",
+      }),
+    ]);
+    expect(saved.report.captureQuality).toEqual({ state: "usable", issues: [] });
+  });
+
+  it("explains silent captures and marks unmeasured paths", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const { record } = await recordWithNativeMetrics(
+      measured({ noInputSeconds: 6, activitySeconds: 0, longestNoInputSeconds: 6 }),
+    );
+    renderApp();
+    expect(screen.getByRole("checkbox", { name: "Only I speak" })).toBeChecked();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "the microphone delivered no input",
+    );
+  });
+
+  it("withholds the score of an undeclared speaker even when nothing was measured", async () => {
+    const { record } = await recordWithNativeMetrics(undefined);
+    renderApp();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "it is not confirmed that only you are speaking",
+    );
+    expect(screen.getAllByText("Unknown").length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("says when the processing path did not measure the capture", async () => {
+    localStorage.setItem("stutter-tracker:solo-speaker", "true");
+    const { record } = await recordWithNativeMetrics(undefined);
+    renderApp();
+    await record();
+    expect(await screen.findByRole("status", { name: "Capture quality" })).toHaveTextContent(
+      "not checked",
+    );
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+  });
 });
 
 describe("interrupted capture recovery", () => {
@@ -1261,6 +1392,7 @@ describe("interrupted capture recovery", () => {
   it("checkpoints a live capture so a crash mid-recording can recover its transcript", async () => {
     vi.spyOn(recorderModule, "createBrowserRecorder").mockResolvedValue({
       sampleRate: 16000,
+      capture: TEST_CAPTURE,
       stop: async () => {},
     });
     const recognitions: Array<{ onresult: ((event: unknown) => void) | null }> = [];
@@ -1380,7 +1512,7 @@ describe("interrupted capture recovery", () => {
     localStorage.setItem(CHECKPOINT_KEY, JSON.stringify(checkpoint));
     const createRecorder = vi
       .spyOn(recorderModule, "createBrowserRecorder")
-      .mockResolvedValue({ sampleRate: 16000, stop: async () => {} });
+      .mockResolvedValue({ sampleRate: 16000, capture: TEST_CAPTURE, stop: async () => {} });
     const user = userEvent.setup();
     renderApp();
     await screen.findByRole("region", { name: "Interrupted recording" });
@@ -1559,6 +1691,7 @@ describe("interrupted capture recovery", () => {
   it("warns when this window cannot reserve its recording", async () => {
     vi.spyOn(recorderModule, "createBrowserRecorder").mockResolvedValue({
       sampleRate: 16000,
+      capture: TEST_CAPTURE,
       stop: async () => {},
     });
     vi.stubGlobal("navigator", {

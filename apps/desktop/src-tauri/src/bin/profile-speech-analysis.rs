@@ -15,6 +15,18 @@ use speech_analysis::{AnalyzeSpeechRequest, PauseInput, TranscriptSegmentInput};
 fn main() {
     let options = Options::parse();
     let request = fixture(options.duration_seconds, options.audio);
+    // The capture-quality pass on its own, so its share of post-session latency stays visible.
+    let capture_metrics_seconds = request.samples.as_ref().map(|samples| {
+        let started = Instant::now();
+        audio_analysis_core::capture_metrics(
+            samples,
+            request.sample_rate.unwrap_or(16_000),
+            1,
+            &audio_analysis_core::CaptureMetricsConfig::default(),
+        )
+        .expect("synthetic capture metrics must succeed");
+        started.elapsed().as_secs_f64()
+    });
     let started = Instant::now();
     let report = speech_pipeline::analyze_speech_session(request)
         .expect("synthetic speech analysis must succeed");
@@ -30,6 +42,7 @@ fn main() {
             "audio": options.audio,
             "elapsedSeconds": elapsed,
             "realTimeFactor": real_time_factor,
+            "captureMetricsSeconds": capture_metrics_seconds,
             "eventCount": report.events.len(),
             "wordCount": report.word_count,
             "analyzedAudioSeconds": report.acoustic_stats.as_ref().map(|stats| stats.analyzed_duration_seconds),

@@ -1,6 +1,7 @@
 import {
   type LegacySessionRecord,
   migrateSessionRecord,
+  isRunCaptureQuality,
   observationFingerprint,
   SESSION_SCHEMA_VERSION,
 } from "@stutter-tracker/shared";
@@ -205,7 +206,7 @@ function isAssistanceSettings(value: unknown) {
   );
 }
 
-function isRecordingDescriptor(value: unknown) {
+export function isRecordingDescriptor(value: unknown) {
   return (
     isRecord(value) &&
     typeof value.sessionId === "string" &&
@@ -332,7 +333,8 @@ export function isAnalysisReport(value: unknown) {
     Array.isArray(value.events) &&
     value.events.every(isStutterEvent) &&
     isByKind(value.byKind) &&
-    isOptionalObject(value.acousticStats, isAcousticStats)
+    isOptionalObject(value.acousticStats, isAcousticStats) &&
+    (value.captureQuality === undefined || isRunCaptureQuality(value.captureQuality))
   );
 }
 

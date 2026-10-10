@@ -23,6 +23,7 @@ export const SPEAKERS_KEY = "stutter-tracker:speakers";
 export const TRANSCRIPTION_KEY = "stutter-tracker:transcription";
 /** Pre-ledger storage: the one server URL that had remote-analysis consent. Migrated on read. */
 export const REMOTE_CONSENT_KEY = "stutter-tracker:remote-analysis-consent";
+export const SOLO_SPEAKER_KEY = "stutter-tracker:solo-speaker";
 export const CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger";
 export const UNREADABLE_CONSENT_LEDGER_KEY = "stutter-tracker:consent-ledger:unreadable";
 
@@ -270,6 +271,24 @@ export function saveTranscriptionSettingsToStorage(
   storage: Storage = localStorage,
 ) {
   storage.setItem(TRANSCRIPTION_KEY, JSON.stringify(settings));
+}
+
+/** The user's standing "only I speak in my recordings" declaration; unset means not declared. */
+export function loadSoloSpeakerDeclaration(storage: Storage = localStorage): boolean {
+  try {
+    return storage.getItem(SOLO_SPEAKER_KEY) === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveSoloSpeakerDeclaration(declared: boolean, storage: Storage = localStorage) {
+  try {
+    if (declared) storage.setItem(SOLO_SPEAKER_KEY, "true");
+    else storage.removeItem(SOLO_SPEAKER_KEY);
+  } catch {
+    // The declaration still applies for this page; it is only not remembered.
+  }
 }
 
 export function normalizeSpeakerProfiles(speakers: SpeakerProfile[]) {

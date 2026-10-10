@@ -17,10 +17,13 @@ import {
   observationFingerprint,
   UNKNOWN_INPUT_ID,
   audioFingerprint,
+  type RecordingDescriptor,
   resampleSamples as sharedResampleSamples,
 } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createGapTracker } from "../audio/captureGaps";
+import { isScoreWithheld, withCaptureQuality } from "../audio/captureQuality";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
 import { InsightsSidebar } from "../components/InsightsSidebar";
@@ -60,7 +63,9 @@ import type {
 import {
   loadRemoteConsent,
   loadSessionsFromStorage,
+  loadSoloSpeakerDeclaration,
   saveRemoteConsent,
+  saveSoloSpeakerDeclaration,
 } from "../storage/localStorage";
 import {
   CAPTURE_CHECKPOINT_PREFIX,
@@ -222,6 +227,18 @@ export function App() {
   const lastSpeakerMatchAtRef = useRef(0);
   const sampleRateRef = useRef(48_000);
   const samplesRef = useRef<number[]>([]);
+  // Describes the capture whose PCM is in samplesRef; cleared together with it.
+  const captureDescriptorRef = useRef<RecordingDescriptor | null>(null);
+  // Records the live capture's intervals without samples into its descriptor.
+  const gapTrackerRef = useRef<ReturnType<typeof createGapTracker> | null>(null);
+  const [soloSpeaker, setSoloSpeakerState] = useState(loadSoloSpeakerDeclaration);
+  // Read when the microphone is acquired, so a change while Record is pending still applies.
+  const soloSpeakerRef = useRef(soloSpeaker);
+  const setSoloSpeaker = (declared: boolean) => {
+    soloSpeakerRef.current = declared;
+    setSoloSpeakerState(declared);
+    saveSoloSpeakerDeclaration(declared);
+  };
   const segmentsRef = useRef<TranscriptSegment[]>([]);
   const pausesRef = useRef<PauseSpan[]>([]);
   const speakersRef = useRef<SpeakerProfile[]>(speakers);
@@ -266,10 +283,29 @@ export function App() {
     // captureRevision is a deliberate trigger: samplesRef is a ref and not a dependency itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, pauses, captureRevision]);
+  // Read with the observation above, so the quality gate describes the capture analyzed (also a
+  // recovered one whose audio is gone). It stays on this device: analysis requests never carry it.
+  const analysisDescriptor = useMemo(() => captureDescriptorRef.current, [analysisRequest]);
 
   const analysisQuery = useQuery({
-    queryKey: ["analysis", analysisRequest],
-    queryFn: () => analyzeWithFallback(analysisRequest),
+    // Gaps are appended to the descriptor during capture; a new gap must re-gate the report.
+    queryKey: [
+      "analysis",
+      analysisRequest,
+      analysisDescriptor?.runId ?? null,
+      analysisDescriptor?.discontinuities.length ?? 0,
+    ],
+    queryFn: async () => {
+      const analysis = await analyzeWithFallback(analysisRequest);
+      return {
+        ...analysis,
+        report: withCaptureQuality(
+          analysis.report,
+          analysisDescriptor,
+          TRANSCRIPTION_TARGET_SAMPLE_RATE,
+        ),
+      };
+    },
     enabled: viewedSession === null,
   });
 
@@ -309,13 +345,14 @@ export function App() {
     () => ({
       segments,
       sessions,
-      events: report.events ?? [],
+      // Events of a capture that failed the quality gate are not evidence to predict from.
+      events: isScoreWithheld(report) ? [] : (report.events ?? []),
       partialText: [transcript, interimText].filter(Boolean).join(" ").trim(),
       maxContexts: 6,
       maxPredictions: 4,
       phraseTokens: 4,
     }),
-    [segments, sessions, report.events, transcript, interimText],
+    [segments, sessions, report, transcript, interimText],
   );
   const intentPredictionsQuery = useQuery({
     queryKey: ["intent-predictions", intentPredictionRequest],
@@ -685,7 +722,11 @@ export function App() {
   const todayStats = useMemo(() => {
     const now = new Date().toDateString();
     const todays = sessions.filter((session) => new Date(session.startedAt).toDateString() === now);
-    const totalEvents = todays.reduce((sum, session) => sum + session.report.stutterCount, 0);
+    // Sessions whose capture failed the quality gate have no event count to add.
+    const totalEvents = todays.reduce(
+      (sum, session) => sum + (isScoreWithheld(session.report) ? 0 : session.report.stutterCount),
+      0,
+    );
     const totalMinutes = todays.reduce(
       (sum, session) => sum + session.report.totalDurationSeconds / 60,
       0,
@@ -722,6 +763,21 @@ export function App() {
       browserRecorderRef.current = recorder;
       sampleRateRef.current = recorder.sampleRate;
       samplesRef.current = [];
+      const captureId = crypto.randomUUID();
+      captureDescriptorRef.current = {
+        sessionId: captureId,
+        runId: crypto.randomUUID(),
+        origin: isDesktopApp() ? "desktop" : "browser",
+        role: "appInput",
+        sampleRate: recorder.sampleRate,
+        ...recorder.capture,
+        startOffsetSeconds: 0,
+        discontinuities: [],
+        speakerAssessment: soloSpeakerRef.current ? "singleSpeakerDeclared" : "unknown",
+      };
+      gapTrackerRef.current = createGapTracker(recorder.sampleRate, {
+        startedAtSeconds: performance.now() / 1000,
+      });
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
@@ -731,7 +787,7 @@ export function App() {
       setAsideUnsavedCapture();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
-      takeWorkspaceCapture(crypto.randomUUID(), null);
+      takeWorkspaceCapture(captureId, null);
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -751,6 +807,8 @@ export function App() {
     } catch (error) {
       await browserRecorderRef.current?.stop();
       browserRecorderRef.current = null;
+      captureDescriptorRef.current = null;
+      gapTrackerRef.current = null;
       recordingTranscriptionRef.current = null;
       setIsRecording(false);
       setIsTranscribing(false);
@@ -832,6 +890,10 @@ export function App() {
   }, [isRecording]);
 
   function handleRecordedSamples(chunk: Float32Array) {
+    const gap = gapTrackerRef.current?.observe(chunk.length, performance.now() / 1000);
+    if (gap) {
+      captureDescriptorRef.current?.discontinuities.push(gap);
+    }
     const samples = samplesRef.current;
     for (const sample of chunk) {
       samples.push(sample);
@@ -942,8 +1004,15 @@ export function App() {
         })
       : Promise.resolve();
     recognition?.stop();
+    // The capture ends now; recorder teardown time is not missing audio.
+    const stoppedAtSeconds = performance.now() / 1000;
     await browserRecorderRef.current?.stop();
     browserRecorderRef.current = null;
+    const finalGap = gapTrackerRef.current?.finish(stoppedAtSeconds);
+    if (finalGap) {
+      captureDescriptorRef.current?.discontinuities.push(finalGap);
+    }
+    gapTrackerRef.current = null;
     setLevel(0);
     await recognitionEnded;
     if (!shouldTranscribeNative) {
@@ -1089,11 +1158,18 @@ export function App() {
     // A capture is saved under its checkpoint id, so a checkpoint left behind by a crash between the
     // save and its removal is recognized as saved instead of being recovered as a duplicate.
     const captureId = captureIdRef.current;
+    const sessionId =
+      captureId && !sessionsRef.current.some((candidate) => candidate.id === captureId)
+        ? captureId
+        : crypto.randomUUID();
+    const descriptor = captureDescriptorRef.current;
     const session: SavedSession = createSessionRecord({
-      id:
-        captureId && !sessionsRef.current.some((candidate) => candidate.id === captureId)
-          ? captureId
-          : crypto.randomUUID(),
+      id: sessionId,
+      // The capture's provenance travels with it; an edited saved session keeps the original's.
+      recordings:
+        descriptor && descriptor.sessionId === captureId
+          ? [{ ...descriptor, sessionId }]
+          : (loaded?.recordings.map((recording) => ({ ...recording, sessionId })) ?? []),
       startedAt: startedAtRef.current?.toISOString() ?? new Date().toISOString(),
       segments,
       pauses,
@@ -1407,6 +1483,8 @@ export function App() {
       segments,
       pauses,
       analysis,
+      recording:
+        captureDescriptorRef.current?.sessionId === id ? captureDescriptorRef.current : null,
     };
   }
 
@@ -1505,6 +1583,7 @@ export function App() {
     // Audio is not stored with sessions; keeping the last recording's PCM would analyze
     // this session against someone else's audio.
     samplesRef.current = [];
+    captureDescriptorRef.current = null;
   }
 
   async function recoverInterruptedCapture(capture: InterruptedCapture) {
@@ -1583,6 +1662,8 @@ export function App() {
     startedAtRef.current = new Date(checkpoint.startedAt);
     activeSessionIdRef.current = null;
     samplesRef.current = [];
+    // The audio is gone, but the capture's provenance and speaker declaration still apply.
+    captureDescriptorRef.current = checkpoint.recording;
     resetChunkTranscription();
     sessionLanguageRef.current = checkpoint.language;
     loadedSessionRef.current = null;
@@ -1607,6 +1688,7 @@ export function App() {
   ) {
     const session = createSessionRecord({
       id: checkpoint.id,
+      recordings: checkpoint.recording ? [checkpoint.recording] : [],
       startedAt: checkpoint.startedAt,
       segments: checkpoint.segments,
       pauses: checkpoint.pauses,
@@ -1685,6 +1767,7 @@ export function App() {
         if (activeSessionIdRef.current === session.id) {
           startedAtRef.current = null;
           samplesRef.current = [];
+          captureDescriptorRef.current = null;
           setSegments([]);
           setPauses([]);
           setReport(emptyReport());
@@ -1980,6 +2063,8 @@ export function App() {
         onModelChange={updateTranscriptionModel}
         onLanguageChange={setLanguage}
         onRecordingToggle={isRecording ? stopRecording : startRecording}
+        soloSpeaker={soloSpeaker}
+        onSoloSpeakerChange={setSoloSpeaker}
       />
 
       <StatusMetrics report={report} speechStats={speechStats} blockerStats={blockerStats} />

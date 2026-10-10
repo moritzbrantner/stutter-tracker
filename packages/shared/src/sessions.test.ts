@@ -140,6 +140,29 @@ describe("session records", () => {
     expect(original.report).toBe(report);
   });
 
+  test("a rerun without audio keeps the capture quality of the recorded capture", () => {
+    const captureQuality = {
+      state: "unknown" as const,
+      issues: ["noInput" as const],
+      explanation: "Result unknown: the microphone delivered no input.",
+    };
+    const original = migrateSessionRecord({ ...legacy, report: { ...report, captureQuality } });
+    const run = {
+      id: "run-2",
+      createdAt: "2026-10-01T00:00:00.000Z",
+      analyzer: onDevice,
+      usedAudio: false,
+      audioId: null,
+    };
+
+    expect(reanalyzeSession(original, run, report).report.captureQuality).toEqual(captureQuality);
+    const remeasured = {
+      ...report,
+      captureQuality: { state: "usable" as const, issues: [] as [] },
+    };
+    expect(reanalyzeSession(original, run, remeasured).report).toBe(remeasured);
+  });
+
   test("rejects recording the same run twice", () => {
     const original = migrateSessionRecord(legacy);
     expect(() => reanalyzeSession(original, { ...original.analysis }, report)).toThrow(

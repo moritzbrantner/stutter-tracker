@@ -146,6 +146,68 @@ export type CaptureQuality =
   | { state: "usable"; issues: [] }
   | { state: "unknown"; issues: CaptureQualityIssue[]; explanation: string };
 
+/**
+ * Wire shape of audio-analysis `capture_metrics` / `captureMetrics` (moritzbrantner/audio-analysis#143)
+ * as returned by native analysis in `AnalysisReport.captureMetrics`.
+ */
+export type MeasuredCaptureMetrics = {
+  sampleRate: number;
+  channels: number;
+  samplesPerChannel: number;
+  durationSeconds: number;
+  clippedSampleCount: number;
+  clippedSampleRatio: number;
+  frameSamples: number;
+  frameCount: number;
+  noInputSeconds: number;
+  longestNoInputSeconds: number;
+  activitySeconds: number;
+  config: { frameSeconds: number; clipLevel: number; noInputRms: number; activityRms: number };
+};
+
+/** Maps the capability's observations onto the quality gate's input. */
+export function captureMetricsFromMeasurement(measured: MeasuredCaptureMetrics): CaptureMetrics {
+  return {
+    durationSeconds: measured.durationSeconds,
+    channelCount: measured.channels,
+    clippedSampleRatio: measured.clippedSampleRatio,
+    silentSeconds: measured.noInputSeconds,
+    activeSeconds: measured.activitySeconds,
+    longestSilenceSeconds: measured.longestNoInputSeconds,
+  };
+}
+
+/**
+ * Quality of one analysis run of a capture. "unmeasured" means the processing path that analyzed
+ * the audio could not measure it (for example browser-local or compute-server analysis, which do
+ * not yet run the audio-analysis capture kernel); it makes no claim either way.
+ */
+export type RunCaptureQuality = CaptureQuality | { state: "unmeasured"; issues: [] };
+
+export function assessRunCaptureQuality(
+  descriptor: RecordingDescriptor,
+  measured: MeasuredCaptureMetrics | undefined,
+): RunCaptureQuality {
+  if (measured) return assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
+  // Without measurements the descriptor alone can still rule a capture out.
+  const issues = unmeasuredIssues(descriptor);
+  return issues.length ? unknownQuality(issues) : { state: "unmeasured", issues: [] };
+}
+
+/** Validates a stored run quality, e.g. from a restored backup. */
+export function isRunCaptureQuality(value: unknown): value is RunCaptureQuality {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.issues)) return false;
+  if (record.state === "usable" || record.state === "unmeasured") return record.issues.length === 0;
+  return (
+    record.state === "unknown" &&
+    record.issues.length > 0 &&
+    record.issues.every((issue) => typeof issue === "string" && Object.hasOwn(ISSUE_TEXT, issue)) &&
+    typeof record.explanation === "string"
+  );
+}
+
 export const CAPTURE_QUALITY_LIMITS = {
   minimumDurationSeconds: 3,
   minimumActiveSeconds: 2,
@@ -174,7 +236,7 @@ export function assessCaptureQuality(
 ): CaptureQuality {
   const limits = CAPTURE_QUALITY_LIMITS;
   const issues: CaptureQualityIssue[] = [];
-  if (metrics.channelCount < 1 || descriptor.channelCount < 1) issues.push("noChannels");
+  if (metrics.channelCount < 1) issues.push("noChannels");
   if (metrics.durationSeconds < limits.minimumDurationSeconds) issues.push("tooShort");
   if (metrics.durationSeconds > 0 && metrics.silentSeconds >= metrics.durationSeconds * 0.98) {
     issues.push("noInput");
@@ -192,10 +254,31 @@ export function assessCaptureQuality(
   ) {
     issues.push("discontinuous");
   }
-  if (descriptor.speakerAssessment === "unknown") issues.push("speakerUnknown");
-  if (descriptor.speakerAssessment === "overlapDetected") issues.push("speakerOverlap");
+  for (const issue of descriptorIssues(descriptor)) {
+    if (!issues.includes(issue)) issues.push(issue);
+  }
 
   if (!issues.length) return { state: "usable", issues: [] };
+  return unknownQuality(issues);
+}
+
+/** Issues the recording descriptor establishes without any PCM measurement. */
+function descriptorIssues(descriptor: RecordingDescriptor): CaptureQualityIssue[] {
+  const issues: CaptureQualityIssue[] = [];
+  if (descriptor.channelCount < 1) issues.push("noChannels");
+  if (descriptor.speakerAssessment === "unknown") issues.push("speakerUnknown");
+  if (descriptor.speakerAssessment === "overlapDetected") issues.push("speakerOverlap");
+  return issues;
+}
+
+/** Without measurements nothing bounds a gap's share, so any gap rules the capture out. */
+function unmeasuredIssues(descriptor: RecordingDescriptor): CaptureQualityIssue[] {
+  const issues = descriptorIssues(descriptor);
+  if (mergedDiscontinuities(descriptor).length) issues.push("discontinuous");
+  return issues;
+}
+
+function unknownQuality(issues: CaptureQualityIssue[]): CaptureQuality {
   return {
     state: "unknown",
     issues,
