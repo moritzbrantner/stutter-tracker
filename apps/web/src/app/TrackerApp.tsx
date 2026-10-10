@@ -2248,21 +2248,32 @@ async function analyzeWithFallback(request: {
         : null,
     inputId: observationFingerprint(request.segments, request.pauses),
   };
+  // An on-device analysis (the compute client's own fallback, or this one) measures the analyzed
+  // audio window with the WASM kernel; without a kernel the run stays unmeasured. Metrics reported
+  // by the desktop app or a compute server are kept as they are.
+  const measuredOnDevice = async ({
+    report,
+    analyzer,
+  }: AnalyzedSpeech): Promise<AnalyzedSpeech> => {
+    if (
+      analyzer.producer !== ON_DEVICE_ANALYZER.producer ||
+      report.captureMetrics ||
+      !usedAudio ||
+      !request.samples ||
+      !request.sampleRate
+    ) {
+      return { report, analyzer };
+    }
+    const captureMetrics = await measureCaptureOnDevice(request.samples, request.sampleRate);
+    return { report: captureMetrics ? { ...report, captureMetrics } : report, analyzer };
+  };
+  let analyzed: AnalyzedSpeech;
   try {
-    return { ...(await analyze(request)), ...provenance };
+    analyzed = await analyze(request);
   } catch {
-    const report = fallbackAnalyze(request);
-    // The analyzed audio window is measured here too; without a kernel it stays unmeasured.
-    const captureMetrics =
-      usedAudio && request.samples && request.sampleRate
-        ? await measureCaptureOnDevice(request.samples, request.sampleRate)
-        : undefined;
-    return {
-      report: captureMetrics ? { ...report, captureMetrics } : report,
-      analyzer: ON_DEVICE_ANALYZER,
-      ...provenance,
-    };
+    analyzed = { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER };
   }
+  return { ...(await measuredOnDevice(analyzed)), ...provenance };
 }
 
 export type IntentPredictionRequest = {
