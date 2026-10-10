@@ -1,5 +1,16 @@
+import type { RecordingDescriptor } from "@stutter-tracker/shared";
+
+/** The constraints this recorder requests; the browser may apply something else. */
+export const REQUESTED_PREPROCESSING = {
+  echoCancellation: true,
+  noiseSuppression: true,
+  autoGainControl: false,
+} as const;
+
 export type BrowserRecorder = {
   sampleRate: number;
+  /** What the browser reports about the delivered stream; recorded samples are a mono mixdown. */
+  capture: Pick<RecordingDescriptor, "channelCount" | "deviceRoute" | "preprocessing">;
   stop(): Promise<void>;
 };
 
@@ -28,11 +39,7 @@ export async function createBrowserRecorder(
   try {
     const stream = await navigator.mediaDevices
       .getUserMedia({
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
-        },
+        audio: { ...REQUESTED_PREPROCESSING },
       })
       .catch((error: unknown) => {
         if (isPermissionDenied(error)) {
@@ -118,6 +125,7 @@ export async function createBrowserRecorder(
     let stopped = false;
     return {
       sampleRate: audioContext.sampleRate,
+      capture: describeCapture(stream.getAudioTracks?.()[0]),
       async stop() {
         if (stopped) {
           return;
@@ -137,6 +145,31 @@ export async function createBrowserRecorder(
       error instanceof Error ? error.message : String(error),
     );
   }
+}
+
+/** Only reported values: settings the browser does not report stay unknown. */
+export function describeCapture(track: MediaStreamTrack | undefined): BrowserRecorder["capture"] {
+  const settings: MediaTrackSettings = track?.getSettings?.() ?? {};
+  const applied = (value: unknown) => (typeof value === "boolean" ? value : undefined);
+  const label = track?.label?.trim();
+  return {
+    channelCount: 1,
+    ...(label ? { deviceRoute: label } : {}),
+    preprocessing: {
+      echoCancellation: {
+        requested: REQUESTED_PREPROCESSING.echoCancellation,
+        applied: applied(settings.echoCancellation),
+      },
+      noiseSuppression: {
+        requested: REQUESTED_PREPROCESSING.noiseSuppression,
+        applied: applied(settings.noiseSuppression),
+      },
+      autoGainControl: {
+        requested: REQUESTED_PREPROCESSING.autoGainControl,
+        applied: applied(settings.autoGainControl),
+      },
+    },
+  };
 }
 
 async function cleanup(resources: Array<() => void | Promise<void>>) {

@@ -146,6 +146,66 @@ export type CaptureQuality =
   | { state: "usable"; issues: [] }
   | { state: "unknown"; issues: CaptureQualityIssue[]; explanation: string };
 
+/**
+ * Wire shape of audio-analysis `capture_metrics` / `captureMetrics` (moritzbrantner/audio-analysis#143)
+ * as returned by native analysis in `AnalysisReport.captureMetrics`.
+ */
+export type MeasuredCaptureMetrics = {
+  sampleRate: number;
+  channels: number;
+  samplesPerChannel: number;
+  durationSeconds: number;
+  clippedSampleCount: number;
+  clippedSampleRatio: number;
+  frameSamples: number;
+  frameCount: number;
+  noInputSeconds: number;
+  longestNoInputSeconds: number;
+  activitySeconds: number;
+  config: { frameSeconds: number; clipLevel: number; noInputRms: number; activityRms: number };
+};
+
+/** Maps the capability's observations onto the quality gate's input. */
+export function captureMetricsFromMeasurement(measured: MeasuredCaptureMetrics): CaptureMetrics {
+  return {
+    durationSeconds: measured.durationSeconds,
+    channelCount: measured.channels,
+    clippedSampleRatio: measured.clippedSampleRatio,
+    silentSeconds: measured.noInputSeconds,
+    activeSeconds: measured.activitySeconds,
+    longestSilenceSeconds: measured.longestNoInputSeconds,
+  };
+}
+
+/**
+ * Quality of one analysis run of a capture. "unmeasured" means the processing path that analyzed
+ * the audio could not measure it (for example browser-local or compute-server analysis, which do
+ * not yet run the audio-analysis capture kernel); it makes no claim either way.
+ */
+export type RunCaptureQuality = CaptureQuality | { state: "unmeasured"; issues: [] };
+
+export function assessRunCaptureQuality(
+  descriptor: RecordingDescriptor,
+  measured: MeasuredCaptureMetrics | undefined,
+): RunCaptureQuality {
+  if (!measured) return { state: "unmeasured", issues: [] };
+  return assessCaptureQuality(descriptor, captureMetricsFromMeasurement(measured));
+}
+
+/** Validates a stored run quality, e.g. from a restored backup. */
+export function isRunCaptureQuality(value: unknown): value is RunCaptureQuality {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  if (!Array.isArray(record.issues)) return false;
+  if (record.state === "usable" || record.state === "unmeasured") return record.issues.length === 0;
+  return (
+    record.state === "unknown" &&
+    record.issues.length > 0 &&
+    record.issues.every((issue) => typeof issue === "string" && Object.hasOwn(ISSUE_TEXT, issue)) &&
+    typeof record.explanation === "string"
+  );
+}
+
 export const CAPTURE_QUALITY_LIMITS = {
   minimumDurationSeconds: 3,
   minimumActiveSeconds: 2,

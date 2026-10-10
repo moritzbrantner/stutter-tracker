@@ -17,10 +17,12 @@ import {
   observationFingerprint,
   UNKNOWN_INPUT_ID,
   audioFingerprint,
+  type RecordingDescriptor,
   resampleSamples as sharedResampleSamples,
 } from "@stutter-tracker/shared";
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { withCaptureQuality } from "../audio/captureQuality";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
 import { InsightsSidebar } from "../components/InsightsSidebar";
@@ -60,7 +62,9 @@ import type {
 import {
   loadRemoteConsent,
   loadSessionsFromStorage,
+  loadSoloSpeakerDeclaration,
   saveRemoteConsent,
+  saveSoloSpeakerDeclaration,
 } from "../storage/localStorage";
 import {
   CAPTURE_CHECKPOINT_PREFIX,
@@ -222,6 +226,13 @@ export function App() {
   const lastSpeakerMatchAtRef = useRef(0);
   const sampleRateRef = useRef(48_000);
   const samplesRef = useRef<number[]>([]);
+  // Describes the capture whose PCM is in samplesRef; cleared together with it.
+  const captureDescriptorRef = useRef<RecordingDescriptor | null>(null);
+  const [soloSpeaker, setSoloSpeakerState] = useState(loadSoloSpeakerDeclaration);
+  const setSoloSpeaker = (declared: boolean) => {
+    setSoloSpeakerState(declared);
+    saveSoloSpeakerDeclaration(declared);
+  };
   const segmentsRef = useRef<TranscriptSegment[]>([]);
   const pausesRef = useRef<PauseSpan[]>([]);
   const speakersRef = useRef<SpeakerProfile[]>(speakers);
@@ -266,10 +277,26 @@ export function App() {
     // captureRevision is a deliberate trigger: samplesRef is a ref and not a dependency itself.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [segments, pauses, captureRevision]);
+  // Read with the samples above, so the quality gate describes exactly the audio analyzed. It
+  // stays on this device: analysis requests never carry it.
+  const analysisDescriptor = useMemo(
+    () => (analysisRequest.samples ? captureDescriptorRef.current : null),
+    [analysisRequest],
+  );
 
   const analysisQuery = useQuery({
-    queryKey: ["analysis", analysisRequest],
-    queryFn: () => analyzeWithFallback(analysisRequest),
+    queryKey: ["analysis", analysisRequest, analysisDescriptor?.runId ?? null],
+    queryFn: async () => {
+      const analysis = await analyzeWithFallback(analysisRequest);
+      return {
+        ...analysis,
+        report: withCaptureQuality(
+          analysis.report,
+          analysisDescriptor,
+          TRANSCRIPTION_TARGET_SAMPLE_RATE,
+        ),
+      };
+    },
     enabled: viewedSession === null,
   });
 
@@ -722,6 +749,18 @@ export function App() {
       browserRecorderRef.current = recorder;
       sampleRateRef.current = recorder.sampleRate;
       samplesRef.current = [];
+      const captureId = crypto.randomUUID();
+      captureDescriptorRef.current = {
+        sessionId: captureId,
+        runId: crypto.randomUUID(),
+        origin: isDesktopApp() ? "desktop" : "browser",
+        role: "appInput",
+        sampleRate: recorder.sampleRate,
+        ...recorder.capture,
+        startOffsetSeconds: 0,
+        discontinuities: [],
+        speakerAssessment: soloSpeaker ? "singleSpeakerDeclared" : "unknown",
+      };
       recordingTranscriptionRef.current = transcriptionRef.current;
       recordingLanguageRef.current = language;
       sessionLanguageRef.current = language;
@@ -731,7 +770,7 @@ export function App() {
       setAsideUnsavedCapture();
       startedAtRef.current = new Date();
       activeSessionIdRef.current = null;
-      takeWorkspaceCapture(crypto.randomUUID(), null);
+      takeWorkspaceCapture(captureId, null);
       lastFinalEndRef.current = 0;
       lastVoiceAtRef.current = 0;
       lastSpeakerMatchAtRef.current = 0;
@@ -751,6 +790,7 @@ export function App() {
     } catch (error) {
       await browserRecorderRef.current?.stop();
       browserRecorderRef.current = null;
+      captureDescriptorRef.current = null;
       recordingTranscriptionRef.current = null;
       setIsRecording(false);
       setIsTranscribing(false);
@@ -1505,6 +1545,7 @@ export function App() {
     // Audio is not stored with sessions; keeping the last recording's PCM would analyze
     // this session against someone else's audio.
     samplesRef.current = [];
+    captureDescriptorRef.current = null;
   }
 
   async function recoverInterruptedCapture(capture: InterruptedCapture) {
@@ -1583,6 +1624,7 @@ export function App() {
     startedAtRef.current = new Date(checkpoint.startedAt);
     activeSessionIdRef.current = null;
     samplesRef.current = [];
+    captureDescriptorRef.current = null;
     resetChunkTranscription();
     sessionLanguageRef.current = checkpoint.language;
     loadedSessionRef.current = null;
@@ -1685,6 +1727,7 @@ export function App() {
         if (activeSessionIdRef.current === session.id) {
           startedAtRef.current = null;
           samplesRef.current = [];
+          captureDescriptorRef.current = null;
           setSegments([]);
           setPauses([]);
           setReport(emptyReport());
@@ -1980,6 +2023,8 @@ export function App() {
         onModelChange={updateTranscriptionModel}
         onLanguageChange={setLanguage}
         onRecordingToggle={isRecording ? stopRecording : startRecording}
+        soloSpeaker={soloSpeaker}
+        onSoloSpeakerChange={setSoloSpeaker}
       />
 
       <StatusMetrics report={report} speechStats={speechStats} blockerStats={blockerStats} />

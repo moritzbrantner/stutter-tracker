@@ -188,9 +188,11 @@ export function reanalyzeSession(
   if (run.id === record.analysis.id || record.priorAnalyses.some((prior) => prior.id === run.id)) {
     throw new Error(`Analysis run ${run.id} is already recorded for session ${record.id}.`);
   }
+  // Audio is not kept, so a rerun cannot remeasure the capture; its quality still describes it.
+  const inherited = report.captureQuality ? undefined : record.report.captureQuality;
   return {
     ...record,
-    report,
+    report: inherited ? { ...report, captureQuality: inherited } : report,
     analysis: { ...run, inputId: observationFingerprint(record.segments, record.pauses) },
     priorAnalyses: [...record.priorAnalyses, { ...record.analysis, report: record.report }],
   };

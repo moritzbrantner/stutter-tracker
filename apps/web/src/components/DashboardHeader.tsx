@@ -19,6 +19,9 @@ type DashboardHeaderProps = {
   onModelChange: (model: string) => void;
   onLanguageChange: (language: string) => void;
   onRecordingToggle: () => void;
+  /** Declared before recording; fixed for the capture it starts. */
+  soloSpeaker: boolean;
+  onSoloSpeakerChange: (declared: boolean) => void;
 };
 
 export function DashboardHeader({
@@ -36,6 +39,8 @@ export function DashboardHeader({
   onModelChange,
   onLanguageChange,
   onRecordingToggle,
+  soloSpeaker,
+  onSoloSpeakerChange,
 }: DashboardHeaderProps) {
   return (
     <section className="mb-4 flex items-center justify-between gap-4 max-sm:flex-col max-sm:items-stretch">
@@ -92,6 +97,18 @@ export function DashboardHeader({
             </option>
           ))}
         </select>
+        <label
+          className="flex items-center gap-2 text-sm text-[#2d4e43]"
+          title="Without this, results stay unknown: other voices could be counted as yours"
+        >
+          <input
+            type="checkbox"
+            checked={soloSpeaker}
+            disabled={isRecording}
+            onChange={(event) => onSoloSpeakerChange(event.target.checked)}
+          />
+          Only I speak
+        </label>
         <button
           className={cx(isRecording ? dangerButtonClass : primaryButtonClass)}
           onClick={onRecordingToggle}

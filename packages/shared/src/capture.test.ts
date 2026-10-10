@@ -2,6 +2,10 @@ import { describe, expect, test } from "bun:test";
 
 import {
   assessCaptureQuality,
+  assessRunCaptureQuality,
+  captureMetricsFromMeasurement,
+  isRunCaptureQuality,
+  type MeasuredCaptureMetrics,
   isUnprocessedInput,
   type CaptureMetrics,
   type RecordingDescriptor,
@@ -175,4 +179,61 @@ describe("assessCaptureQuality", () => {
       expect(quality.state === "unknown" && quality.explanation).toMatch(/^Result unknown: /);
     });
   }
+});
+
+/** Shape returned by audio-analysis `capture_metrics` for six seconds at 16 kHz. */
+function measured(overrides: Partial<MeasuredCaptureMetrics> = {}): MeasuredCaptureMetrics {
+  return {
+    sampleRate: 16_000,
+    channels: 1,
+    samplesPerChannel: 96_000,
+    durationSeconds: 6,
+    clippedSampleCount: 0,
+    clippedSampleRatio: 0,
+    frameSamples: 320,
+    frameCount: 300,
+    noInputSeconds: 0.5,
+    longestNoInputSeconds: 0.3,
+    activitySeconds: 4.5,
+    config: { frameSeconds: 0.02, clipLevel: 0.999, noInputRms: 1e-4, activityRms: 0.01 },
+    ...overrides,
+  };
+}
+
+describe("audio-analysis capture metrics", () => {
+  test("map onto the quality gate's input", () => {
+    expect(captureMetricsFromMeasurement(measured())).toEqual(metrics());
+  });
+
+  test("a run without measurements is unmeasured, not usable", () => {
+    expect(assessRunCaptureQuality(descriptor(), undefined)).toEqual({
+      state: "unmeasured",
+      issues: [],
+    });
+    expect(assessRunCaptureQuality(descriptor(), measured()).state).toBe("usable");
+    const silent = measured({ noInputSeconds: 6, activitySeconds: 0 });
+    expect(assessRunCaptureQuality(descriptor(), silent)).toMatchObject({
+      state: "unknown",
+      issues: ["noInput"],
+    });
+  });
+
+  test("stored run qualities are validated", () => {
+    expect(isRunCaptureQuality({ state: "usable", issues: [] })).toBe(true);
+    expect(isRunCaptureQuality({ state: "unmeasured", issues: [] })).toBe(true);
+    expect(
+      isRunCaptureQuality({ state: "unknown", issues: ["clipping"], explanation: "too loud" }),
+    ).toBe(true);
+    for (const invalid of [
+      null,
+      [],
+      { state: "usable", issues: ["clipping"] },
+      { state: "unknown", issues: [], explanation: "x" },
+      { state: "unknown", issues: ["toString"], explanation: "x" },
+      { state: "unknown", issues: ["clipping"] },
+      { state: "great", issues: [] },
+    ]) {
+      expect(isRunCaptureQuality(invalid)).toBe(false);
+    }
+  });
 });

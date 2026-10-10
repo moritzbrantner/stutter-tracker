@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use audio_analysis_core::{rms, FrameSpec};
+use audio_analysis_core::{capture_metrics, rms, CaptureMetrics, CaptureMetricsConfig, FrameSpec};
 use audio_analysis_fourier::FourierTransform;
 use audio_analysis_pitch::{AutocorrelationPitchDetector, PitchDetectorConfig};
 use audio_analysis_recognition::{
@@ -74,6 +74,10 @@ pub struct AnalysisReport {
     pub by_kind: HashMap<StutterKind, usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub acoustic_stats: Option<AcousticStats>,
+    /// Generic capture observations (audio-analysis) of the audio window this report analyzed, at
+    /// the request's sample rate. The product quality gate interprets them; absent without audio.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub capture_metrics: Option<CaptureMetrics>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -320,6 +324,7 @@ pub fn analyze_speech_session_impl(request: AnalyzeSpeechRequest) -> Result<Anal
 
     events.extend(detect_blocks(&request.pauses));
     let acoustic = analyze_acoustics(&request)?;
+    let capture = measure_capture(&request)?;
     if let Some(acoustic) = &acoustic {
         duration = duration.max(acoustic.stats.analyzed_duration_seconds);
     }
@@ -383,7 +388,29 @@ pub fn analyze_speech_session_impl(request: AnalyzeSpeechRequest) -> Result<Anal
         events,
         by_kind,
         acoustic_stats: acoustic.map(|value| value.stats),
+        capture_metrics: capture,
     })
+}
+
+/// Seconds of request audio the acoustic analysis reads; capture metrics cover the same window.
+const ANALYZED_AUDIO_SECONDS: usize = 90;
+
+/// Measures the analyzed audio window before clamping, so out-of-range input counts as clipped.
+fn measure_capture(request: &AnalyzeSpeechRequest) -> Result<Option<CaptureMetrics>> {
+    let (Some(samples), Some(sample_rate)) = (&request.samples, request.sample_rate) else {
+        return Ok(None);
+    };
+    let window = samples
+        .len()
+        .min((sample_rate as usize).saturating_mul(ANALYZED_AUDIO_SECONDS));
+    capture_metrics(
+        &samples[..window],
+        sample_rate,
+        1,
+        &CaptureMetricsConfig::default(),
+    )
+    .map(Some)
+    .map_err(|error| SpeechAnalysisError::Invalid(error.to_string()))
 }
 
 pub fn create_voiceprint_impl(request: VoiceprintRequest) -> Result<VoiceprintResult> {
@@ -490,7 +517,7 @@ fn analyze_acoustics(request: &AnalyzeSpeechRequest) -> Result<Option<AcousticAn
     if sample_rate != target_sample_rate {
         normalized = resample_linear(&normalized, sample_rate, target_sample_rate);
     }
-    normalized.truncate(target_sample_rate as usize * 90);
+    normalized.truncate(target_sample_rate as usize * ANALYZED_AUDIO_SECONDS);
     if normalized.is_empty() {
         return Ok(None);
     }
@@ -1555,6 +1582,53 @@ mod tests {
         assert!(report.events.iter().any(|event| {
             event.kind == StutterKind::Block && event.source == Some(EventSource::Acoustic)
         }));
+    }
+
+    #[test]
+    fn reports_capture_metrics_of_the_unclamped_analyzed_window() {
+        let sample_rate = 16_000;
+        let mut samples = joined(vec![
+            sine_wave(220.0, sample_rate, 1.0),
+            vec![0.0; sample_rate as usize],
+        ]);
+        samples[100] = 1.5;
+        let without_audio = analyze_speech_session_impl(AnalyzeSpeechRequest {
+            segments: Vec::new(),
+            pauses: Vec::new(),
+            session_started_at: None,
+            samples: None,
+            sample_rate: None,
+        })
+        .unwrap();
+        assert!(without_audio.capture_metrics.is_none());
+
+        let report = analyze_speech_session_impl(AnalyzeSpeechRequest {
+            segments: Vec::new(),
+            pauses: Vec::new(),
+            session_started_at: None,
+            samples: Some(samples),
+            sample_rate: Some(sample_rate),
+        })
+        .unwrap();
+        let metrics = report.capture_metrics.expect("capture metrics");
+        assert_eq!(metrics.sample_rate, sample_rate);
+        assert_eq!(metrics.channels, 1);
+        assert!((metrics.duration_seconds - 2.0).abs() < 1e-9);
+        assert_eq!(metrics.clipped_sample_count, 1);
+        assert!((metrics.no_input_seconds - 1.0).abs() < 0.021);
+        assert!((metrics.activity_seconds - 1.0).abs() < 0.021);
+
+        let long = vec![0.0; sample_rate as usize * (ANALYZED_AUDIO_SECONDS + 5)];
+        let report = analyze_speech_session_impl(AnalyzeSpeechRequest {
+            segments: Vec::new(),
+            pauses: Vec::new(),
+            session_started_at: None,
+            samples: Some(long),
+            sample_rate: Some(sample_rate),
+        })
+        .unwrap();
+        let metrics = report.capture_metrics.expect("capture metrics");
+        assert!((metrics.duration_seconds - ANALYZED_AUDIO_SECONDS as f64).abs() < 1e-9);
     }
 
     #[test]
