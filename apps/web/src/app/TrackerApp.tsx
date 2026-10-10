@@ -72,7 +72,6 @@ import {
   replaceStoredSessions,
   saveRemoteConsent,
   saveSoloSpeakerDeclaration,
-  UNREADABLE_SESSIONS_KEY,
 } from "../storage/localStorage";
 import {
   CAPTURE_CHECKPOINT_PREFIX,
@@ -231,7 +230,7 @@ export function App() {
   const sessionsRef = useRef(sessions);
   const activeSessionIdRef = useRef<string | null>(null);
   const sessionMutationTailRef = useRef<Promise<void>>(Promise.resolve());
-  // True while a restore has written browser storage but is not final yet (desktop replace pending).
+  // True while a restore is running; saves wait for it (their browser write would race the restore).
   const restorePendingRef = useRef(false);
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const browserRecorderRef = useRef<BrowserRecorder | null>(null);
@@ -569,9 +568,6 @@ export function App() {
   useEffect(() => {
     let cancelled = false;
     const detect = () => {
-      if (restorePendingRef.current) {
-        return;
-      }
       void detectInterruptedCaptures(sessionsRef.current).then((found) => {
         if (cancelled) {
           return;
@@ -1178,6 +1174,10 @@ export function App() {
   }
 
   async function saveSession() {
+    if (restorePendingRef.current) {
+      setMessage("Wait for the session restore to finish before saving");
+      return;
+    }
     if (!segments.length && !pauses.length && !report.events.length) {
       setMessage("Nothing to save");
       return;
@@ -1644,12 +1644,6 @@ export function App() {
   }
 
   async function recoverInterruptedCapture(capture: InterruptedCapture) {
-    if (restorePendingRef.current) {
-      // Browser storage holds a provisional restore that may still be rolled back; recovering
-      // against it could drop this checkpoint as "already saved".
-      setMessage("Wait for the session restore to finish before recovering this recording");
-      return;
-    }
     if (
       workspaceClaimPendingRef.current ||
       startPendingRef.current ||
@@ -1875,21 +1869,28 @@ export function App() {
   }
 
   async function applyRestore(restored: SavedSession[]) {
-    const previousSessions = localStorage.getItem(STORE_KEY);
-    const previousUnreadable = localStorage.getItem(UNREADABLE_SESSIONS_KEY);
-    replaceStoredSessions(restored);
+    // The native corpus is replaced first, so browser storage (shared with other windows) never
+    // holds a restore that could still fail; a native failure therefore changes nothing.
     if (isDesktopApp()) {
       try {
         await invoke("replace_speech_corpus_sessions", { sessions: restored });
       } catch (error) {
-        restoreStorageValue(STORE_KEY, previousSessions);
-        restoreStorageValue(UNREADABLE_SESSIONS_KEY, previousUnreadable);
         throw new Error(`the desktop corpus could not be replaced: ${errorMessage(error)}`);
       }
     }
-    // Published only once the restore is final: mutations queued behind it must see the
-    // restored set, while nothing that reads sessionsRef during the native replace (such as
-    // interrupted-capture detection) may act on a set that could still be rolled back.
+    try {
+      replaceStoredSessions(restored);
+    } catch (error) {
+      // Browser storage refused the write (quota, blocked storage): put the native corpus back to
+      // this window's sessions, which it mirrored before the restore.
+      if (isDesktopApp()) {
+        await invoke("replace_speech_corpus_sessions", { sessions: sessionsRef.current }).catch(
+          () => undefined,
+        );
+      }
+      throw error;
+    }
+    // Mutations queued behind the restore must see the restored set.
     sessionsRef.current = restored;
     setSessions(restored);
   }
@@ -2577,14 +2578,6 @@ async function loadSpeechCorpusExport(sessions: SavedSession[]) {
     return await invoke<unknown>("export_speech_corpus");
   } catch {
     return localSpeechCorpusExport(sessions);
-  }
-}
-
-function restoreStorageValue(key: string, value: string | null) {
-  if (value === null) {
-    localStorage.removeItem(key);
-  } else {
-    localStorage.setItem(key, value);
   }
 }
 

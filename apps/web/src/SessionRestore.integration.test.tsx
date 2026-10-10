@@ -598,3 +598,25 @@ describe("recovery during a provisional restore", () => {
     expect(storedSessions()).toEqual(currentSessions);
   });
 });
+
+describe("shared storage during a pending desktop replace", () => {
+  // Implementation regression test (not acceptance): fourth Codex P1 on vox#99. Browser storage is
+  // shared with other windows, so it must not expose the backup before the native replace succeeds.
+  it("keeps browser storage on the current sessions until the native replace succeeds", async () => {
+    const replace = deferred<SpeechCorpusAnalysis>();
+    useDesktopInvokeMock({ [REPLACE_COMMAND]: () => replace.promise });
+    seedStoredSessions(currentSessions);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+
+    renderApp();
+    await screen.findAllByTitle("Delete saved session");
+    const json = backupJson();
+    await uploadBackup(json);
+    await waitFor(() => expect(invocations(REPLACE_COMMAND)).toHaveLength(1));
+    await settle();
+    expect(storedSessions()).toEqual(currentSessions);
+
+    replace.resolve(emptyCorpusAnalysis());
+    await waitFor(() => expect(storedSessions()).toEqual(restoredSessions(json)));
+  });
+});
