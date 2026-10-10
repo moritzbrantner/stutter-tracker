@@ -23,6 +23,7 @@ import {
 import { invoke, isTauri } from "@tauri-apps/api/core";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createGapTracker } from "../audio/captureGaps";
+import { measureCaptureOnDevice, preloadCaptureKernel } from "../audio/captureKernel";
 import { isScoreWithheld, withCaptureQuality } from "../audio/captureQuality";
 import { DashboardHeader } from "../components/DashboardHeader";
 import { EvidenceExportPanel } from "../components/EvidenceExportPanel";
@@ -769,6 +770,10 @@ export function App() {
         if (!ready) {
           return;
         }
+      }
+      if (!isDesktopApp()) {
+        // Browser-local analysis measures the capture with the WASM kernel; load it while recording.
+        preloadCaptureKernel();
       }
       setMessage("Requesting microphone");
       const recorder = await createBrowserRecorder({
@@ -2246,7 +2251,17 @@ async function analyzeWithFallback(request: {
   try {
     return { ...(await analyze(request)), ...provenance };
   } catch {
-    return { report: fallbackAnalyze(request), analyzer: ON_DEVICE_ANALYZER, ...provenance };
+    const report = fallbackAnalyze(request);
+    // The analyzed audio window is measured here too; without a kernel it stays unmeasured.
+    const captureMetrics =
+      usedAudio && request.samples && request.sampleRate
+        ? await measureCaptureOnDevice(request.samples, request.sampleRate)
+        : undefined;
+    return {
+      report: captureMetrics ? { ...report, captureMetrics } : report,
+      analyzer: ON_DEVICE_ANALYZER,
+      ...provenance,
+    };
   }
 }
 
