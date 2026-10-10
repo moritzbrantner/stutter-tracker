@@ -51,6 +51,12 @@ type LowerDashboardProps = {
   deletingSessionId: string | null;
 };
 
+/** What deleting a saved session removes, and what it cannot reach (vox#87). */
+export const SESSION_DELETE_CONFIRMATION = [
+  "Delete this saved session? This cannot be undone.",
+  "This removes its transcript, annotations and analyses from this app, including the desktop speech corpus copy and any unsaved recording copy.",
+  "Session backups and copies you already exported or shared are not changed. Speaker voiceprints are kept; remove them separately.",
+].join("\n\n");
 export function LowerDashboard({
   report,
   segments,
@@ -532,7 +538,7 @@ function SessionsPanel({
                   title="Delete saved session"
                   disabled={deletingSessionId === session.id}
                   onClick={() => {
-                    if (window.confirm("Delete this saved session? This cannot be undone.")) {
+                    if (window.confirm(SESSION_DELETE_CONFIRMATION)) {
                       onSessionDelete(session);
                     }
                   }}
